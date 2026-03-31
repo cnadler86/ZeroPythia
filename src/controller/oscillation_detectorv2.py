@@ -39,9 +39,7 @@ class EdgeDetector:
         self._rising_cache: List[float] | None = None
         self._falling_cache: List[float] | None = None
 
-    def add_sample(
-        self, value: float, timestamp: float
-    ) -> Literal["rising", "falling", None]:
+    def add_sample(self, value: float, timestamp: float) -> Literal["rising", "falling", None]:
         """Add a new sample to the detector and check for edges.
         if a new edge is detected, it is added to the respective edge list.
         Returns 'rising' if a rising edge was detected, 'falling' if a falling edge was detected,
@@ -65,9 +63,7 @@ class EdgeDetector:
             return "falling"
 
         # Pop all values on history that are older than timestamp - self.time_threshold
-        while (
-            self.history and self.history[0][1] < timestamp - self.time_threshold
-        ):
+        while self.history and self.history[0][1] < timestamp - self.time_threshold:
             self.history.pop(0)
 
         return None
@@ -167,7 +163,8 @@ class OscillationDetector:
 
         self._edge_detector = EdgeDetector(
             threshold=threshold,
-            edge_list_length=min_rising_count+1,  # We need at least 1 more in order to properly detect rising edges that are stepped
+            edge_list_length=min_rising_count
+            + 1,  # We need at least 1 more in order to properly detect rising edges that are stepped
             time_threshold=time_threshold,
             merge_mode=merge_mode,
         )
@@ -217,7 +214,6 @@ class OscillationDetector:
         self._calculate_baseload(value)
         self._detect_timeout(timestamp)
 
-
     def _calculate_baseload(self, value: float) -> None:
         if self._phase == "low":
             # During low phase, track the minimum value
@@ -241,9 +237,7 @@ class OscillationDetector:
         # Check for timeout if currently oscillating
         if self.is_oscillating and self.rising_period is not None and self._rising_times:
             last_rising = self._rising_times[-1]
-            expected_next = last_rising + self.rising_period * (
-                1 + self.period_variance
-            )
+            expected_next = last_rising + self.rising_period * (1 + self.period_variance)
             if current_time > expected_next:
                 logger.info(f"Oscillation timeout detected at {current_time}. Resetting.")
                 self._reset()
@@ -293,10 +287,7 @@ class OscillationDetector:
             if len(rising_edges) > self.min_rising_count
             else rising_edges
         )
-        periods = [
-            recent_rising[i + 1] - recent_rising[i]
-            for i in range(len(recent_rising) - 1)
-        ]
+        periods = [recent_rising[i + 1] - recent_rising[i] for i in range(len(recent_rising) - 1)]
         if not periods:
             return
 
@@ -390,6 +381,7 @@ class OscillationDetector:
 @dataclass
 class OscillationDetectorSettings:
     """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+
     threshold: float
     min_period: float
     max_period: float
@@ -399,9 +391,11 @@ class OscillationDetectorSettings:
     min_rising_count: int = 3
     base_load_window: int = 2
 
+
 @dataclass
 class BaseloadPredictorSettings(OscillationDetectorSettings):
     """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+
     threshold: float = 100.0
     time_threshold: float = 2.0
     merge_mode: Literal["first", "mean", "last"] = "first"
@@ -412,10 +406,11 @@ class BaseloadPredictorSettings(OscillationDetectorSettings):
     reaction_time: float = 4.0
     base_load_window: int = 2
 
+
 class BaseloadPredictor(OscillationDetector):
     def __init__(
         self,
-        settings: Optional[BaseloadPredictorSettings]=None,
+        settings: Optional[BaseloadPredictorSettings] = None,
     ):
         if not settings:
             settings = BaseloadPredictorSettings()
@@ -447,9 +442,11 @@ class BaseloadPredictor(OscillationDetector):
         # Otherwise, return current value
         return self._last_value
 
+
 @dataclass
 class BaseloadHolderSettings(OscillationDetectorSettings):
     """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+
     threshold: float = 30
     min_period: float = 1.0
     max_period: float = 10.0
@@ -459,10 +456,11 @@ class BaseloadHolderSettings(OscillationDetectorSettings):
     min_rising_count: int = 3
     base_load_window: int = 3
 
+
 class BaseloadHolder(OscillationDetector):
     def __init__(
         self,
-        settings: Optional[BaseloadHolderSettings]=None,
+        settings: Optional[BaseloadHolderSettings] = None,
     ):
         if not settings:
             settings = BaseloadHolderSettings()

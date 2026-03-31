@@ -2,13 +2,16 @@
 ==========================================
 
 Architektur:
-- Phase B (Batterie-Phase): Feedback-Regelung mit P-Regler
-  → Störgröße und Stellgröße auf gleicher Phase
-  → Stabilitätsrisiko durch Totzeit (Batterie-Rückkopplung)
+- Phase A+C (Fremdphasen, KEIN Inverter): schneller Feedforward-Regler
+  → Reine Störgröße, keine Rückkopplung → sofortige volle Kompensation
+  → Läuft in jedem Regelzyklus neu
 
-- Phase A+C (Fremdphasen): Feedforward-Kompensation mit P-Regler
-  → Reine Störgröße (keine Rückkopplung)
-  → Kein Stabilitätsrisiko, einfach kompensieren
+- Phase B (Batterie-Phase): Feedback-Regler mit Settlement-Gate
+  → Neuer Feedback-Setpoint wird NUR berechnet wenn der Inverter
+    am vorherigen Setpoint angekommen ist (is_settled() == True)
+  → Verhindert Kreisoscillation: Regler wartet auf die Batterie-Totzeit
+    (~2-3s) bevor er nachregelt
+  → Solange nicht settled: Feedback eingefroren, nur Feedforward aktiv
 
 - PhaseManager: Kombiniert beide Ausgänge zu einem Batterie-Setpoint
 """
@@ -24,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # ── Einstellungen ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class DisturbanceControllerSettings:
     """Einstellungen für den Fremdphasen-Controller (A+C)."""
@@ -31,7 +35,7 @@ class DisturbanceControllerSettings:
     kp: float = 1.0
     """Verstärkung: 1.0 = volle Kompensation der Fremdphasen-Last"""
 
-    hysteresis_w: float = 5.0
+    hysteresis_w: float = 10.0
     """Hysterese in Watt – innerhalb dieser Zone wird nicht nachgeregelt"""
 
     kp_hysteresis: float = 0.3
@@ -92,6 +96,7 @@ class PhaseManagerSettings:
 
 # ── Controller ────────────────────────────────────────────────────────────────
 
+
 class DisturbanceController:
     """Feedforward-Controller für Fremdphasen (A+C).
 
@@ -104,9 +109,7 @@ class DisturbanceController:
 
     def __init__(self, settings: DisturbanceControllerSettings):
         self.settings = settings
-        self.preprocessor = HysteresisPreprocessor(
-            hysteresis=settings.preprocessing_hysteresis_w
-        )
+        self.preprocessor = HysteresisPreprocessor(hysteresis=settings.preprocessing_hysteresis_w)
         self._last_output: float = 0.0
 
     def calculate(self, other_phases_power_w: list[float]) -> float:
@@ -160,9 +163,7 @@ class BatteryPhaseController:
 
     def __init__(self, settings: BatteryPhaseControllerSettings):
         self.settings = settings
-        self.preprocessor = HysteresisPreprocessor(
-            hysteresis=settings.preprocessing_hysteresis_w
-        )
+        self.preprocessor = HysteresisPreprocessor(hysteresis=settings.preprocessing_hysteresis_w)
         self._last_output: float = 0.0
 
     def calculate(
@@ -237,12 +238,14 @@ class PhaseManager:
         self.disturbance_ctrl = DisturbanceController(disturbance_settings)
         self.battery_ctrl = BatteryPhaseController(battery_phase_settings)
         self._last_setpoint: float = 0.0
+        self._last_battery_feedback: float = 0.0
 
     def calculate(
         self,
         total_grid_power_w: list[float],
         other_phases_power_w: list[float],
         current_battery_output_w: float,
+        battery_settled: bool = True,
     ) -> int:
         """Berechnet den kombinierten Batterie-Setpoint.
 
@@ -250,32 +253,42 @@ class PhaseManager:
             total_grid_power_w: Messwerte Total Grid (neueste zuletzt).
             other_phases_power_w: Messwerte Phase A+C Summe (neueste zuletzt).
             current_battery_output_w: Aktueller Batterie-Output.
+            battery_settled: True wenn der Inverter den letzten Setpoint erreicht hat.
+                Bei False wird Feedback eingefroren, nur Feedforward (A+C) aktualisiert.
 
         Returns:
             Batterie-Setpoint in Watt (int, begrenzt auf Batterie-Limits).
         """
-        # Feedback-Regelung auf Total Grid (primär)
-        feedback_output = self.battery_ctrl.calculate(
-            total_grid_power_w, current_battery_output_w
-        )
-
-        # Feedforward: Vorausschauende Kompensation bei A+C-Lastsprüngen
+        # Feedforward (Phase A+C): läuft immer – kein Stabilitätsproblem
         disturbance_ff = self.disturbance_ctrl.calculate(other_phases_power_w)
 
-        # Kombination: max() als stabile untere Schranke.
-        # Das Feedback allein konvergiert zu langsam (viele Zyklen bis zum
-        # Gleichgewicht), was den Oszillationsdetektor oft triggert und das
-        # Zielband verschlechtert. Der Feedforward-Floor stellt sicher, dass
-        # die Batterie mindestens den Fremdphasen-Bedarf deckt.
-        # Das Feedback kann darüber hinaus gehen (bei Gesamt-Einspeisung).
+        # Feedback (Phase B / Total): nur wenn Inverter am Setpoint angekommen
+        if battery_settled:
+            feedback_output = self.battery_ctrl.calculate(
+                total_grid_power_w, current_battery_output_w
+            )
+            self._last_battery_feedback = feedback_output
+        else:
+            feedback_output = self._last_battery_feedback
+            logger.debug(
+                "PhaseManager: Inverter nicht settled – Feedback eingefroren bei %.0fW",
+                feedback_output,
+            )
 
+        # Kombination: max() als stabile untere Schranke.
+        # Feedforward sorgt für schnelle Reaktion auf Fremdphasen-Lastsprünge.
+        # Feedback konvergiert langsamer, darf aber höher gehen (Gesamt-Einspeisung).
         total = max(feedback_output, disturbance_ff)
 
         # Batterie-Limits anwenden
-        clamped = int(round(max(
-            self.settings.min_output_w,
-            min(self.settings.max_output_w, total),
-        )))
+        clamped = int(
+            round(
+                max(
+                    self.settings.min_output_w,
+                    min(self.settings.max_output_w, total),
+                )
+            )
+        )
 
         # Minimum-Änderungs-Schwellwert: Ignoriere kleine Setpoint-Änderungen
         if abs(clamped - self._last_setpoint) < self.settings.min_change_w:
@@ -284,9 +297,10 @@ class PhaseManager:
             self._last_setpoint = clamped
 
         logger.debug(
-            "PhaseManager: feedback=%.0fW  ff=%.0fW → total=%.0fW → clamped=%dW",
+            "PhaseManager: feedback=%.0fW  ff=%.0fW  settled=%s → total=%.0fW → clamped=%dW",
             feedback_output,
             disturbance_ff,
+            battery_settled,
             total,
             clamped,
         )
@@ -298,22 +312,34 @@ class PhaseManager:
         total_grid_power_w: list[float],
         other_phases_power_w: list[float],
         current_battery_output_w: float,
+        battery_settled: bool = True,
     ) -> tuple[int, "PhaseManagerDebug"]:
         """Wie calculate(), gibt aber zusätzlich die Zwischenwerte zurück.
 
         Returns:
             (setpoint_w, PhaseManagerDebug)
         """
-        feedback_output = self.battery_ctrl.calculate(
-            total_grid_power_w, current_battery_output_w
-        )
+        # Feedforward (Phase A+C): läuft immer
         disturbance_ff = self.disturbance_ctrl.calculate(other_phases_power_w)
 
+        # Feedback (Phase B / Total): nur wenn Inverter settled
+        if battery_settled:
+            feedback_output = self.battery_ctrl.calculate(
+                total_grid_power_w, current_battery_output_w
+            )
+            self._last_battery_feedback = feedback_output
+        else:
+            feedback_output = self._last_battery_feedback
+
         total = max(feedback_output, disturbance_ff)
-        clamped = int(round(max(
-            self.settings.min_output_w,
-            min(self.settings.max_output_w, total),
-        )))
+        clamped = int(
+            round(
+                max(
+                    self.settings.min_output_w,
+                    min(self.settings.max_output_w, total),
+                )
+            )
+        )
         if abs(clamped - self._last_setpoint) < self.settings.min_change_w:
             clamped = int(self._last_setpoint)
         else:
@@ -334,4 +360,3 @@ class PhaseManagerDebug(NamedTuple):
     ff_output_w: float
     raw_setpoint_w: int
     """Setpoint vor Oszillations-Limit, aber nach Batterie-Limits und min_change."""
-

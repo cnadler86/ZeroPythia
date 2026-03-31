@@ -90,6 +90,10 @@ class BatteryInverter(Protocol):
         """Aktuelles Input-Limit."""
         ...
 
+    async def is_settled(self, *, use_cache: bool = True) -> Optional[bool]:
+        """True wenn Inverter-Output nahe am gesetzten Setpoint."""
+        ...
+
 
 # ── Datenklassen ─────────────────────────────────────────────────────────────
 
@@ -240,9 +244,7 @@ class ZeroFeedV3Controller:
 
         # Gesamt-Oszillationsdetektoren (auf Summe)
         self._total_detectors = PerPhaseOscillationDetectors(
-            holder=BaseloadHolder(settings.holder_settings)
-            if settings.holder_settings
-            else None,
+            holder=BaseloadHolder(settings.holder_settings) if settings.holder_settings else None,
             predictor=BaseloadPredictor(settings.predictor_settings)
             if settings.predictor_settings
             else None,
@@ -298,9 +300,7 @@ class ZeroFeedV3Controller:
         tasks = [t for t in (self._sampling_task, self._control_task) if t]
         if tasks:
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True), timeout=5.0
-                )
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=5.0)
             except asyncio.TimeoutError:
                 for t in tasks:
                     t.cancel()
@@ -350,21 +350,23 @@ class ZeroFeedV3Controller:
         if self._csv_logger is not None:
             det = self._phase_detectors
             tot = self._total_detectors
-            self._csv_logger.log_sample(SampleLogEntry(
-                unix_ts=sample.timestamp,
-                phase_a_w=sample.phase_a,
-                phase_b_w=sample.phase_b,
-                phase_c_w=sample.phase_c,
-                battery_output_w=sample.battery_output,
-                osc_A_oscillating=det["A"].is_oscillating,
-                osc_A_limit_w=det["A"].get_limit(),
-                osc_B_oscillating=det["B"].is_oscillating,
-                osc_B_limit_w=det["B"].get_limit(),
-                osc_C_oscillating=det["C"].is_oscillating,
-                osc_C_limit_w=det["C"].get_limit(),
-                osc_total_oscillating=tot.is_oscillating,
-                osc_total_limit_w=tot.get_limit(),
-            ))
+            self._csv_logger.log_sample(
+                SampleLogEntry(
+                    unix_ts=sample.timestamp,
+                    phase_a_w=sample.phase_a,
+                    phase_b_w=sample.phase_b,
+                    phase_c_w=sample.phase_c,
+                    battery_output_w=sample.battery_output,
+                    osc_A_oscillating=det["A"].is_oscillating,
+                    osc_A_limit_w=det["A"].get_limit(),
+                    osc_B_oscillating=det["B"].is_oscillating,
+                    osc_B_limit_w=det["B"].get_limit(),
+                    osc_C_oscillating=det["C"].is_oscillating,
+                    osc_C_limit_w=det["C"].get_limit(),
+                    osc_total_oscillating=tot.is_oscillating,
+                    osc_total_limit_w=tot.get_limit(),
+                )
+            )
 
     # ── Regelung durchführen (für Simulation von außen) ───────────────
 
@@ -408,11 +410,17 @@ class ZeroFeedV3Controller:
             osc_limit = min(osc_limit, total_limit)
             logger.debug("Total oszilliert, limit=%.0fW", total_limit)
 
+        # Settlement prüfen: Feedback-Regler nur aktualisieren wenn Inverter
+        # am vorherigen Setpoint angekommen ist. None (Fehler) = settled annehmen.
+        settled = await self.battery.is_settled(use_cache=True)
+        battery_settled = settled is not False
+
         # Phase Manager berechnet Setpoint + Zwischenwerte
         raw_setpoint, dbg = self.phase_manager.calculate_debug(
             total_grid_power_w=total_grid_history,
             other_phases_power_w=other_phases_history,
             current_battery_output_w=last_battery_output,
+            battery_settled=battery_settled,
         )
 
         # Oszillations-Limit anwenden
@@ -439,20 +447,19 @@ class ZeroFeedV3Controller:
         # CSV-Logging: control-Zeile schreiben
         if self._csv_logger is not None:
             import time as _time
-            ctrl_ts = (
-                self._last_sample.timestamp
-                if self._last_sample is not None
-                else _time.time()
+
+            ctrl_ts = self._last_sample.timestamp if self._last_sample is not None else _time.time()
+            self._csv_logger.log_control(
+                ControlLogEntry(
+                    unix_ts=ctrl_ts,
+                    feedback_output_w=dbg.feedback_output_w,
+                    ff_output_w=dbg.ff_output_w,
+                    raw_setpoint_w=dbg.raw_setpoint_w,
+                    osc_limit_w=osc_limit,
+                    final_setpoint_w=new_setpoint,
+                    setpoint_changed=changed,
+                )
             )
-            self._csv_logger.log_control(ControlLogEntry(
-                unix_ts=ctrl_ts,
-                feedback_output_w=dbg.feedback_output_w,
-                ff_output_w=dbg.ff_output_w,
-                raw_setpoint_w=dbg.raw_setpoint_w,
-                osc_limit_w=osc_limit,
-                final_setpoint_w=new_setpoint,
-                setpoint_changed=changed,
-            ))
 
         return new_setpoint if changed else None
 
@@ -503,9 +510,7 @@ class ZeroFeedV3Controller:
         """Langsame Regelung."""
         import time as time_mod
 
-        logger.info(
-            "Control-Loop gestartet (%.1fs)", self.settings.control_interval_s
-        )
+        logger.info("Control-Loop gestartet (%.1fs)", self.settings.control_interval_s)
         try:
             last_time = time_mod.time()
             while self._running:
@@ -535,7 +540,10 @@ class ZeroFeedV3Controller:
 
     @property
     def is_oscillating(self) -> bool:
-        return any(d.is_oscillating for d in self._phase_detectors.values()) or self._total_detectors.is_oscillating
+        return (
+            any(d.is_oscillating for d in self._phase_detectors.values())
+            or self._total_detectors.is_oscillating
+        )
 
     @property
     def is_running(self) -> bool:
