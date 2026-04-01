@@ -19,9 +19,9 @@ from typing import Dict, List
 
 from tqdm import tqdm
 
-from src.controller.phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
+from src.controller.phase_controller import (
+    InverterPhaseControllerSettings,
+    PhaseControllerSettings,
 )
 from src.controller.zerofeed_v3 import ZeroFeedV3Settings
 
@@ -185,17 +185,17 @@ class ParameterOptimizer:
 
             settings = ZeroFeedV3Settings(
                 manager=self.base_settings.manager,
-                disturbance=DisturbanceControllerSettings(
+                phase_controller=PhaseControllerSettings(
                     kp=d_kp,
                     hysteresis_w=hyst,
                     kp_hysteresis=0.3,
                 ),
-                battery_phase=BatteryPhaseControllerSettings(
+                inverter_controller=InverterPhaseControllerSettings(
                     kp_draw=kp_d,
                     kp_feed_in=kp_fi,
                     hysteresis_w=hyst,
                     kp_hysteresis=0.3,
-                    target_power_w=self.base_settings.battery_phase.target_power_w,
+                    target_power_w=self.base_settings.inverter_controller.target_power_w,
                 ),
                 holder_settings=self.base_settings.holder_settings,
                 predictor_settings=self.base_settings.predictor_settings,
@@ -211,21 +211,17 @@ class ParameterOptimizer:
         return results
 
     @staticmethod
-    def print_results(
-        results: List[OptimizationResult], top_n: int = 10
-    ) -> None:
+    def print_results(results: List[OptimizationResult], top_n: int = 10) -> None:
         """Druckt Top-N Ergebnisse."""
         print("\n" + "=" * 100)
         print(f"Top {min(top_n, len(results))} Parameterkonfigurationen")
         print("-" * 100)
-        print(
-            f"{'#':>3} {'Score':>7} {'Eff%':>6} {'Band%':>6} {'Export':>8} {'Parameter'}"
-        )
+        print(f"{'#':>3} {'Score':>7} {'Eff%':>6} {'Band%':>6} {'Export':>8} {'Parameter'}")
         print("-" * 100)
 
         for i, r in enumerate(results[:top_n]):
             print(
-                f"{i+1:>3} "
+                f"{i + 1:>3} "
                 f"{r.score:>6.1f} "
                 f"{r.mean_efficiency:>5.1f}% "
                 f"{r.mean_band_pct:>5.1f}% "

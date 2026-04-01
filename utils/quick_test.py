@@ -1,4 +1,5 @@
 """Quick test: batch simulate + optimize ZeroFeed V3."""
+
 import asyncio
 import sys
 from pathlib import Path
@@ -11,10 +12,10 @@ from src.controller.oscillation_detectorv2 import (
     BaseloadHolderSettings,
     BaseloadPredictorSettings,
 )
-from src.controller.phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
-    PhaseManagerSettings,
+from src.controller.phase_controller import (
+    InverterPhaseControllerSettings,
+    PhaseControllerSettings,
+    ZeroFeedManagerSettings,
 )
 from src.controller.zerofeed_v3 import ZeroFeedV3Settings
 
@@ -23,9 +24,11 @@ CSV_DIR = Path(__file__).parent.parent.parent.parent / "shelly_logger" / "Shelly
 
 def get_settings() -> ZeroFeedV3Settings:
     return ZeroFeedV3Settings(
-        manager=PhaseManagerSettings(min_output_w=20, max_output_w=800, target_total_grid_w=5.0),
-        disturbance=DisturbanceControllerSettings(kp=1.0, hysteresis_w=5.0),
-        battery_phase=BatteryPhaseControllerSettings(kp_draw=0.95, kp_feed_in=1.05, hysteresis_w=10.0, target_power_w=5.0),
+        manager=ZeroFeedManagerSettings(min_output_w=20, max_output_w=800),
+        phase_controller=PhaseControllerSettings(kp=1.0, hysteresis_w=5.0),
+        inverter_controller=InverterPhaseControllerSettings(
+            kp_draw=0.95, kp_feed_in=1.05, hysteresis_w=10.0, target_power_w=5.0
+        ),
         holder_settings=BaseloadHolderSettings(),
         predictor_settings=BaseloadPredictorSettings(),
         sampling_interval=1.0,

@@ -25,10 +25,10 @@ from typing import Optional
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
 from src.controller.csv_logger import ZeroFeedCSVLogger
-from src.controller.phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
-    PhaseManagerSettings,
+from src.controller.phase_controller import (
+    InverterPhaseControllerSettings,
+    PhaseControllerSettings,
+    ZeroFeedManagerSettings,
 )
 from src.controller.zerofeed_v3 import ZeroFeedV3Controller, ZeroFeedV3Settings
 
@@ -73,18 +73,15 @@ async def run(
     control_interval: float,
 ) -> None:
     settings = ZeroFeedV3Settings(
-        manager=PhaseManagerSettings(
+        manager=ZeroFeedManagerSettings(
             max_output_w=max_output,
             min_output_w=min_discharge,
         ),
-        battery_phase=BatteryPhaseControllerSettings(
+        inverter_controller=InverterPhaseControllerSettings(
             kp_draw=kp_draw,
             kp_feed_in=kp_feed_in,
-            max_output_w=float(max_output),
         ),
-        disturbance=DisturbanceControllerSettings(
-            max_compensation_w=float(max_output),
-        ),
+        phase_controller=PhaseControllerSettings(),
         control_interval_s=control_interval,
     )
 

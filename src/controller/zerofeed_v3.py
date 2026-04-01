@@ -1,28 +1,28 @@
 """Zero-Feed Controller V3 – Phasen-bewusste Nulleinspeisung.
+
 ===========================================================
 
 Architektur:
   1. Sampling-Loop (schnell, ~1s):
      - Liest alle 3 Phasen + Batterie-Output
-     - Speist pro-Phasen Oszillationserkennung
+     - Speist pro-Phasen Oszillationserkennung (gekapselt in Controllern)
      - Schreibt PhaseSamples in Queue
 
   2. Control-Loop (langsam, ~3s):
      - Liest PhaseSamples aus Queue
-     - Phase-Controller: Feedforward (A+C) + Feedback (total)
-     - Oszillations-Limits begrenzen maximalen Setpoint
-     - Setzt Batterie-Output
+     - Pro-Phase-Controller: je ein gekapselter Controller mit
+       Preprocessor, P-Regler und Oszillationsdetektoren
+     - ZeroFeedManager addiert Korrekturen → Batterie-Setpoint
 
-Oszillationserkennung:
-  - Pro Phase: BaseloadHolder (schnelle Schwingungen < 10s)
-  - Pro Phase: BaseloadPredictor (langsame periodische Lasten 8-120s)
-  - Liefern Limits: wenn Lastwechsel schneller als Totzeit → Grundlast halten
-  - Laufen mit Sampling-Rate für schnelle Erkennung
+  Pro-Phase-Controller:
+    - PhaseController (A, C): Feedforward – kompensiert Netzbezug
+    - InverterPhaseController (B): Feedback – regelt auf Total-Grid
+    - Jeder Controller liefert einen Korrekturwert inkl. Oszillations-Limit
 
-Verbesserung gegenüber V1/V2:
-  - Phasen-getrennte Regelung (nicht nur Summe)
-  - Feedforward auf Fremdphasen beschleunigt Reaktion
-  - Pro-Phase Oszillationserkennung (genauer als Summen-Erkennung)
+  ZeroFeedManager:
+    - Addiert alle Korrekturen
+    - Appliziert Batterie-Grenzen und Min-Change
+    - Optionaler Gesamt-Oszillationsdetektor als Sicherheitsnetz
 """
 
 import asyncio
@@ -32,17 +32,14 @@ from math import ceil
 from typing import Optional, Protocol
 
 from .csv_logger import ControlLogEntry, SampleLogEntry, ZeroFeedCSVLogger
-from .oscillation_detectorv2 import (
-    BaseloadHolder,
-    BaseloadHolderSettings,
-    BaseloadPredictor,
-    BaseloadPredictorSettings,
-)
-from .phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
-    PhaseManager,
-    PhaseManagerSettings,
+from .oscillation_detectorv2 import BaseloadHolderSettings, BaseloadPredictorSettings
+from .phase_controller import (
+    InverterPhaseController,
+    InverterPhaseControllerSettings,
+    PhaseController,
+    PhaseControllerSettings,
+    ZeroFeedManager,
+    ZeroFeedManagerSettings,
 )
 
 logger = logging.getLogger(__name__)
@@ -123,36 +120,6 @@ class PhaseSample:
         return self.total_grid + self.battery_output
 
 
-@dataclass
-class PerPhaseOscillationDetectors:
-    """Oszillationsdetektoren für eine einzelne Phase."""
-
-    holder: Optional[BaseloadHolder] = None
-    predictor: Optional[BaseloadPredictor] = None
-
-    @property
-    def is_oscillating(self) -> bool:
-        return (self.holder is not None and self.holder.is_oscillating) or (
-            self.predictor is not None and self.predictor.is_oscillating
-        )
-
-    def get_limit(self) -> float:
-        """Minimales Limit aller aktiven Detektoren."""
-        limits = []
-        if self.holder and self.holder.is_oscillating:
-            limits.append(self.holder.get_limit())
-        if self.predictor and self.predictor.is_oscillating:
-            limits.append(self.predictor.get_limit())
-        return min(limits) if limits else float("inf")
-
-    def add_sample(self, value: float, timestamp: float) -> None:
-        if value > 0:
-            if self.holder:
-                self.holder.add_sample(value, timestamp)
-            if self.predictor:
-                self.predictor.add_sample(value, timestamp)
-
-
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 
@@ -160,15 +127,13 @@ class PerPhaseOscillationDetectors:
 class ZeroFeedV3Settings:
     """Einstellungen für den Zero-Feed V3 Controller."""
 
-    # Phase Manager
-    manager: PhaseManagerSettings = field(default_factory=PhaseManagerSettings)
+    # Manager
+    manager: ZeroFeedManagerSettings = field(default_factory=ZeroFeedManagerSettings)
 
-    # Sub-Controller
-    disturbance: DisturbanceControllerSettings = field(
-        default_factory=DisturbanceControllerSettings
-    )
-    battery_phase: BatteryPhaseControllerSettings = field(
-        default_factory=BatteryPhaseControllerSettings
+    # Pro-Phase Controller
+    phase_controller: PhaseControllerSettings = field(default_factory=PhaseControllerSettings)
+    inverter_controller: InverterPhaseControllerSettings = field(
+        default_factory=InverterPhaseControllerSettings
     )
 
     # Oszillationserkennung (pro Phase)
@@ -185,10 +150,6 @@ class ZeroFeedV3Settings:
 
     control_interval_s: float = 3.0
     """Regelzyklus in Sekunden"""
-
-    # Fallbacks
-    base_load_w: float = 30.0
-    """Basis-Last Fallback in Watt"""
 
     def get_sample_queue_size(self) -> int:
         """Queue-Größe = Samples pro Regelzyklus + Puffer."""
@@ -223,31 +184,29 @@ class ZeroFeedV3Controller:
         self.battery = battery
         self._csv_logger = csv_logger
 
-        # Phase Manager (enthält Feedforward + Feedback Controller)
-        self.phase_manager = PhaseManager(
-            manager_settings=settings.manager,
-            disturbance_settings=settings.disturbance,
-            battery_phase_settings=settings.battery_phase,
+        # Gekapselte Phasen-Controller + Manager
+        phase_a = PhaseController(
+            settings=settings.phase_controller,
+            holder_settings=settings.holder_settings,
+            predictor_settings=settings.predictor_settings,
         )
-
-        # Pro-Phase Oszillationsdetektoren
-        self._phase_detectors: dict[str, PerPhaseOscillationDetectors] = {}
-        for phase_name in ("A", "B", "C"):
-            self._phase_detectors[phase_name] = PerPhaseOscillationDetectors(
-                holder=BaseloadHolder(settings.holder_settings)
-                if settings.holder_settings
-                else None,
-                predictor=BaseloadPredictor(settings.predictor_settings)
-                if settings.predictor_settings
-                else None,
-            )
-
-        # Gesamt-Oszillationsdetektoren (auf Summe)
-        self._total_detectors = PerPhaseOscillationDetectors(
-            holder=BaseloadHolder(settings.holder_settings) if settings.holder_settings else None,
-            predictor=BaseloadPredictor(settings.predictor_settings)
-            if settings.predictor_settings
-            else None,
+        phase_b = InverterPhaseController(
+            settings=settings.inverter_controller,
+            holder_settings=settings.holder_settings,
+            predictor_settings=settings.predictor_settings,
+        )
+        phase_c = PhaseController(
+            settings=settings.phase_controller,
+            holder_settings=settings.holder_settings,
+            predictor_settings=settings.predictor_settings,
+        )
+        self.manager = ZeroFeedManager(
+            manager_settings=settings.manager,
+            phase_a=phase_a,
+            phase_b=phase_b,
+            phase_c=phase_c,
+            total_holder_settings=settings.holder_settings,
+            total_predictor_settings=settings.predictor_settings,
         )
 
         # Sample Queue
@@ -330,26 +289,22 @@ class ZeroFeedV3Controller:
             except asyncio.QueueEmpty:
                 pass
 
-        # Pro-Phase Oszillationserkennung (läuft mit Sampling-Rate!)
-        real_a = sample.phase_a  # Phase A hat keine Batterie
-        real_c = sample.phase_c  # Phase C hat keine Batterie
-        real_b = sample.phase_b + sample.battery_output  # Phase B hat Batterie
+        # Pro-Phase Oszillationserkennung (gekapselt in Controllern)
+        self.manager._phase_a.add_sample(sample.phase_a, sample.timestamp)
+        self.manager._phase_b.add_sample(sample.phase_b, sample.battery_output, sample.timestamp)
+        self.manager._phase_c.add_sample(sample.phase_c, sample.timestamp)
 
-        self._phase_detectors["A"].add_sample(real_a, sample.timestamp)
-        self._phase_detectors["B"].add_sample(real_b, sample.timestamp)
-        self._phase_detectors["C"].add_sample(real_c, sample.timestamp)
-
-        # Gesamt-Oszillationserkennung
-        real_total = sample.real_consumption
-        self._total_detectors.add_sample(real_total, sample.timestamp)
+        # Gesamt-Oszillationserkennung (im Manager)
+        self.manager.add_total_sample(sample.real_consumption, sample.timestamp)
 
         # Letztes Sample merken für Logging
         self._last_sample = sample
 
         # CSV-Logging: sample-Zeile schreiben
         if self._csv_logger is not None:
-            det = self._phase_detectors
-            tot = self._total_detectors
+            pa = self.manager._phase_a
+            pb = self.manager._phase_b
+            pc = self.manager._phase_c
             self._csv_logger.log_sample(
                 SampleLogEntry(
                     unix_ts=sample.timestamp,
@@ -357,14 +312,14 @@ class ZeroFeedV3Controller:
                     phase_b_w=sample.phase_b,
                     phase_c_w=sample.phase_c,
                     battery_output_w=sample.battery_output,
-                    osc_A_oscillating=det["A"].is_oscillating,
-                    osc_A_limit_w=det["A"].get_limit(),
-                    osc_B_oscillating=det["B"].is_oscillating,
-                    osc_B_limit_w=det["B"].get_limit(),
-                    osc_C_oscillating=det["C"].is_oscillating,
-                    osc_C_limit_w=det["C"].get_limit(),
-                    osc_total_oscillating=tot.is_oscillating,
-                    osc_total_limit_w=tot.get_limit(),
+                    osc_A_oscillating=pa.is_oscillating,
+                    osc_A_limit_w=pa.get_osc_limit(),
+                    osc_B_oscillating=pb.is_oscillating,
+                    osc_B_limit_w=pb.get_osc_limit(),
+                    osc_C_oscillating=pc.is_oscillating,
+                    osc_C_limit_w=pc.get_osc_limit(),
+                    osc_total_oscillating=self.manager.total_is_oscillating,
+                    osc_total_limit_w=self.manager.get_total_osc_limit(),
                 )
             )
 
@@ -379,16 +334,18 @@ class ZeroFeedV3Controller:
         if self._sample_queue.empty():
             return None
 
-        # Samples aus Queue holen
+        # Samples aus Queue holen (pro Phase + Total)
+        phase_a_history: list[float] = []
+        phase_c_history: list[float] = []
         total_grid_history: list[float] = []
-        other_phases_history: list[float] = []
         last_battery_output: float = 0.0
 
         while not self._sample_queue.empty():
             try:
                 sample = self._sample_queue.get_nowait()
+                phase_a_history.append(sample.phase_a)
+                phase_c_history.append(sample.phase_c)
                 total_grid_history.append(sample.total_grid)
-                other_phases_history.append(sample.other_phases)
                 if sample.battery_output >= 0:
                     last_battery_output = sample.battery_output
             except asyncio.QueueEmpty:
@@ -397,35 +354,20 @@ class ZeroFeedV3Controller:
         if not total_grid_history:
             return None
 
-        # Oszillations-Limit berechnen (Minimum aller Detektoren)
-        osc_limit = float(self.settings.manager.max_output_w)
-        for name, det in self._phase_detectors.items():
-            if det.is_oscillating:
-                phase_limit = det.get_limit()
-                osc_limit = min(osc_limit, phase_limit)
-                logger.debug("Phase %s oszilliert, limit=%.0fW", name, phase_limit)
-
-        if self._total_detectors.is_oscillating:
-            total_limit = self._total_detectors.get_limit()
-            osc_limit = min(osc_limit, total_limit)
-            logger.debug("Total oszilliert, limit=%.0fW", total_limit)
-
         # Settlement prüfen: Feedback-Regler nur aktualisieren wenn Inverter
         # am vorherigen Setpoint angekommen ist. None (Fehler) = settled annehmen.
         settled = await self.battery.is_settled(use_cache=True)
         battery_settled = settled is not False
 
-        # Phase Manager berechnet Setpoint + Zwischenwerte
-        raw_setpoint, dbg = self.phase_manager.calculate_debug(
+        # Manager berechnet Setpoint (Oszillations-Limits pro Phase + Total)
+        new_setpoint, dbg = self.manager.calculate_debug(
+            phase_a_power_w=phase_a_history,
+            phase_c_power_w=phase_c_history,
             total_grid_power_w=total_grid_history,
-            other_phases_power_w=other_phases_history,
             current_battery_output_w=last_battery_output,
             battery_settled=battery_settled,
         )
-
-        # Oszillations-Limit anwenden
-        new_setpoint = min(raw_setpoint, int(osc_limit))
-        new_setpoint = max(self.settings.manager.min_output_w, new_setpoint)
+        osc_limit = dbg.osc_limit_w
 
         # Setpoint setzen wenn geändert
         changed = False
@@ -540,10 +482,7 @@ class ZeroFeedV3Controller:
 
     @property
     def is_oscillating(self) -> bool:
-        return (
-            any(d.is_oscillating for d in self._phase_detectors.values())
-            or self._total_detectors.is_oscillating
-        )
+        return self.manager.is_oscillating
 
     @property
     def is_running(self) -> bool:

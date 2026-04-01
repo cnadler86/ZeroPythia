@@ -39,10 +39,10 @@ from src.controller.oscillation_detectorv2 import (
     BaseloadHolderSettings,
     BaseloadPredictorSettings,
 )
-from src.controller.phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
-    PhaseManagerSettings,
+from src.controller.phase_controller import (
+    InverterPhaseControllerSettings,
+    PhaseControllerSettings,
+    ZeroFeedManagerSettings,
 )
 from src.controller.zerofeed_v3 import ZeroFeedV3Settings
 
@@ -70,18 +70,17 @@ class ZeroFeedV3GUI:
 
     def _create_default_settings(self) -> ZeroFeedV3Settings:
         return ZeroFeedV3Settings(
-            manager=PhaseManagerSettings(
+            manager=ZeroFeedManagerSettings(
                 min_output_w=20,
                 max_output_w=800,
-                target_total_grid_w=5.0,
                 min_change_w=3.0,
             ),
-            disturbance=DisturbanceControllerSettings(
+            phase_controller=PhaseControllerSettings(
                 kp=1.0,
                 hysteresis_w=5.0,
                 kp_hysteresis=0.3,
             ),
-            battery_phase=BatteryPhaseControllerSettings(
+            inverter_controller=InverterPhaseControllerSettings(
                 kp_draw=0.95,
                 kp_feed_in=1.05,
                 hysteresis_w=10.0,
@@ -143,15 +142,13 @@ class ZeroFeedV3GUI:
         ttk.Button(action_frame, text="Simulieren", command=self._run_simulation).pack(
             fill=tk.X, pady=2
         )
-        ttk.Button(
-            action_frame, text="Batch Simulieren", command=self._run_batch
-        ).pack(fill=tk.X, pady=2)
-        ttk.Button(
-            action_frame, text="Optimieren", command=self._run_optimization
-        ).pack(fill=tk.X, pady=2)
-        ttk.Button(action_frame, text="Reset", command=self._reset_params).pack(
+        ttk.Button(action_frame, text="Batch Simulieren", command=self._run_batch).pack(
             fill=tk.X, pady=2
         )
+        ttk.Button(action_frame, text="Optimieren", command=self._run_optimization).pack(
+            fill=tk.X, pady=2
+        )
+        ttk.Button(action_frame, text="Reset", command=self._reset_params).pack(fill=tk.X, pady=2)
 
         # === Right Panel: Plot + Stats ===
         right_frame = ttk.Frame(main_paned)
@@ -206,19 +203,15 @@ class ZeroFeedV3GUI:
 
             if group != current_group:
                 current_group = group
-                ttk.Separator(self._param_frame, orient="horizontal").pack(
-                    fill=tk.X, pady=5
+                ttk.Separator(self._param_frame, orient="horizontal").pack(fill=tk.X, pady=5)
+                ttk.Label(self._param_frame, text=group.upper(), font=("", 9, "bold")).pack(
+                    anchor="w", padx=5
                 )
-                ttk.Label(
-                    self._param_frame, text=group.upper(), font=("", 9, "bold")
-                ).pack(anchor="w", padx=5)
 
             row = ttk.Frame(self._param_frame)
             row.pack(fill=tk.X, padx=5, pady=1)
 
-            ttk.Label(row, text=short_name, width=25, anchor="w").pack(
-                side=tk.LEFT
-            )
+            ttk.Label(row, text=short_name, width=25, anchor="w").pack(side=tk.LEFT)
 
             var = tk.StringVar(value=str(value))
             self._param_entries[full_name] = var
@@ -274,9 +267,7 @@ class ZeroFeedV3GUI:
         )
         if files:
             self._csv_files = [Path(f) for f in files]
-            self._file_label.config(
-                text=f"{len(self._csv_files)} Datei(en) ausgewählt"
-            )
+            self._file_label.config(text=f"{len(self._csv_files)} Datei(en) ausgewählt")
 
     def _select_folder(self):
         folder = filedialog.askdirectory(
@@ -297,9 +288,7 @@ class ZeroFeedV3GUI:
                         filtered.append(f)
             if filtered:
                 self._csv_files = filtered
-            self._file_label.config(
-                text=f"{len(self._csv_files)} Datei(en) in {folder_path.name}"
-            )
+            self._file_label.config(text=f"{len(self._csv_files)} Datei(en) in {folder_path.name}")
 
     def _run_simulation(self):
         """Simuliert die erste ausgewählte Datei."""
@@ -389,12 +378,8 @@ class ZeroFeedV3GUI:
             self._plot_result(result, stats)
 
             # Zusammenfassung
-            mean_eff = sum(s.efficiency_pct for _, s in self._results) / len(
-                self._results
-            )
-            mean_band = sum(s.time_in_band_pct for _, s in self._results) / len(
-                self._results
-            )
+            mean_eff = sum(s.efficiency_pct for _, s in self._results) / len(self._results)
+            mean_band = sum(s.time_in_band_pct for _, s in self._results) / len(self._results)
             self._stats_text.insert(
                 tk.END,
                 f"\nGesamt: Ø Eff={mean_eff:.1f}%  Ø Band={mean_band:.1f}%\n",
@@ -436,7 +421,7 @@ class ZeroFeedV3GUI:
         for i, r in enumerate(results[:10]):
             self._stats_text.insert(
                 tk.END,
-                f"#{i+1} Score={r.score:.1f}  "
+                f"#{i + 1} Score={r.score:.1f}  "
                 f"Eff={r.mean_efficiency:.1f}%  "
                 f"Band={r.mean_band_pct:.1f}%  "
                 f"Export={r.total_export_wh:.0f}Wh\n"
@@ -448,9 +433,7 @@ class ZeroFeedV3GUI:
             best = results[0]
             self.settings = best.settings
             self._populate_params()
-            self._stats_text.insert(
-                tk.END, "\n→ Beste Parameter übernommen!\n"
-            )
+            self._stats_text.insert(tk.END, "\n→ Beste Parameter übernommen!\n")
 
     def _plot_result(self, result: SimulationResult, stats: Statistics):
         """Plottet Simulationsergebnis."""
@@ -484,14 +467,16 @@ class ZeroFeedV3GUI:
         ax1.grid(True, alpha=0.3)
 
         # --- Plot 2: Battery Output + Setpoint ---
+        ax2.plot(t_h, result.battery_output, label="Battery Output", color="orange", linewidth=0.8)
+        ax2.plot(t_h, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7)
         ax2.plot(
-            t_h, result.battery_output, label="Battery Output", color="orange", linewidth=0.8
-        )
-        ax2.plot(
-            t_h, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7
-        )
-        ax2.plot(
-            t_h, result.osc_limits, label="Osc Limit", color="red", linewidth=0.8, alpha=0.5, linestyle="--"
+            t_h,
+            result.osc_limits,
+            label="Osc Limit",
+            color="red",
+            linewidth=0.8,
+            alpha=0.5,
+            linestyle="--",
         )
         ax2.set_ylabel("Power [W]")
         ax2.legend(loc="upper right", fontsize=7)

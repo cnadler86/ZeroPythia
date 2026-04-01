@@ -17,10 +17,10 @@ from src.controller.oscillation_detectorv2 import (
     BaseloadHolderSettings,
     BaseloadPredictorSettings,
 )
-from src.controller.phase_controllers import (
-    BatteryPhaseControllerSettings,
-    DisturbanceControllerSettings,
-    PhaseManagerSettings,
+from src.controller.phase_controller import (
+    InverterPhaseControllerSettings,
+    PhaseControllerSettings,
+    ZeroFeedManagerSettings,
 )
 from src.controller.zerofeed_v3 import ZeroFeedV3Settings
 
@@ -29,9 +29,9 @@ CSV_DIR = Path(__file__).parent.parent.parent.parent / "shelly_logger" / "Shelly
 
 def make_settings(kp_draw, kp_feed_in, dist_kp, hyst) -> ZeroFeedV3Settings:
     return ZeroFeedV3Settings(
-        manager=PhaseManagerSettings(min_output_w=20, max_output_w=800, target_total_grid_w=5.0),
-        disturbance=DisturbanceControllerSettings(kp=dist_kp, hysteresis_w=hyst, kp_hysteresis=0.3),
-        battery_phase=BatteryPhaseControllerSettings(
+        manager=ZeroFeedManagerSettings(min_output_w=20, max_output_w=800),
+        phase_controller=PhaseControllerSettings(kp=dist_kp, hysteresis_w=hyst, kp_hysteresis=0.3),
+        inverter_controller=InverterPhaseControllerSettings(
             kp_draw=kp_draw,
             kp_feed_in=kp_feed_in,
             hysteresis_w=hyst,

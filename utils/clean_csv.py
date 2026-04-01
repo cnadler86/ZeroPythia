@@ -1,4 +1,5 @@
 """CSV-Daten bereinigen.
+
 =====================
 
 Liest alle Shelly-CSV-Dateien, bereinigt sie und überschreibt die Originale.

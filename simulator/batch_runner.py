@@ -244,11 +244,11 @@ async def run_simulation(
 
         # Oszillations-Limit
         osc_lim = float(settings.manager.max_output_w)
-        for det in controller._phase_detectors.values():
-            if det.is_oscillating:
-                osc_lim = min(osc_lim, det.get_limit())
-        if controller._total_detectors.is_oscillating:
-            osc_lim = min(osc_lim, controller._total_detectors.get_limit())
+        for name, ctrl in controller.manager.phases.items():
+            if ctrl.is_oscillating:
+                osc_lim = min(osc_lim, ctrl.get_osc_limit())
+        if controller.manager.total_is_oscillating:
+            osc_lim = min(osc_lim, controller.manager.get_total_osc_limit())
         result.osc_limits.append(osc_lim)
 
     return result
@@ -336,7 +336,9 @@ class BatchRunner:
             return
 
         print("\n" + "=" * 90)
-        print(f"{'Datei':<35} {'Mean':>8} {'Std':>8} {'Band%':>6} {'Eff%':>6} {'Osc%':>6} {'Import':>10} {'Export':>10}")
+        print(
+            f"{'Datei':<35} {'Mean':>8} {'Std':>8} {'Band%':>6} {'Eff%':>6} {'Osc%':>6} {'Import':>10} {'Export':>10}"
+        )
         print("-" * 90)
 
         total_import = 0.0
@@ -359,9 +361,7 @@ class BatchRunner:
             total_battery += stats.total_battery_wh
 
         print("-" * 90)
-        total_eff = (
-            (total_battery / max(total_battery + total_import, 1)) * 100
-        )
+        total_eff = (total_battery / max(total_battery + total_import, 1)) * 100
         print(
             f"{'GESAMT':<35} {'':>8} {'':>8} {'':>6} {total_eff:>5.0f}% {'':>6} "
             f"{total_import:>9.0f} {total_export:>9.0f}"
