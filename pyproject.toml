@@ -11,10 +11,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "matplotlib>=3.10.8",
-    "ruff>=0.15.8",
-    "tqdm>=4.67.3",
-    "ty>=0.0.26",
+    "matplotlib",
+    "ruff",
+    "tqdm",
+    "ty",
 ]
 
 [build-system]
