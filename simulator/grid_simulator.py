@@ -1,4 +1,5 @@
 """Grid Simulator – Virtueller Shelly aus CSV + Zendure-Mock-Kopplung.
+
 ===================================================================
 
 Lädt Shelly-CSV-Daten und stellt sie als virtuellen Shelly bereit.
@@ -209,8 +210,7 @@ class GridSimulator:
 
         # Schneller Forward-Scan ab letztem Index
         while (
-            self._index < len(self._records) - 1
-            and self._records[self._index + 1].timestamp <= t
+            self._index < len(self._records) - 1 and self._records[self._index + 1].timestamp <= t
         ):
             self._index += 1
 
@@ -247,9 +247,7 @@ class GridSimulator:
             return None
         return sum(phases)
 
-    def get_records_in_range(
-        self, start: float, end: float
-    ) -> List[PhaseRecord]:
+    def get_records_in_range(self, start: float, end: float) -> List[PhaseRecord]:
         """Gibt Records im Zeitbereich [start, end] zurück."""
         result = []
         for rec in self._records:

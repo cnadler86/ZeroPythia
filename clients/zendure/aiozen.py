@@ -1,5 +1,4 @@
 """Async SolarFlow Client - Lokale HTTP API (HAL Implementation).
-==============================================================
 
 Asynchroner Client für Zendure SolarFlow Geräte.
 Implementiert Hardware Abstraction Layer (HAL) mit aiohttp.
@@ -114,9 +113,7 @@ class SolarFlowAsyncClient(SolarFlowBase):
             payload = self._prepare_properties_payload(properties, smart_mode)
 
             session = await self._ensure_session()
-            async with session.post(
-                f"{self._base_url}/properties/write", json=payload
-            ) as response:
+            async with session.post(f"{self._base_url}/properties/write", json=payload) as response:
                 self._invalidate_cache()
                 return response.status == 200
 

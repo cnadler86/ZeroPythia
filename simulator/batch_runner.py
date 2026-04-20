@@ -1,4 +1,5 @@
 """Batch Runner – Simulation über alle CSV-Dateien.
+
 =================================================
 
 Führt den ZeroFeed V3 Controller mit Grid Simulator durch und
