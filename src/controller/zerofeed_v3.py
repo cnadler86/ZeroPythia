@@ -1,7 +1,5 @@
 """Zero-Feed Controller V3 – Phasen-bewusste Nulleinspeisung.
 
-===========================================================
-
 Architektur:
   1. Sampling-Loop (schnell, ~1s):
      - Liest alle 3 Phasen + Batterie-Output
@@ -19,10 +17,10 @@ Architektur:
     - InverterPhaseController (B): Feedback – regelt auf Total-Grid
     - Jeder Controller liefert einen Korrekturwert inkl. Oszillations-Limit
 
-  ZeroFeedManager:
+ZeroFeedManager:
     - Addiert alle Korrekturen
-    - Appliziert Batterie-Grenzen und Min-Change
-    - Optionaler Gesamt-Oszillationsdetektor als Sicherheitsnetz
+    - Appliziert Gesamt-Oszillationslimit
+    - Batterie-Grenzen werden ganz am Ende im Control-Loop angewandt
 """
 
 import asyncio
@@ -108,11 +106,6 @@ class PhaseSample:
     @property
     def total_grid(self) -> float:
         return self.phase_a + self.phase_b + self.phase_c
-
-    @property
-    def other_phases(self) -> float:
-        """Summe der Fremdphasen (A + C)."""
-        return self.phase_a + self.phase_c
 
     @property
     def real_consumption(self) -> float:
@@ -323,6 +316,20 @@ class ZeroFeedV3Controller:
                 )
             )
 
+    def needs_fast_recontrol(self, sample: PhaseSample, eps_w: float = 0.5) -> bool:
+        """True wenn gehaltene Feedforward-Korrektur für aktuelles Sample zu hoch ist.
+
+        Das verhindert kurze Einspeise-Spikes zwischen zwei regulären
+        Regelzyklen, wenn die Last auf Phase A/C schnell fällt.
+        """
+        target = self.settings.manager.target_power_w
+        max_a = max(sample.phase_a - target, 0.0)
+        max_c = max(sample.phase_c - target, 0.0)
+
+        a_too_high = self.manager._phase_a.last_output > max_a + eps_w
+        c_too_high = self.manager._phase_c.last_output > max_c + eps_w
+        return a_too_high or c_too_high
+
     # ── Regelung durchführen (für Simulation von außen) ───────────────
 
     async def perform_control(self) -> Optional[int]:
@@ -359,8 +366,8 @@ class ZeroFeedV3Controller:
         settled = await self.battery.is_settled(use_cache=True)
         battery_settled = settled is not False
 
-        # Manager berechnet Setpoint (Oszillations-Limits pro Phase + Total)
-        new_setpoint, dbg = self.manager.calculate_debug(
+        # Manager berechnet Ziel-Leistung (ohne Batterie-Min/Max)
+        target_output_w, dbg = self.manager.calculate_debug(
             phase_a_power_w=phase_a_history,
             phase_c_power_w=phase_c_history,
             total_grid_power_w=total_grid_history,
@@ -368,6 +375,16 @@ class ZeroFeedV3Controller:
             battery_settled=battery_settled,
         )
         osc_limit = dbg.osc_limit_w
+
+        # Batterie-Grenzen ganz am Ende anwenden
+        new_setpoint = int(
+            round(
+                max(
+                    self.settings.manager.min_output_w,
+                    min(self.settings.manager.max_output_w, target_output_w),
+                )
+            )
+        )
 
         # Setpoint setzen wenn geändert
         changed = False
@@ -379,10 +396,11 @@ class ZeroFeedV3Controller:
                 self._last_set_time = asyncio.get_event_loop().time()
                 changed = True
                 logger.info(
-                    "Setpoint: %dW → %dW (Δ=%+dW, osc_limit=%.0fW)",
+                    "Setpoint: %dW → %dW (Δ=%+dW, target=%.0fW, osc_limit=%.0fW)",
                     old,
                     new_setpoint,
                     new_setpoint - old,
+                    target_output_w,
                     osc_limit,
                 )
 
@@ -438,6 +456,11 @@ class ZeroFeedV3Controller:
                         battery_output=float(output),
                     )
                     await self.add_sample(sample)
+
+                    # Zusätzlich zum festen Control-Takt sofort nachregeln,
+                    # wenn A/C-Korrekturen für das aktuelle Sample zu hoch sind.
+                    if self.needs_fast_recontrol(sample):
+                        await self.perform_control()
 
                 except Exception as e:
                     logger.error("Sampling-Fehler: %s", e, exc_info=True)

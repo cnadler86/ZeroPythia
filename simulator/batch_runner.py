@@ -9,12 +9,17 @@ sammelt Statistiken für Parameter-Optimierung.
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, cast
 
 from tqdm import tqdm
 
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
-from src.controller.zerofeed_v3 import PhaseSample, ZeroFeedV3Controller, ZeroFeedV3Settings
+from src.controller.zerofeed_v3 import (
+    BatteryInverter,
+    PhaseSample,
+    ZeroFeedV3Controller,
+    ZeroFeedV3Settings,
+)
 
 from .grid_simulator import GridSimulator, PhaseRecord, clean_csv_data, load_csv
 
@@ -38,6 +43,13 @@ class SimulationResult:
     battery_output: List[float] = field(default_factory=list)
     setpoints: List[float] = field(default_factory=list)
     osc_limits: List[float] = field(default_factory=list)
+    phase_a_correction: List[float] = field(default_factory=list)
+    phase_b_correction: List[float] = field(default_factory=list)
+    phase_c_correction: List[float] = field(default_factory=list)
+    phase_b_desired_total: List[float] = field(default_factory=list)
+    phase_a_osc_limit: List[float] = field(default_factory=list)
+    phase_b_osc_limit: List[float] = field(default_factory=list)
+    phase_c_osc_limit: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -171,7 +183,7 @@ async def run_simulation(
     controller = ZeroFeedV3Controller(
         settings=settings,
         grid_meter=grid_sim,
-        battery=battery,
+        battery=cast(BatteryInverter, battery),
     )
 
     # Ergebnis-Listen
@@ -229,8 +241,11 @@ async def run_simulation(
         # Oszillationserkennung (mit Sampling-Rate)
         await controller.add_sample(sample)
 
-        # Regelung (mit Control-Rate)
-        if sim_time - last_control_time >= control_interval:
+        # Regelung: regulärer Takt + schneller Schutz bei drohender Überkompensation
+        if (
+            controller.needs_fast_recontrol(sample)
+            or sim_time - last_control_time >= control_interval
+        ):
             await controller.perform_control()
             last_control_time = sim_time
 
@@ -242,10 +257,17 @@ async def run_simulation(
         result.phase_c.append(phase_c)
         result.battery_output.append(float(output_power))
         result.setpoints.append(float(controller.current_output_limit))
+        result.phase_a_correction.append(controller.manager._phase_a.last_output)
+        result.phase_b_correction.append(controller.manager._phase_b.last_output)
+        result.phase_c_correction.append(controller.manager._phase_c.last_output)
+        result.phase_b_desired_total.append(controller.manager._phase_b.last_desired_total)
+        result.phase_a_osc_limit.append(controller.manager._phase_a.last_osc_limit)
+        result.phase_b_osc_limit.append(controller.manager._phase_b.last_osc_limit)
+        result.phase_c_osc_limit.append(controller.manager._phase_c.last_osc_limit)
 
         # Oszillations-Limit
         osc_lim = float(settings.manager.max_output_w)
-        for name, ctrl in controller.manager.phases.items():
+        for ctrl in controller.manager.phases.values():
             if ctrl.is_oscillating:
                 osc_lim = min(osc_lim, ctrl.get_osc_limit())
         if controller.manager.total_is_oscillating:

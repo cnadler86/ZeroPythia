@@ -1,4 +1,5 @@
 """ZeroFeed V3 Analyse-GUI.
+
 =========================
 
 GUI für den ZeroFeed V3 Controller mit:
@@ -11,14 +12,17 @@ GUI für den ZeroFeed V3 Controller mit:
 
 import asyncio
 import logging
+import math
 import sys
 import tkinter as tk
 from dataclasses import fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib
+import matplotlib.dates as mdates
 
 matplotlib.use("TkAgg")
 from matplotlib.backends._backend_tk import NavigationToolbar2Tk
@@ -64,6 +68,8 @@ class ZeroFeedV3GUI:
         self._current_stats: Optional[Statistics] = None
 
         self._param_entries: Dict[str, tk.StringVar] = {}
+        self._plot_figures: Dict[str, Figure] = {}
+        self._plot_canvases: Dict[str, FigureCanvasTkAgg] = {}
 
         self._create_widgets()
         self._populate_params()
@@ -73,7 +79,7 @@ class ZeroFeedV3GUI:
             manager=ZeroFeedManagerSettings(
                 min_output_w=20,
                 max_output_w=800,
-                min_change_w=3.0,
+                target_power_w=3.0,
             ),
             phase_controller=PhaseControllerSettings(
                 kp=1.0,
@@ -85,7 +91,7 @@ class ZeroFeedV3GUI:
                 kp_feed_in=1.05,
                 hysteresis_w=10.0,
                 kp_hysteresis=0.3,
-                target_power_w=5.0,
+                target_power_w=3.0,
             ),
             holder_settings=BaseloadHolderSettings(),
             predictor_settings=BaseloadPredictorSettings(),
@@ -154,14 +160,14 @@ class ZeroFeedV3GUI:
         right_frame = ttk.Frame(main_paned)
         main_paned.add(right_frame, weight=1)
 
-        # Plot
-        self._fig = Figure(figsize=(10, 7), dpi=100)
-        self._canvas = FigureCanvasTkAgg(self._fig, master=right_frame)
-        self._canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # Plot-Tabs
+        self._plot_tabs = ttk.Notebook(right_frame)
+        self._plot_tabs.pack(fill=tk.BOTH, expand=True)
 
-        toolbar = NavigationToolbar2Tk(self._canvas, right_frame)
-        toolbar.update()
-        toolbar.pack(fill=tk.X)
+        self._create_plot_tab("A", "Phase A")
+        self._create_plot_tab("B", "Phase B")
+        self._create_plot_tab("C", "Phase C")
+        self._create_plot_tab("ALL", "Alles")
 
         # Stats
         stats_frame = ttk.LabelFrame(right_frame, text="Statistiken")
@@ -169,6 +175,21 @@ class ZeroFeedV3GUI:
 
         self._stats_text = tk.Text(stats_frame, height=6, font=("Consolas", 9))
         self._stats_text.pack(fill=tk.X, padx=5, pady=5)
+
+    def _create_plot_tab(self, key: str, title: str) -> None:
+        tab = ttk.Frame(self._plot_tabs)
+        self._plot_tabs.add(tab, text=title)
+
+        fig = Figure(figsize=(10, 7), dpi=100)
+        canvas = FigureCanvasTkAgg(fig, master=tab)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        toolbar = NavigationToolbar2Tk(canvas, tab)
+        toolbar.update()
+        toolbar.pack(fill=tk.X)
+
+        self._plot_figures[key] = fig
+        self._plot_canvases[key] = canvas
 
     def _extract_fields(self, obj: Any, prefix: str = "") -> List[Tuple[str, str, Any, type]]:
         """Extrahiert alle Felder aus einem Dataclass (rekursiv)."""
@@ -436,41 +457,217 @@ class ZeroFeedV3GUI:
             self._stats_text.insert(tk.END, "\n→ Beste Parameter übernommen!\n")
 
     def _plot_result(self, result: SimulationResult, stats: Statistics):
-        """Plottet Simulationsergebnis."""
-        self._fig.clear()
-
+        """Plottet Simulationsergebnis in allen Reitern."""
         if not result.timestamps:
             return
 
-        # Zeitachse in Stunden ab Start
-        t0 = result.timestamps[0]
-        t_h = [(t - t0) / 3600 for t in result.timestamps]
+        # Zeitachse als echte Datetime für lesbare Uhrzeiten
+        t_axis = [datetime.fromtimestamp(t) for t in result.timestamps]
+
+        self._plot_phase_tab(
+            key="A",
+            title=f"{result.csv_file} - Phase A",
+            t_axis=t_axis,
+            phase_values=result.phase_a,
+            correction_values=result.phase_a_correction,
+            osc_limits=result.phase_a_osc_limit,
+            controlled_grid_values=[
+                p - c for p, c in zip(result.phase_a, result.phase_a_correction)
+            ],
+            controlled_label="Geregeltes Grid A",
+        )
+        self._plot_phase_b_tab(result=result, t_axis=t_axis)
+        self._plot_phase_tab(
+            key="C",
+            title=f"{result.csv_file} - Phase C",
+            t_axis=t_axis,
+            phase_values=result.phase_c,
+            correction_values=result.phase_c_correction,
+            osc_limits=result.phase_c_osc_limit,
+            controlled_grid_values=[
+                p - c for p, c in zip(result.phase_c, result.phase_c_correction)
+            ],
+            controlled_label="Geregeltes Grid C",
+        )
+        self._plot_all_tab(result=result, stats=stats, t_axis=t_axis)
+
+    def _plot_phase_tab(
+        self,
+        key: str,
+        title: str,
+        t_axis: List[datetime],
+        phase_values: List[float],
+        correction_values: List[float],
+        osc_limits: List[float],
+        controlled_grid_values: List[float],
+        controlled_label: str,
+    ) -> None:
+        fig = self._plot_figures[key]
+        fig.clear()
+
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax2 = fig.add_subplot(2, 1, 2, sharex=ax1)
+
+        target_w = self.settings.manager.target_power_w
+        osc_active = [math.isfinite(v) for v in osc_limits]
+        self._shade_oscillation_regions(ax1, t_axis, osc_active)
+        self._shade_oscillation_regions(ax2, t_axis, osc_active)
+
+        ax1.plot(
+            t_axis,
+            phase_values,
+            label=f"CSV-Grid {key}",
+            color="#1f4e79",
+            linewidth=1.2,
+        )
+        ax1.plot(
+            t_axis,
+            correction_values,
+            label=f"Controller-Correction {key}",
+            color="#d97706",
+            linewidth=1.1,
+        )
+        ax1.axhline(y=0, color="red", linestyle="--", alpha=0.3)
+        ax1.set_ylabel("Leistung [W]")
+        ax1.set_title(title)
+        ax1.legend(loc="upper right", fontsize=8)
+        ax1.grid(True, alpha=0.22)
+
+        ax2.plot(
+            t_axis,
+            controlled_grid_values,
+            label=controlled_label,
+            color="#0f766e",
+            linewidth=1.2,
+        )
+        ax2.axhline(y=target_w, color="#15803d", linestyle="--", alpha=0.7, label="Zielwert")
+        ax2.axhline(y=0, color="red", linestyle="--", alpha=0.22)
+        ax2.set_ylabel("Leistung [W]")
+        ax2.set_xlabel("Uhrzeit")
+        ax2.legend(loc="upper right", fontsize=8)
+        ax2.grid(True, alpha=0.22)
+        self._format_time_axis(ax2)
+        self._bind_lower_autoscale_on_zoom(
+            fig=fig,
+            ax_top=ax1,
+            ax_bottom=ax2,
+            t_axis=t_axis,
+            y_series=[controlled_grid_values],
+            reference_lines=[target_w, 0.0],
+        )
+
+        fig.tight_layout()
+        self._plot_canvases[key].draw()
+
+    def _plot_phase_b_tab(self, result: SimulationResult, t_axis: List[datetime]) -> None:
+        key = "B"
+        fig = self._plot_figures[key]
+        fig.clear()
+
+        ax1 = fig.add_subplot(2, 1, 1)
+        ax2 = fig.add_subplot(2, 1, 2, sharex=ax1)
+
+        target_w = self.settings.manager.target_power_w
+        osc_active = [math.isfinite(v) for v in result.phase_b_osc_limit]
+        controlled_total_grid = [
+            g - c for g, c in zip(result.grid_total, result.phase_b_correction)
+        ]
+
+        self._shade_oscillation_regions(ax1, t_axis, osc_active)
+        self._shade_oscillation_regions(ax2, t_axis, osc_active)
+
+        ax1.plot(t_axis, result.phase_b, label="CSV-Grid B", color="#1f4e79", linewidth=1.2)
+        ax1.plot(
+            t_axis,
+            result.phase_b_correction,
+            label="Controller-Correction B",
+            color="#d97706",
+            linewidth=1.1,
+        )
+        ax1.axhline(y=0, color="red", linestyle="--", alpha=0.3)
+        ax1.set_ylabel("Leistung [W]")
+        ax1.set_title(f"{result.csv_file} - Phase B")
+        ax1.legend(loc="upper right", fontsize=8)
+        ax1.grid(True, alpha=0.22)
+
+        ax2.plot(
+            t_axis,
+            controlled_total_grid,
+            label="Geregeltes Total-Grid durch Regler B",
+            color="#0f766e",
+            linewidth=1.2,
+        )
+        ax2.plot(
+            t_axis,
+            result.grid_total,
+            label="Ist-Total-Grid",
+            color="#6b7280",
+            linewidth=0.9,
+            alpha=0.65,
+        )
+        ax2.axhline(y=target_w, color="#15803d", linestyle="--", alpha=0.7, label="Zielwert")
+        ax2.axhline(y=0, color="red", linestyle="--", alpha=0.22)
+        ax2.set_ylabel("Leistung [W]")
+        ax2.set_xlabel("Uhrzeit")
+        ax2.legend(loc="upper right", fontsize=8)
+        ax2.grid(True, alpha=0.22)
+        self._format_time_axis(ax2)
+        self._bind_lower_autoscale_on_zoom(
+            fig=fig,
+            ax_top=ax1,
+            ax_bottom=ax2,
+            t_axis=t_axis,
+            y_series=[controlled_total_grid, result.grid_total],
+            reference_lines=[target_w, 0.0],
+        )
+
+        fig.tight_layout()
+        self._plot_canvases[key].draw()
+
+    def _plot_all_tab(
+        self, result: SimulationResult, stats: Statistics, t_axis: List[datetime]
+    ) -> None:
+        fig = self._plot_figures["ALL"]
+        fig.clear()
 
         # 3 Subplots
-        ax1 = self._fig.add_subplot(3, 1, 1)
-        ax2 = self._fig.add_subplot(3, 1, 2, sharex=ax1)
-        ax3 = self._fig.add_subplot(3, 1, 3, sharex=ax1)
+        ax1 = fig.add_subplot(3, 1, 1)
+        ax2 = fig.add_subplot(3, 1, 2, sharex=ax1)
+        ax3 = fig.add_subplot(3, 1, 3, sharex=ax1)
+
+        osc_active = [v < self.settings.manager.max_output_w for v in result.osc_limits]
+        self._shade_oscillation_regions(ax1, t_axis, osc_active)
+        self._shade_oscillation_regions(ax2, t_axis, osc_active)
 
         # --- Plot 1: Grid Power (3 Phasen + Total) ---
-        ax1.plot(t_h, result.phase_a, label="Phase A", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_h, result.phase_b, label="Phase B", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_h, result.phase_c, label="Phase C", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_h, result.grid_total, label="Total", color="black", linewidth=1.0)
-        ax1.axhline(y=5, color="green", linestyle="--", alpha=0.5, label="Ziel (5W)")
+        ax1.plot(t_axis, result.phase_a, label="Phase A", alpha=0.6, linewidth=0.5)
+        ax1.plot(t_axis, result.phase_b, label="Phase B", alpha=0.6, linewidth=0.5)
+        ax1.plot(t_axis, result.phase_c, label="Phase C", alpha=0.6, linewidth=0.5)
+        ax1.plot(t_axis, result.grid_total, label="Total", color="black", linewidth=1.0)
+        target_w = self.settings.manager.target_power_w
+        ax1.axhline(
+            y=target_w, color="green", linestyle="--", alpha=0.5, label=f"Ziel ({target_w:.0f}W)"
+        )
         ax1.axhline(y=0, color="red", linestyle="--", alpha=0.3)
         ax1.set_ylabel("Grid Power [W]")
         ax1.set_title(
-            f"{result.csv_file} — Mean={stats.mean_grid_w:+.1f}W  "
+            f"{result.csv_file} - Mean={stats.mean_grid_w:+.1f}W  "
             f"Band={stats.time_in_band_pct:.0f}%  Eff={stats.efficiency_pct:.0f}%"
         )
         ax1.legend(loc="upper right", fontsize=7)
-        ax1.grid(True, alpha=0.3)
+        ax1.grid(True, alpha=0.22)
 
         # --- Plot 2: Battery Output + Setpoint ---
-        ax2.plot(t_h, result.battery_output, label="Battery Output", color="orange", linewidth=0.8)
-        ax2.plot(t_h, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7)
         ax2.plot(
-            t_h,
+            t_axis,
+            result.battery_output,
+            label="Battery Output",
+            color="orange",
+            linewidth=0.8,
+        )
+        ax2.plot(t_axis, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7)
+        ax2.plot(
+            t_axis,
             result.osc_limits,
             label="Osc Limit",
             color="red",
@@ -480,7 +677,7 @@ class ZeroFeedV3GUI:
         )
         ax2.set_ylabel("Power [W]")
         ax2.legend(loc="upper right", fontsize=7)
-        ax2.grid(True, alpha=0.3)
+        ax2.grid(True, alpha=0.22)
 
         # --- Plot 3: Cumulative Energy ---
         import_wh = []
@@ -504,16 +701,85 @@ class ZeroFeedV3GUI:
             export_wh.append(cum_export)
             battery_wh.append(cum_battery)
 
-        ax3.plot(t_h, import_wh, label="Import", color="red")
-        ax3.plot(t_h, export_wh, label="Export", color="green")
-        ax3.plot(t_h, battery_wh, label="Batterie", color="orange")
+        ax3.plot(t_axis, import_wh, label="Import", color="red")
+        ax3.plot(t_axis, export_wh, label="Export", color="green")
+        ax3.plot(t_axis, battery_wh, label="Batterie", color="orange")
         ax3.set_ylabel("Energie [Wh]")
-        ax3.set_xlabel("Zeit [h]")
+        ax3.set_xlabel("Uhrzeit")
         ax3.legend(loc="upper left", fontsize=7)
-        ax3.grid(True, alpha=0.3)
+        ax3.grid(True, alpha=0.22)
+        self._format_time_axis(ax3)
 
-        self._fig.tight_layout()
-        self._canvas.draw()
+        fig.tight_layout()
+        self._plot_canvases["ALL"].draw()
+
+    def _shade_oscillation_regions(self, ax, t_axis: List[datetime], active: List[bool]) -> None:
+        """Markiert zusammenhängende Oszillationsbereiche als Hintergrund."""
+        if not t_axis or not active:
+            return
+
+        start_idx: Optional[int] = None
+        for idx, is_active in enumerate(active):
+            if is_active and start_idx is None:
+                start_idx = idx
+            elif not is_active and start_idx is not None:
+                ax.axvspan(t_axis[start_idx], t_axis[idx], color="#fee2e2", alpha=0.45, lw=0)
+                start_idx = None
+
+        if start_idx is not None:
+            ax.axvspan(t_axis[start_idx], t_axis[-1], color="#fee2e2", alpha=0.45, lw=0)
+
+    def _format_time_axis(self, ax) -> None:
+        """Dynamische Zeitformatierung für Zoom-Stufen bis Sekunden."""
+        locator = mdates.AutoDateLocator(minticks=4, maxticks=10)
+        formatter = mdates.ConciseDateFormatter(locator)
+        formatter.formats = ["%Y", "%b", "%d", "%H:%M", "%H:%M", "%H:%M:%S"]
+        formatter.zero_formats = ["", "%Y", "%b", "%d", "%H:%M", "%H:%M:%S"]
+        formatter.offset_formats = ["", "%Y", "%Y-%b", "%Y-%b-%d", "%Y-%b-%d", "%Y-%b-%d"]
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(formatter)
+
+    def _bind_lower_autoscale_on_zoom(
+        self,
+        fig: Figure,
+        ax_top,
+        ax_bottom,
+        t_axis: List[datetime],
+        y_series: List[List[float]],
+        reference_lines: List[float],
+    ) -> None:
+        """Koppelt Y-Autoskalierung des unteren Plots an X-Zoom im oberen Plot."""
+        if not t_axis or not y_series:
+            return
+
+        x_nums = mdates.date2num(t_axis)
+
+        def _rescale_bottom(_ax=None) -> None:
+            x_min, x_max = ax_bottom.get_xlim()
+            if x_min > x_max:
+                x_min, x_max = x_max, x_min
+
+            visible_idx = [i for i, x in enumerate(x_nums) if x_min <= x <= x_max]
+            if not visible_idx:
+                return
+
+            y_vals: list[float] = []
+            for series in y_series:
+                y_vals.extend(series[i] for i in visible_idx if i < len(series))
+            y_vals.extend(reference_lines)
+
+            if not y_vals:
+                return
+
+            y_min = min(y_vals)
+            y_max = max(y_vals)
+            y_range = y_max - y_min
+            pad = 1.0 if y_range <= 0 else y_range * 0.08
+            ax_bottom.set_ylim(y_min - pad, y_max + pad)
+            fig.canvas.draw_idle()
+
+        ax_top.callbacks.connect("xlim_changed", _rescale_bottom)
+        _rescale_bottom()
 
     def _show_stats(self, stats: Statistics):
         """Zeigt Statistiken im Text-Widget."""

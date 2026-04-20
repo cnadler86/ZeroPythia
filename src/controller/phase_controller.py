@@ -1,7 +1,5 @@
 """Gekapselte Phasen-Controller für Zero-Feed.
 
-=============================================
-
 Architektur - jeder Phasen-Controller kapselt:
   1. Preprocessor  (Hysterese-basierte Sample-Filterung)
   2. P-Regler      (Feedforward oder Feedback)
@@ -15,13 +13,13 @@ PhaseController (Phasen OHNE Inverter, z.B. A+C):
   Kein Stabilitätsrisiko, da Batterie diese Phase nicht beeinflusst.
 
 InverterPhaseController (Phase MIT Inverter, z.B. B):
-  Feedback-Regler auf Total-Grid-Power (Saldierung).
+  Feedback-Regler.
   Berücksichtigt Korrekturen anderer Phasen für korrekte Zerlegung.
-  Oszillationserkennung auf Realverbrauch (Grid + Batterie).
+  Oszillationserkennung auf Realverbrauch.
 
 ZeroFeedManager:
   Addiert alle Phasen-Korrekturen → finaler Batterie-Setpoint.
-  Appliziert Batterie-Grenzen (min/max) und Min-Change-Schwelle.
+    Liefert ungekappte Ziel-Leistung; Batterie-Grenzen werden am Ende angewandt.
   Optionaler Gesamt-Oszillationsdetektor als Sicherheitsnetz.
 """
 
@@ -73,6 +71,9 @@ class InverterPhaseControllerSettings:
     kp_hysteresis: float = 0.3
     """Gedämpfter Kp innerhalb der Hysterese"""
 
+    target_power_w: float = 3.0
+    """Ziel-Bezug in Watt – wir regeln auf diesen Wert, nicht auf den aktuellen Netzbezug."""
+
 
 @dataclass
 class ZeroFeedManagerSettings:
@@ -87,23 +88,6 @@ class ZeroFeedManagerSettings:
     target_power_w: float = 3.0
     """Ziel-Bezug in Watt – wir kompensieren nur, was diesen Wert übersteigt.
     Positive Werte reduzieren Einspeisung auf Kosten eines kleinen permanenten Bezugs."""
-
-
-# ── Ergebnis-Typen ────────────────────────────────────────────────────────────
-
-
-@dataclass
-class PhaseResult:
-    """Ergebnis eines Phasen-Controllers."""
-
-    controller_output_w: float
-    """Roher Controller-Output (vor Oszillations-Limit)."""
-
-    osc_limit_w: float
-    """Oszillations-Limit (inf wenn nicht oszillierend)."""
-
-    correction_w: float
-    """Effektiver Korrekturwert (nach Oszillations-Limit)."""
 
 
 class ManagerDebugInfo(NamedTuple):
@@ -181,6 +165,8 @@ class PhaseController(_OscillationMixin):
         self.holder = BaseloadHolder(holder_settings) if holder_settings else None
         self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
         self._last_output: float = 0.0
+        self._last_controller_output: float = 0.0
+        self._last_osc_limit: float = float("inf")
 
     def add_sample(self, value: float, timestamp: float) -> None:
         """Füttert Oszillationsdetektoren mit Phasen-Messwert.
@@ -191,7 +177,7 @@ class PhaseController(_OscillationMixin):
         """
         self._feed_oscillation_detectors(value, timestamp)
 
-    def calculate(self, phase_power_w: list[float], target_power_w: float) -> PhaseResult:
+    def calculate(self, phase_power_w: list[float], target_power_w: float) -> float:
         """Berechnet Korrekturwert (Feedforward-Kompensation).
 
         Args:
@@ -199,16 +185,19 @@ class PhaseController(_OscillationMixin):
                 Positiv = Bezug, Negativ = Einspeisung.
 
         Returns:
-            PhaseResult mit Korrekturwert.
+            Korrekturwert (bereits durch Oszillations-Limit begrenzt).
         """
         osc_limit = self.get_osc_limit()
+        self._last_osc_limit = osc_limit
 
         if not phase_power_w:
-            return PhaseResult(self._last_output, osc_limit, min(self._last_output, osc_limit))
+            self._last_output = min(self._last_output, osc_limit)
+            return self._last_output
 
         filtered = self.preprocessor.process(phase_power_w)
         if filtered is None:
-            return PhaseResult(self._last_output, osc_limit, min(self._last_output, osc_limit))
+            self._last_output = min(self._last_output, osc_limit)
+            return self._last_output
 
         # Feedforward: Kompensiere Netzbezug oberhalb des Zielwerts
         error = filtered - target_power_w
@@ -217,15 +206,29 @@ class PhaseController(_OscillationMixin):
         else:
             compensation = self.settings.kp * error
 
-        # Oszillations-Limit anwenden
-        correction = min(compensation, osc_limit)
+        # Anti-Export-Schutz: positive Correction nie größer als aktueller
+        # verfügbarer Bezug über dem Zielwert dieser Phase.
+        current_phase = phase_power_w[-1]
+        max_positive_correction = max(current_phase - target_power_w, 0.0)
+
+        # Oszillations-Limit und Anti-Export-Schutz anwenden
+        correction = min(compensation, osc_limit, max_positive_correction)
+        self._last_controller_output = compensation
         self._last_output = correction
 
-        return PhaseResult(compensation, osc_limit, correction)
+        return correction
 
     @property
     def last_output(self) -> float:
         return self._last_output
+
+    @property
+    def last_controller_output(self) -> float:
+        return self._last_controller_output
+
+    @property
+    def last_osc_limit(self) -> float:
+        return self._last_osc_limit
 
 
 # ── InverterPhaseController (Feedback, mit Inverter) ──────────────────────────
@@ -259,6 +262,7 @@ class InverterPhaseController(_OscillationMixin):
         self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
         self._last_desired_total: float = 0.0
         self._last_output: float = 0.0
+        self._last_osc_limit: float = float("inf")
 
     def add_sample(self, phase_power: float, battery_output: float, timestamp: float) -> None:
         """Füttert Oszillationsdetektoren mit Realverbrauch.
@@ -278,7 +282,7 @@ class InverterPhaseController(_OscillationMixin):
         current_battery_output_w: float,
         other_corrections_w: float,
         settled: bool = True,
-    ) -> PhaseResult:
+    ) -> float:
         """Berechnet Korrekturwert (Feedback auf Total-Grid).
 
         Der Korrekturwert repräsentiert den Anteil dieser Phase am
@@ -293,9 +297,10 @@ class InverterPhaseController(_OscillationMixin):
                 Bei False wird Feedback eingefroren.
 
         Returns:
-            PhaseResult mit Korrekturwert.
+            Korrekturwert (bereits durch Oszillations-Limit begrenzt).
         """
         osc_limit = self.get_osc_limit()
+        self._last_osc_limit = osc_limit
 
         # Feedback nur aktualisieren wenn Inverter settled
         if settled and total_grid_power_w:
@@ -325,7 +330,7 @@ class InverterPhaseController(_OscillationMixin):
         effective = min(my_correction, osc_limit)
         self._last_output = effective
 
-        return PhaseResult(self._last_desired_total, osc_limit, effective)
+        return effective
 
     @property
     def last_output(self) -> float:
@@ -334,6 +339,14 @@ class InverterPhaseController(_OscillationMixin):
     @property
     def last_desired_total(self) -> float:
         return self._last_desired_total
+
+    @property
+    def last_controller_output(self) -> float:
+        return self._last_desired_total
+
+    @property
+    def last_osc_limit(self) -> float:
+        return self._last_osc_limit
 
 
 # ── ZeroFeedManager ───────────────────────────────────────────────────────────
@@ -345,8 +358,8 @@ class ZeroFeedManager:
     1. Berechnet Feedforward-Korrekturen (Phasen ohne Inverter)
     2. Übergibt deren Summe an den Inverter-Controller
     3. Addiert alle Korrekturen
-    4. Appliziert Batterie-Grenzen und Min-Change-Schwelle
-    5. Optional: Gesamt-Oszillationsdetektor als zusätzliches Limit
+    4. Optional: Gesamt-Oszillationsdetektor als zusätzliches Limit
+    5. Gibt die Ziel-Leistung zurück (Batterie-Grenzen erfolgen außerhalb)
     """
 
     def __init__(
@@ -423,8 +436,8 @@ class ZeroFeedManager:
         total_grid_power_w: list[float],
         current_battery_output_w: float,
         battery_settled: bool = True,
-    ) -> int:
-        """Berechnet den Batterie-Setpoint.
+    ) -> float:
+        """Berechnet die ungekappte Batterie-Ziel-Leistung.
 
         Args:
             phase_a_power_w: Messwerte Phase A (neueste zuletzt).
@@ -434,15 +447,15 @@ class ZeroFeedManager:
             battery_settled: True wenn Inverter am Setpoint angekommen.
 
         Returns:
-            Batterie-Setpoint in Watt (int, begrenzt).
+            Ziel-Leistung in Watt nach Oszillations-Limits, aber ohne Batterie-Min/Max.
         """
         # 1) Feedforward-Phasen zuerst (A + C)
-        result_a = self._phase_a.calculate(phase_a_power_w, self.settings.target_power_w)
-        result_c = self._phase_c.calculate(phase_c_power_w, self.settings.target_power_w)
-        other_corrections = result_a.correction_w + result_c.correction_w
+        correction_a = self._phase_a.calculate(phase_a_power_w, self.settings.target_power_w)
+        correction_c = self._phase_c.calculate(phase_c_power_w, self.settings.target_power_w)
+        other_corrections = correction_a + correction_c
 
         # 2) Inverter-Phase (Feedback) – bekommt Summe der anderen
-        result_b = self._phase_b.calculate(
+        correction_b = self._phase_b.calculate(
             total_grid_power_w,
             self.settings.target_power_w,
             current_battery_output_w,
@@ -451,47 +464,33 @@ class ZeroFeedManager:
         )
 
         # 3) Summe aller Korrekturen
-        raw_total = result_a.correction_w + result_b.correction_w + result_c.correction_w
+        raw_total = correction_a + correction_b + correction_c
 
         # 4) Gesamt-Oszillations-Limit (Total-Detektor)
         total_osc_limit = self.get_total_osc_limit()
         limited = min(raw_total, total_osc_limit)
 
-        # 5) Batterie-Grenzen
-        clamped = int(
-            round(
-                max(
-                    self.settings.min_output_w,
-                    min(self.settings.max_output_w, limited),
-                )
-            )
-        )
-
-        # 6) Min-Change-Schwelle
-        if abs(clamped - self._last_setpoint) < self.settings.min_output_w:
-            clamped = int(self._last_setpoint)
-        else:
-            self._last_setpoint = clamped
+        self._last_setpoint = limited
 
         logger.debug(
-            "Manager: ff=%.0fW  fb=%.0fW  settled=%s → raw=%.0fW osc=%.0fW → %dW",
+            "Manager: ff=%.0fW  fb=%.0fW  settled=%s → raw=%.0fW osc=%.0fW → %.0fW",
             other_corrections,
-            result_b.controller_output_w,
+            self._phase_b.last_controller_output,
             battery_settled,
             raw_total,
             total_osc_limit,
-            clamped,
+            limited,
         )
 
         # Store debug info for callers that request it
         self._last_debug = ManagerDebugInfo(
-            feedback_output_w=result_b.controller_output_w,
+            feedback_output_w=self._phase_b.last_controller_output,
             ff_output_w=other_corrections,
             raw_setpoint_w=int(round(raw_total)),
             osc_limit_w=total_osc_limit,
         )
 
-        return clamped
+        return limited
 
     def calculate_debug(
         self,
@@ -500,7 +499,7 @@ class ZeroFeedManager:
         total_grid_power_w: list[float],
         current_battery_output_w: float,
         battery_settled: bool = True,
-    ) -> tuple[int, ManagerDebugInfo]:
+    ) -> tuple[float, ManagerDebugInfo]:
         """Wrapper: führt `calculate` aus und liefert zusätzlich Debug-Infos."""
         setpoint = self.calculate(
             phase_a_power_w,
