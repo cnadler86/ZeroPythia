@@ -14,7 +14,7 @@ Architektur:
 
   Pro-Phase-Controller:
     - PhaseController (A, C): Feedforward – kompensiert Netzbezug
-    - InverterPhaseController (B): Feedback – regelt auf Total-Grid
+    - InverterPhaseController (B): Feedback – regelt auf Phase B mit A/C-Offset
     - Jeder Controller liefert einen Korrekturwert inkl. Oszillations-Limit
 
 ZeroFeedManager:
@@ -284,7 +284,12 @@ class ZeroFeedV3Controller:
 
         # Pro-Phase Oszillationserkennung (gekapselt in Controllern)
         self.manager._phase_a.add_sample(sample.phase_a, sample.timestamp)
-        self.manager._phase_b.add_sample(sample.phase_b, sample.battery_output, sample.timestamp)
+        self.manager._phase_b.add_sample(
+            sample.phase_b,
+            sample.battery_output,
+            self.manager.last_feedforward_output_w,
+            sample.timestamp,
+        )
         self.manager._phase_c.add_sample(sample.phase_c, sample.timestamp)
 
         # Gesamt-Oszillationserkennung (im Manager)
@@ -341,36 +346,36 @@ class ZeroFeedV3Controller:
         if self._sample_queue.empty():
             return None
 
-        # Samples aus Queue holen (pro Phase + Total)
+        # Samples aus Queue holen (pro Phase)
         phase_a_history: list[float] = []
+        phase_b_history: list[float] = []
         phase_c_history: list[float] = []
-        total_grid_history: list[float] = []
         last_battery_output: float = 0.0
 
         while not self._sample_queue.empty():
             try:
                 sample = self._sample_queue.get_nowait()
                 phase_a_history.append(sample.phase_a)
+                phase_b_history.append(sample.phase_b)
                 phase_c_history.append(sample.phase_c)
-                total_grid_history.append(sample.total_grid)
                 if sample.battery_output >= 0:
                     last_battery_output = sample.battery_output
             except asyncio.QueueEmpty:
                 break
 
-        if not total_grid_history:
+        if not phase_b_history:
             return None
 
         # Settlement prüfen: Feedback-Regler nur aktualisieren wenn Inverter
         # am vorherigen Setpoint angekommen ist. None (Fehler) = settled annehmen.
-        settled = await self.battery.is_settled(use_cache=True)
+        settled = await self.battery.is_settled(use_cache=False)
         battery_settled = settled is not False
 
         # Manager berechnet Ziel-Leistung (ohne Batterie-Min/Max)
         target_output_w, dbg = self.manager.calculate_debug(
             phase_a_power_w=phase_a_history,
+            phase_b_power_w=phase_b_history,
             phase_c_power_w=phase_c_history,
-            total_grid_power_w=total_grid_history,
             current_battery_output_w=last_battery_output,
             battery_settled=battery_settled,
         )
