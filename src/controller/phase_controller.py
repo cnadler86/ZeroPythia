@@ -106,6 +106,20 @@ class ManagerDebugInfo(NamedTuple):
     """Aktives Oszillations-Limit des B-Reglers."""
 
 
+@dataclass(frozen=True)
+class PhaseSample:
+    """Zeitpunkt + Wert für Phasensample."""
+
+    timestamp: float
+    value: float
+
+
+def _sample_values(samples: Optional[list[PhaseSample]]) -> list[float]:
+    if not samples:
+        return []
+    return [sample.value for sample in samples]
+
+
 # ── Oszillations-Hilfsmethoden ────────────────────────────────────────────────
 
 
@@ -121,20 +135,21 @@ class _OscillationMixin:
             self.predictor is not None and self.predictor.is_oscillating
         )
 
-    def get_osc_limit(self) -> float:
+    def get_osc_limit(self, samples: Optional[list[PhaseSample]] = None) -> float:
+        if samples:
+            for sample in samples:
+                if sample.value > 0:
+                    if self.holder:
+                        self.holder.add_sample(sample.value, sample.timestamp)
+                    if self.predictor:
+                        self.predictor.add_sample(sample.value, sample.timestamp)
+
         limits: list[float] = []
         if self.holder and self.holder.is_oscillating:
             limits.append(self.holder.get_limit())
         if self.predictor and self.predictor.is_oscillating:
             limits.append(self.predictor.get_limit())
         return min(limits) if limits else float("inf")
-
-    def _feed_oscillation_detectors(self, value: float, timestamp: float) -> None:
-        if value > 0:
-            if self.holder:
-                self.holder.add_sample(value, timestamp)
-            if self.predictor:
-                self.predictor.add_sample(value, timestamp)
 
 
 # ── PhaseController (Feedforward, ohne Inverter) ──────────────────────────────
@@ -168,16 +183,12 @@ class PhaseController(_OscillationMixin):
         self._last_controller_output: float = 0.0
         self._last_osc_limit: float = float("inf")
 
-    def add_sample(self, value: float, timestamp: float) -> None:
-        """Füttert Oszillationsdetektoren mit Phasen-Messwert.
-
-        Args:
-            value: Phasen-Leistung in Watt (= Realverbrauch, da kein Inverter).
-            timestamp: Zeitstempel.
-        """
-        self._feed_oscillation_detectors(value, timestamp)
-
-    def calculate(self, phase_power_w: list[float], target_power_w: float) -> float:
+    def calculate(
+        self,
+        phase_power_w: list[float],
+        target_power_w: float,
+        osc_samples: Optional[list[PhaseSample]] = None,
+    ) -> float:
         """Berechnet Korrekturwert (Feedforward-Kompensation).
 
         Args:
@@ -187,7 +198,7 @@ class PhaseController(_OscillationMixin):
         Returns:
             Korrekturwert (bereits durch Oszillations-Limit begrenzt).
         """
-        osc_limit = self.get_osc_limit()
+        osc_limit = self.get_osc_limit(osc_samples)
         self._last_osc_limit = osc_limit
 
         if not phase_power_w:
@@ -268,24 +279,6 @@ class InverterPhaseController(_OscillationMixin):
         self._last_phase_target: float = settings.target_power_w
         self._last_feedback_error: float = 0.0
 
-    def add_sample(
-        self,
-        phase_power: float,
-        battery_output: float,
-        other_corrections_w: float,
-        timestamp: float,
-    ) -> None:
-        """Füttert Oszillationsdetektoren mit geschätztem B-Phasen-Verbrauch.
-
-        Args:
-            phase_power: Grid-Leistung dieser Phase (beeinflusst durch Batterie).
-            battery_output: Aktuelle Batterie-Ausgabe.
-            other_corrections_w: Aktiver Feedforward-Anteil von A+C.
-            timestamp: Zeitstempel.
-        """
-        real_consumption = phase_power + battery_output - other_corrections_w
-        self._feed_oscillation_detectors(real_consumption, timestamp)
-
     def calculate(
         self,
         phase_b_grid_power_w: list[float],
@@ -293,6 +286,7 @@ class InverterPhaseController(_OscillationMixin):
         current_battery_output_w: float,
         other_corrections_w: float,
         settled: bool = True,
+        osc_samples: Optional[list[PhaseSample]] = None,
     ) -> float:
         """Berechnet Korrekturwert (Feedback nur auf Phase B).
 
@@ -310,7 +304,7 @@ class InverterPhaseController(_OscillationMixin):
         Returns:
             Korrekturwert (bereits durch Oszillations-Limit begrenzt).
         """
-        osc_limit = self.get_osc_limit()
+        osc_limit = self.get_osc_limit(osc_samples)
         self._last_osc_limit = osc_limit
         phase_target = target_power_w - other_corrections_w
         self._last_phase_target = phase_target
@@ -418,21 +412,21 @@ class ZeroFeedManager:
 
     # ── Oszillation (Total) ───────────────────────────────────────────
 
-    def add_total_sample(self, real_consumption: float, timestamp: float) -> None:
-        """Füttert den Gesamt-Oszillationsdetektor."""
-        if real_consumption > 0:
-            if self._total_holder:
-                self._total_holder.add_sample(real_consumption, timestamp)
-            if self._total_predictor:
-                self._total_predictor.add_sample(real_consumption, timestamp)
-
     @property
     def total_is_oscillating(self) -> bool:
         return (self._total_holder is not None and self._total_holder.is_oscillating) or (
             self._total_predictor is not None and self._total_predictor.is_oscillating
         )
 
-    def get_total_osc_limit(self) -> float:
+    def get_total_osc_limit(self, samples: Optional[list[PhaseSample]] = None) -> float:
+        if samples:
+            for sample in samples:
+                if sample.value > 0:
+                    if self._total_holder:
+                        self._total_holder.add_sample(sample.value, sample.timestamp)
+                    if self._total_predictor:
+                        self._total_predictor.add_sample(sample.value, sample.timestamp)
+
         limits: list[float] = []
         if self._total_holder and self._total_holder.is_oscillating:
             limits.append(self._total_holder.get_limit())
@@ -453,28 +447,55 @@ class ZeroFeedManager:
 
     def calculate(
         self,
-        phase_a_power_w: list[float],
-        phase_b_power_w: list[float],
-        phase_c_power_w: list[float],
+        phase_a_samples: Optional[list[PhaseSample]],
+        phase_b_samples: Optional[list[PhaseSample]],
+        phase_c_samples: Optional[list[PhaseSample]],
         current_battery_output_w: float,
         battery_settled: bool = True,
+        phase_battery_output_samples_w: Optional[list[float]] = None,
+        total_osc_samples: Optional[list[PhaseSample]] = None,
     ) -> float:
         """Berechnet die ungekappte Batterie-Ziel-Leistung.
 
         Args:
-            phase_a_power_w: Messwerte Phase A (neueste zuletzt).
-            phase_b_power_w: Messwerte Phase B (neueste zuletzt).
-            phase_c_power_w: Messwerte Phase C (neueste zuletzt).
+            phase_a_samples: Messwerte Phase A inkl. Zeitstempel (neueste zuletzt).
+            phase_b_samples: Messwerte Phase B inkl. Zeitstempel (neueste zuletzt).
+            phase_c_samples: Messwerte Phase C inkl. Zeitstempel (neueste zuletzt).
             current_battery_output_w: Aktueller Batterie-Output.
             battery_settled: True wenn Inverter am Setpoint angekommen.
 
         Returns:
             Ziel-Leistung in Watt nach Oszillations-Limits, aber ohne Batterie-Min/Max.
         """
+        phase_a_power_w = _sample_values(phase_a_samples)
+        phase_b_power_w = _sample_values(phase_b_samples)
+        phase_c_power_w = _sample_values(phase_c_samples)
+
         # 1) Feedforward-Phasen zuerst (A + C)
-        correction_a = self._phase_a.calculate(phase_a_power_w, self.settings.target_power_w)
-        correction_c = self._phase_c.calculate(phase_c_power_w, self.settings.target_power_w)
+        correction_a = self._phase_a.calculate(
+            phase_a_power_w,
+            self.settings.target_power_w,
+            osc_samples=phase_a_samples,
+        )
+        correction_c = self._phase_c.calculate(
+            phase_c_power_w,
+            self.settings.target_power_w,
+            osc_samples=phase_c_samples,
+        )
         other_corrections = correction_a + correction_c
+
+        phase_b_real_consumption_samples: Optional[list[PhaseSample]] = None
+        if phase_b_samples and phase_battery_output_samples_w:
+            n = min(len(phase_b_samples), len(phase_battery_output_samples_w))
+            phase_b_real_consumption_samples = [
+                PhaseSample(
+                    timestamp=phase_b_samples[i].timestamp,
+                    value=phase_b_samples[i].value
+                    + phase_battery_output_samples_w[i]
+                    - other_corrections,
+                )
+                for i in range(n)
+            ]
 
         # 2) Inverter-Phase (Feedback) – bekommt Summe der anderen
         correction_b = self._phase_b.calculate(
@@ -483,6 +504,7 @@ class ZeroFeedManager:
             current_battery_output_w,
             other_corrections,
             battery_settled,
+            osc_samples=phase_b_real_consumption_samples,
         )
 
         # 3) Summe aller Korrekturen
@@ -499,6 +521,9 @@ class ZeroFeedManager:
             raw_total,
         )
 
+        # Gesamt-Detektor ebenfalls on-the-fly mit den aktuellen Samples füttern.
+        self.get_total_osc_limit(total_osc_samples)
+
         # Store debug info for callers that request it
         self._last_debug = ManagerDebugInfo(
             feedback_output_w=self._phase_b.last_controller_output,
@@ -511,19 +536,23 @@ class ZeroFeedManager:
 
     def calculate_debug(
         self,
-        phase_a_power_w: list[float],
-        phase_b_power_w: list[float],
-        phase_c_power_w: list[float],
+        phase_a_samples: Optional[list[PhaseSample]],
+        phase_b_samples: Optional[list[PhaseSample]],
+        phase_c_samples: Optional[list[PhaseSample]],
         current_battery_output_w: float,
         battery_settled: bool = True,
+        phase_battery_output_samples_w: Optional[list[float]] = None,
+        total_osc_samples: Optional[list[PhaseSample]] = None,
     ) -> tuple[float, ManagerDebugInfo]:
         """Wrapper: führt `calculate` aus und liefert zusätzlich Debug-Infos."""
         setpoint = self.calculate(
-            phase_a_power_w,
-            phase_b_power_w,
-            phase_c_power_w,
+            phase_a_samples,
+            phase_b_samples,
+            phase_c_samples,
             current_battery_output_w,
             battery_settled,
+            phase_battery_output_samples_w,
+            total_osc_samples,
         )
         return setpoint, self._last_debug
 

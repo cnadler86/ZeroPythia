@@ -36,6 +36,7 @@ from .phase_controller import (
     InverterPhaseControllerSettings,
     PhaseController,
     PhaseControllerSettings,
+    PhaseSample,
     ZeroFeedManager,
     ZeroFeedManagerSettings,
 )
@@ -271,7 +272,7 @@ class ZeroFeedV3Controller:
     # ── Sample hinzufügen (für Simulation von außen) ──────────────────
 
     async def add_sample(self, sample: PhaseSample) -> None:
-        """Fügt ein Sample hinzu und führt Oszillationserkennung durch."""
+        """Fügt ein Sample in die Queue ein."""
         # Queue befüllen
         try:
             self._sample_queue.put_nowait(sample)
@@ -281,19 +282,6 @@ class ZeroFeedV3Controller:
                 self._sample_queue.put_nowait(sample)
             except asyncio.QueueEmpty:
                 pass
-
-        # Pro-Phase Oszillationserkennung (gekapselt in Controllern)
-        self.manager._phase_a.add_sample(sample.phase_a, sample.timestamp)
-        self.manager._phase_b.add_sample(
-            sample.phase_b,
-            sample.battery_output,
-            self.manager.last_feedforward_output_w,
-            sample.timestamp,
-        )
-        self.manager._phase_c.add_sample(sample.phase_c, sample.timestamp)
-
-        # Gesamt-Oszillationserkennung (im Manager)
-        self.manager.add_total_sample(sample.real_consumption, sample.timestamp)
 
         # Letztes Sample merken für Logging
         self._last_sample = sample
@@ -347,23 +335,35 @@ class ZeroFeedV3Controller:
             return None
 
         # Samples aus Queue holen (pro Phase)
-        phase_a_history: list[float] = []
-        phase_b_history: list[float] = []
-        phase_c_history: list[float] = []
+        phase_a_osc_samples: list[PhaseSample] = []
+        phase_b_osc_samples: list[PhaseSample] = []
+        phase_c_osc_samples: list[PhaseSample] = []
+        total_osc_samples: list[PhaseSample] = []
+        battery_output_history: list[float] = []
         last_battery_output: float = 0.0
 
         while not self._sample_queue.empty():
             try:
                 sample = self._sample_queue.get_nowait()
-                phase_a_history.append(sample.phase_a)
-                phase_b_history.append(sample.phase_b)
-                phase_c_history.append(sample.phase_c)
+                phase_a_osc_samples.append(
+                    PhaseSample(timestamp=sample.timestamp, value=sample.phase_a)
+                )
+                phase_b_osc_samples.append(
+                    PhaseSample(timestamp=sample.timestamp, value=sample.phase_b)
+                )
+                phase_c_osc_samples.append(
+                    PhaseSample(timestamp=sample.timestamp, value=sample.phase_c)
+                )
+                total_osc_samples.append(
+                    PhaseSample(timestamp=sample.timestamp, value=sample.real_consumption)
+                )
+                battery_output_history.append(sample.battery_output)
                 if sample.battery_output >= 0:
                     last_battery_output = sample.battery_output
             except asyncio.QueueEmpty:
                 break
 
-        if not phase_b_history:
+        if not phase_b_osc_samples:
             return None
 
         # Settlement prüfen: Feedback-Regler nur aktualisieren wenn Inverter
@@ -373,11 +373,13 @@ class ZeroFeedV3Controller:
 
         # Manager berechnet Ziel-Leistung (ohne Batterie-Min/Max)
         target_output_w, dbg = self.manager.calculate_debug(
-            phase_a_power_w=phase_a_history,
-            phase_b_power_w=phase_b_history,
-            phase_c_power_w=phase_c_history,
+            phase_a_samples=phase_a_osc_samples,
+            phase_b_samples=phase_b_osc_samples,
+            phase_c_samples=phase_c_osc_samples,
             current_battery_output_w=last_battery_output,
             battery_settled=battery_settled,
+            phase_battery_output_samples_w=battery_output_history,
+            total_osc_samples=total_osc_samples,
         )
         osc_limit = dbg.osc_limit_w
 
