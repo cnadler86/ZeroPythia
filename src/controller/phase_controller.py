@@ -74,6 +74,10 @@ class InverterPhaseControllerSettings:
     target_power_w: float = 3.0
     """Ziel-Bezug in Watt – wir regeln auf diesen Wert, nicht auf den aktuellen Netzbezug."""
 
+    feedback_enabled: bool = True
+    """False = reiner Feedforward-Modus (Phase B liefert Korrektur=0, total=A+C).
+    Nützlich für Tests und wenn Phase B keine eigenständige Last hat."""
+
 
 @dataclass
 class ZeroFeedManagerSettings:
@@ -309,6 +313,16 @@ class InverterPhaseController(_OscillationMixin):
         phase_target = target_power_w - other_corrections_w
         self._last_phase_target = phase_target
 
+        # Wenn Feedback deaktiviert: immer 0 zurückgeben (reiner FF-Modus)
+        if not self.settings.feedback_enabled:
+            logger.debug(
+                "InverterPhaseController: feedback_enabled=False – B-Korrektur=0"
+                " (ff_sum=%.0fW übernimmt als Total)",
+                other_corrections_w,
+            )
+            self._last_output = 0.0
+            return 0.0
+
         # Feedback nur aktualisieren wenn Inverter settled
         if settled and phase_b_grid_power_w:
             filtered = self.preprocessor.process(phase_b_grid_power_w)
@@ -323,13 +337,31 @@ class InverterPhaseController(_OscillationMixin):
                 else:
                     correction = self.settings.kp_feed_in * error
 
-                self._last_desired_total = current_battery_output_w + correction
+                new_desired = current_battery_output_w + correction
+                logger.debug(
+                    "InverterPhaseController [settled]: phase_b=%.0fW filtered=%.1fW"
+                    " phase_target=%.1fW error=%.1fW correction=%.1fW"
+                    " batt_base=%.0fW → desired_total=%.0fW",
+                    phase_b_grid_power_w[-1] if phase_b_grid_power_w else float("nan"),
+                    filtered,
+                    phase_target,
+                    error,
+                    correction,
+                    current_battery_output_w,
+                    new_desired,
+                )
+                self._last_desired_total = new_desired
         else:
             if not settled:
                 logger.debug(
-                    "InverterPhaseController: nicht settled – Feedback eingefroren bei %.0fW",
+                    "InverterPhaseController [!settled]: Feedback eingefroren"
+                    " bei desired_total=%.0fW  phase_target=%.1fW  ff_sum=%.0fW",
                     self._last_desired_total,
+                    phase_target,
+                    other_corrections_w,
                 )
+            elif not phase_b_grid_power_w:
+                logger.debug("InverterPhaseController: keine Phase-B Samples")
 
         # Mein Anteil = gewünschtes Total minus Feedforward-Offset von A+C
         my_correction = self._last_desired_total - other_corrections_w
@@ -338,6 +370,15 @@ class InverterPhaseController(_OscillationMixin):
         effective = min(my_correction, osc_limit)
         self._last_output = effective
 
+        logger.debug(
+            "InverterPhaseController: desired_total=%.0fW  ff=%.0fW"
+            " → my_corr=%.0fW  osc_limit=%.0fW  effective=%.0fW",
+            self._last_desired_total,
+            other_corrections_w,
+            my_correction,
+            osc_limit,
+            effective,
+        )
         return effective
 
     @property
@@ -483,6 +524,16 @@ class ZeroFeedManager:
             osc_samples=phase_c_samples,
         )
         other_corrections = correction_a + correction_c
+        logger.debug(
+            "Manager FF: A=%.0fW (raw=%.0fW osc=%.0fW)  C=%.0fW (raw=%.0fW osc=%.0fW)  sum=%.0fW",
+            correction_a,
+            self._phase_a.last_controller_output,
+            self._phase_a.last_osc_limit,
+            correction_c,
+            self._phase_c.last_controller_output,
+            self._phase_c.last_osc_limit,
+            other_corrections,
+        )
 
         phase_b_real_consumption_samples: Optional[list[PhaseSample]] = None
         if phase_b_samples and phase_battery_output_samples_w:
@@ -513,11 +564,14 @@ class ZeroFeedManager:
         self._last_setpoint = raw_total
 
         logger.debug(
-            "Manager: ff=%.0fW  b_target=%.0fW  fb=%.0fW  settled=%s → raw=%.0fW",
+            "Manager summary: ff=%.0fW  b_target=%.0fW  fb=%.0fW  settled=%s  corr_a=%.0fW corr_b=%.0fW corr_c=%.0fW -> raw=%.0fW",
             other_corrections,
             self._phase_b.last_phase_target,
             self._phase_b.last_controller_output,
             battery_settled,
+            correction_a,
+            correction_b,
+            correction_c,
             raw_total,
         )
 

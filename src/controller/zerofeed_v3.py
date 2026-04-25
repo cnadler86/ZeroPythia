@@ -99,7 +99,7 @@ class BatteryInverter(Protocol):
 
 
 @dataclass
-class PhaseSample:
+class GridSample:
     """Ein Sample mit allen 3 Phasen + Batterie-Output."""
 
     timestamp: float
@@ -135,12 +135,18 @@ class ZeroFeedV3Settings:
     )
 
     # Oszillationserkennung (pro Phase)
-    holder_settings: Optional[BaseloadHolderSettings] = field(
-        default_factory=BaseloadHolderSettings
-    )
-    predictor_settings: Optional[BaseloadPredictorSettings] = field(
-        default_factory=BaseloadPredictorSettings
-    )
+    # Standardmäßig deaktiviert (None). Nur aktivieren wenn tatsächlich
+    # oszillierende Lasten vorhanden sind (z.B. Waschmaschine, Klimaanlage).
+    holder_settings: Optional[BaseloadHolderSettings] = None
+    predictor_settings: Optional[BaseloadPredictorSettings] = None
+
+    # Separate Oszillationserkennung für Phasen A+C (Feedforward) und Phase B (Feedback).
+    # Überschreibt holder_settings / predictor_settings wenn gesetzt.
+    holder_settings_ac: Optional[BaseloadHolderSettings] = None
+    """Oszillationserkennung für Phase A und C (Feedforward). None = deaktiviert."""
+
+    holder_settings_b: Optional[BaseloadHolderSettings] = None
+    """Oszillationserkennung für Phase B (Feedback). None = deaktiviert."""
 
     # Timing
     sampling_interval: float = 1.0
@@ -182,21 +188,35 @@ class ZeroFeedV3Controller:
         self.battery = battery
         self._csv_logger = csv_logger
 
-        # Gekapselte Phasen-Controller + Manager
+        # Per-Phase Osc-Settings: holder_settings_ac / holder_settings_b überschreiben
+        # den allgemeinen holder_settings-Wert für die jeweiligen Phasen.
+        _holder_ac = (
+            settings.holder_settings_ac
+            if settings.holder_settings_ac is not None
+            else settings.holder_settings
+        )
+        _holder_b = (
+            settings.holder_settings_b
+            if settings.holder_settings_b is not None
+            else settings.holder_settings
+        )
+        _pred_ac = settings.predictor_settings
+        _pred_b = settings.predictor_settings
+
         phase_a = PhaseController(
             settings=settings.phase_controller,
-            holder_settings=settings.holder_settings,
-            predictor_settings=settings.predictor_settings,
+            holder_settings=_holder_ac,
+            predictor_settings=_pred_ac,
         )
         phase_b = InverterPhaseController(
             settings=settings.inverter_controller,
-            holder_settings=settings.holder_settings,
-            predictor_settings=settings.predictor_settings,
+            holder_settings=_holder_b,
+            predictor_settings=_pred_b,
         )
         phase_c = PhaseController(
             settings=settings.phase_controller,
-            holder_settings=settings.holder_settings,
-            predictor_settings=settings.predictor_settings,
+            holder_settings=_holder_ac,
+            predictor_settings=_pred_ac,
         )
         self.manager = ZeroFeedManager(
             manager_settings=settings.manager,
@@ -206,9 +226,15 @@ class ZeroFeedV3Controller:
             total_holder_settings=settings.holder_settings,
             total_predictor_settings=settings.predictor_settings,
         )
+        logger.info(
+            "ZeroFeedV3Controller initialisiert: feedback_enabled=%s  osc_ac=%s  osc_b=%s",
+            settings.inverter_controller.feedback_enabled,
+            _holder_ac is not None,
+            _holder_b is not None,
+        )
 
         # Sample Queue
-        self._sample_queue: asyncio.Queue[PhaseSample] = asyncio.Queue(
+        self._sample_queue: asyncio.Queue[GridSample] = asyncio.Queue(
             maxsize=settings.get_sample_queue_size()
         )
 
@@ -218,7 +244,7 @@ class ZeroFeedV3Controller:
         self._running: bool = False
         self._sampling_task: Optional[asyncio.Task] = None
         self._control_task: Optional[asyncio.Task] = None
-        self._last_sample: Optional[PhaseSample] = None  # für Logging
+        self._last_sample: Optional[GridSample] = None  # für Logging
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -275,7 +301,7 @@ class ZeroFeedV3Controller:
 
     # ── Sample hinzufügen (für Simulation von außen) ──────────────────
 
-    async def add_sample(self, sample: PhaseSample) -> None:
+    async def add_sample(self, sample: GridSample) -> None:
         """Fügt ein Sample in die Queue ein."""
         # Queue befüllen
         try:
@@ -313,7 +339,7 @@ class ZeroFeedV3Controller:
                 )
             )
 
-    def needs_fast_recontrol(self, sample: PhaseSample, eps_w: float = 0.5) -> bool:
+    def needs_fast_recontrol(self, sample: GridSample, eps_w: float = 0.5) -> bool:
         """True wenn gehaltene Feedforward-Korrektur für aktuelles Sample zu hoch ist.
 
         Das verhindert kurze Einspeise-Spikes zwischen zwei regulären
@@ -375,19 +401,42 @@ class ZeroFeedV3Controller:
         settled = await self.battery.is_settled(use_cache=False)
         battery_settled = settled is not False
 
+        # WICHTIG: Frische Batterie-Ausgabe holen (nicht aus veralteten Samples).
+        # Die Samples können bis zu control_interval_s alt sein – wenn die Batterie
+        # gerade erst einen neuen Setpoint bekommen hat, wäre last_battery_output
+        # noch der alte Wert und würde den Feedback-Regler destabilisieren.
+        fresh_output = await self.battery.get_ac_output_power()
+        current_battery_output_w = (
+            float(fresh_output) if fresh_output is not None else last_battery_output
+        )
+
+        logger.debug(
+            "perform_control: setpoint=%dW  settled=%s"
+            "  batt_sample=%.0fW  batt_live=%.0fW  n_samples=%d"
+            "  phase_b_last=%.0fW  phase_a_last=%.0fW  phase_c_last=%.0fW",
+            self._current_output_limit,
+            battery_settled,
+            last_battery_output,
+            current_battery_output_w,
+            len(phase_b_osc_samples),
+            phase_b_osc_samples[-1].value if phase_b_osc_samples else float("nan"),
+            phase_a_osc_samples[-1].value if phase_a_osc_samples else float("nan"),
+            phase_c_osc_samples[-1].value if phase_c_osc_samples else float("nan"),
+        )
+
         # Manager berechnet Ziel-Leistung (ohne Batterie-Min/Max)
         target_output_w, dbg = self.manager.calculate_debug(
             phase_a_samples=phase_a_osc_samples,
             phase_b_samples=phase_b_osc_samples,
             phase_c_samples=phase_c_osc_samples,
-            current_battery_output_w=last_battery_output,
+            current_battery_output_w=current_battery_output_w,
             battery_settled=battery_settled,
             phase_battery_output_samples_w=battery_output_history,
             total_osc_samples=total_osc_samples,
         )
         osc_limit = dbg.osc_limit_w
 
-        # Batterie-Grenzen ganz am Ende anwenden
+        # Batterie-Grenzen ganz am Ende anwenden (kein Rate-Limiting)
         new_setpoint = int(
             round(
                 max(
@@ -407,11 +456,13 @@ class ZeroFeedV3Controller:
                 self._last_set_time = asyncio.get_event_loop().time()
                 changed = True
                 logger.info(
-                    "Setpoint: %dW → %dW (Δ=%+dW, target=%.0fW, osc_limit=%.0fW)",
+                    "Setpoint: %dW -> %dW (D=%+dW, target=%.0fW, ff=%.0fW, fb=%.0fW, osc_limit=%.0fW)",
                     old,
                     new_setpoint,
                     new_setpoint - old,
                     target_output_w,
+                    dbg.ff_output_w,
+                    dbg.feedback_output_w,
                     osc_limit,
                 )
 
@@ -459,7 +510,7 @@ class ZeroFeedV3Controller:
                     phase_a, phase_b, phase_c = phases
                     output = await self.battery.get_ac_output_power() or 0
 
-                    sample = PhaseSample(
+                    sample = GridSample(
                         timestamp=last_time,
                         phase_a=phase_a,
                         phase_b=phase_b,

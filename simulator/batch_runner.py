@@ -16,7 +16,7 @@ from tqdm import tqdm
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
 from src.controller.zerofeed_v3 import (
     BatteryInverter,
-    PhaseSample,
+    GridSample,
     ZeroFeedV3Controller,
     ZeroFeedV3Settings,
 )
@@ -230,7 +230,7 @@ async def run_simulation(
         phase_a, phase_b, phase_c = phases
         output_power = await battery.get_ac_output_power() or 0
 
-        sample = PhaseSample(
+        sample = GridSample(
             timestamp=sim_time,
             phase_a=phase_a,
             phase_b=phase_b,
