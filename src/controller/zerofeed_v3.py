@@ -74,6 +74,10 @@ class BatteryInverter(Protocol):
         """Startet Entladung."""
         ...
 
+    async def start_charge(self, power_w: int) -> bool:
+        """Startet Laden vom Netz."""
+        ...
+
     async def stop(self) -> bool:
         """Stoppt den Inverter."""
         ...

@@ -11,3 +11,6 @@ wheels/
 
 # UV lock files
 uv.lock
+
+# Logs
+utils/logs/*
