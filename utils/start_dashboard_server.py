@@ -155,7 +155,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument("--shelly", default="192.168.178.77", metavar="IP")
     parser.add_argument("--zendure", default="192.168.178.140", metavar="IP")
-    parser.add_argument("--host", default="0.0.0.0", metavar="HOST", help="Server-Bindungsadresse")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        metavar="HOST",
+        help="Server-Bindungsadresse (z.B. 0.0.0.0 für LAN-Zugriff)",
+    )
     parser.add_argument("--port", type=int, default=8765, metavar="PORT")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")

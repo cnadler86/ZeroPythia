@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from .models import (
     AutoStatus,
@@ -41,13 +41,13 @@ from .models import (
 )
 from .regulator import BatteryInverterProtocol, RegulatorBase
 
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
 
 
 # ── Protocols (mirrors clients) ───────────────────────────────────────────────
 
 
-class GridMeterProtocol:
+class GridMeterProtocol(Protocol):
     """Structural protocol for Shelly 3EM (or simulator)."""
 
     async def get_phase_powers(self) -> Optional[tuple[float, float, float]]: ...
@@ -95,7 +95,7 @@ class ControlRuntime:
         min_soc_hysteresis_pct: int = 5,
         # ── Full-battery ZFI rest ─────────────────────────────────────────────
         # full_soc_resume_delay_s: Gridbezug muss mind. diese Zeit anhalten, bevor ZFI wieder aktiv
-        full_soc_resume_delay_s: float = 30.0,
+        full_soc_resume_delay_s: float = 10.0,
         # full_soc_resume_threshold_w: Mindest-Gridbezug [W] für den Weck-Zähler
         full_soc_resume_threshold_w: int = 50,
         # ── Upper SoC AC charge limit ─────────────────────────────────────────
@@ -104,8 +104,8 @@ class ControlRuntime:
         # high_soc_charge_limit_w: Gedrosselte AC-Ladeleistung [W]. None = halbe max_charge_w
         high_soc_charge_limit_w: Optional[int] = None,
     ) -> None:
-        self._grid_meter = grid_meter
-        self._battery = battery
+        self._grid_meter: GridMeterProtocol = grid_meter
+        self._battery: BatteryInverterProtocol = battery
         self._sampling_interval = sampling_interval_s
         self._control_interval = control_interval_s
         self._max_discharge_w = max_discharge_w
@@ -120,7 +120,8 @@ class ControlRuntime:
         self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
         self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
         self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half
-
+        # Bypass state tracking (für Änderungs-Logging)
+        self._last_bypass_state: Optional[bool] = None
         # ZFI pause states
         self._zfi_paused_low_soc: bool = False
         self._zfi_paused_full_battery: bool = False
@@ -439,12 +440,8 @@ class ControlRuntime:
     async def _init_soc_limits(self) -> None:
         """Read min_soc / max_soc from the device and store as instance state."""
         try:
-            min_soc = (
-                await self._battery.get_min_soc() if hasattr(self._battery, "get_min_soc") else None
-            )
-            max_soc = (
-                await self._battery.get_max_soc() if hasattr(self._battery, "get_max_soc") else None
-            )
+            min_soc = await self._battery.get_min_soc()
+            max_soc = await self._battery.get_max_soc()
         except Exception:
             logger.warning("SoC-Limits konnten nicht von der HW gelesen werden", exc_info=True)
             min_soc = None
@@ -579,18 +576,42 @@ class ControlRuntime:
         try:
             phases = await self._grid_meter.get_phase_powers()
             if phases is None:
+                logger.debug("_read_sample: Grid-Meter lieferte keine Phasen-Daten")
                 return None
 
             batt_output = await self._battery.get_ac_output_power()
-            batt_state = (
-                await self._battery.get_state() if hasattr(self._battery, "get_state") else None
-            )
+            batt_state = await self._battery.get_state()
 
-            soc: Optional[int] = None
-            charge_in: Optional[float] = None
+            soc: int | None = None
+            charge_in: float | None = None
+            bypass_active: bool | None = None
             if batt_state is not None:
-                soc = getattr(batt_state, "battery_soc", None)
-                charge_in = float(getattr(batt_state, "grid_input_power", 0) or 0) or None
+                soc = batt_state.battery_soc
+                charge_in = float(batt_state.grid_input_power or 0) or None
+                bypass_active = batt_state.bypass_mode
+
+                # Bypass-Zustandsänderung loggen
+                if bypass_active != self._last_bypass_state:
+                    if bypass_active:
+                        solar_w = batt_state.solar_input_power
+                        logger.warning(
+                            "Inverter wechselt in BYPASS-Modus: PV (%dW) wird direkt ans Haus geleitet. "
+                            "battery_output_w (%sW) zeigt Solar-Bypass, nicht Batterie-Output. "
+                            "outputLimit-Befehle werden ignoriert!",
+                            solar_w,
+                            batt_output,
+                        )
+                    elif self._last_bypass_state is not None:
+                        logger.info("Inverter verlässt Bypass-Modus – Battery-Control wieder aktiv")
+                    self._last_bypass_state = bypass_active
+
+                if bypass_active:
+                    logger.debug(
+                        "Bypass aktiv: solar=%dW  home_output=%sW  soc=%s%%",
+                        batt_state.solar_input_power,
+                        batt_output,
+                        soc,
+                    )
 
             return GridSample(
                 timestamp=time.time(),
@@ -600,6 +621,7 @@ class ControlRuntime:
                 battery_output_w=float(batt_output) if batt_output is not None else 0.0,
                 soc_percent=soc,
                 charge_input_w=charge_in,
+                bypass_active=bypass_active,
             )
         except Exception:
             logger.debug("Sample read failed", exc_info=True)

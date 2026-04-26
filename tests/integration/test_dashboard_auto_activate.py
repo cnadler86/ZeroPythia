@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from typing import Any, cast
 
 import pytest
 
@@ -74,7 +75,7 @@ async def test_html_defaults_are_correct():
     from src.dashboard.runtime import ControlRuntime
     from src.dashboard.server import create_app
 
-    runtime = ControlRuntime(FakeGrid(), FakeBattery())
+    runtime = ControlRuntime(FakeGrid(), cast(Any, FakeBattery()))
     runtime.register_regulator(ZeroFeedV3Regulator(V3RegulatorSettings()))
     app = create_app(runtime)
 
@@ -105,7 +106,7 @@ async def test_auto_activate_from_dashboard():
     battery = FakeBattery()
     runtime = ControlRuntime(
         FakeGrid(),
-        battery,
+        cast(Any, battery),
         sampling_interval_s=0.1,
         control_interval_s=0.5,
     )

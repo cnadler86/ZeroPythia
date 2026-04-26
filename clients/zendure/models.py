@@ -1,4 +1,5 @@
 """Zendure SolarFlow Modelle.
+
 ==========================
 
 Dieses Modul definiert:
@@ -21,8 +22,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # ==================== Enums ====================
 
+
 class BatteryState(IntEnum):
     """Batterie-Zustände."""
+
     STANDBY = 0
     CHARGING = 1
     DISCHARGING = 2
@@ -30,14 +33,17 @@ class BatteryState(IntEnum):
 
 class ACMode(IntEnum):
     """AC-Modus für SolarFlow."""
-    INPUT = 1   # Laden vom Netz
+
+    INPUT = 1  # Laden vom Netz
     OUTPUT = 2  # Einspeisung ins Netz
 
 
 # ==================== Limits ====================
 
+
 class BatteryLimits(BaseModel):
     """Batterie-spezifische Limits."""
+
     charge_limit: int
     discharge_limit: int
     solar_limit: int
@@ -46,23 +52,22 @@ class BatteryLimits(BaseModel):
 
 # Unterstützte Batterie Modelle
 BatteryModel = Literal[
-    "solarFlow800Pro",
-    "solarFlow800Plus",
-    "SF2400AC",
-    "Hub1200",
-    "Hub2000",
-    "Hyper2000",
-    "AIO2400"
+    "solarFlow800Pro", "solarFlow800Plus", "SF2400AC", "Hub1200", "Hub2000", "Hyper2000", "AIO2400"
 ]
 
 # Modell-spezifische Limits
 MODEL_LIMITS: Dict[BatteryModel, BatteryLimits] = {
-    "solarFlow800Pro": BatteryLimits(charge_limit=1000, discharge_limit=800, solar_limit=1200, min_power=20),
-    "solarFlow800Plus": BatteryLimits(charge_limit=1000, discharge_limit=800, solar_limit=1200, min_power=20),
+    "solarFlow800Pro": BatteryLimits(
+        charge_limit=1000, discharge_limit=800, solar_limit=1200, min_power=20
+    ),
+    "solarFlow800Plus": BatteryLimits(
+        charge_limit=1000, discharge_limit=800, solar_limit=1200, min_power=20
+    ),
 }
 
 
 # ==================== Abstract Protocols ====================
+
 
 @runtime_checkable
 class BatteryPackProtocol(Protocol):
@@ -71,6 +76,7 @@ class BatteryPackProtocol(Protocol):
     Beschreibt die erwartete Struktur der Pack-Daten aus der API.
     Kann von Pydantic, Msgspec oder anderen Parsern implementiert werden.
     """
+
     @property
     def sn(self) -> str: ...
     @property
@@ -102,6 +108,7 @@ class PropertiesProtocol(Protocol):
     Beschreibt die erwartete Struktur der Properties aus der API.
     Kann von Pydantic, Msgspec oder anderen Parsern implementiert werden.
     """
+
     # Power Values (W) - Read-Only
     @property
     def heat_state(self) -> int: ...
@@ -238,6 +245,7 @@ class APIResponseProtocol(Protocol):
     Beschreibt die erwartete Struktur der gesamten API Response.
     Kann von Pydantic, Msgspec oder anderen Parsern implementiert werden.
     """
+
     @property
     def timestamp(self) -> int: ...
     @property
@@ -255,6 +263,7 @@ class APIResponseProtocol(Protocol):
 
 
 # ==================== Abstract Response Parser ====================
+
 
 class IResponseParser(ABC):
     """Abstract Base Class für Response Parser.
@@ -274,10 +283,11 @@ class IResponseParser(ABC):
 # ==================== Pydantic Config ====================
 # Gemeinsame ConfigDict für alle Pydantic Models
 
+
 def _camel_case_generator(field_name: str) -> str:
     """Konvertiert snake_case zu camelCase."""
-    words = field_name.split('_')
-    return words[0] + ''.join(word.capitalize() for word in words[1:])
+    words = field_name.split("_")
+    return words[0] + "".join(word.capitalize() for word in words[1:])
 
 
 _PYDANTIC_CONFIG = ConfigDict(
@@ -290,6 +300,7 @@ _PYDANTIC_CONFIG = ConfigDict(
 
 # ==================== Pydantic Models (implementieren Protocols) ====================
 
+
 class Properties(BaseModel):
     """SolarFlow Device Properties - Pydantic Implementation.
 
@@ -298,13 +309,18 @@ class Properties(BaseModel):
 
     Reference: Zendure zenSDK Documentation
     """
+
     model_config = _PYDANTIC_CONFIG
 
     # ==================== Power Values (W) - Read-Only ====================
 
     heat_state: int = Field(default=0, description="0: Not heating, 1: Heating")
-    pack_input_power: int = Field(default=0, description="Battery pack input power (discharging) in W")
-    output_pack_power: int = Field(default=0, description="Output power to battery pack (charging) in W")
+    pack_input_power: int = Field(
+        default=0, description="Battery pack input power (discharging) in W"
+    )
+    output_pack_power: int = Field(
+        default=0, description="Output power to battery pack (charging) in W"
+    )
     output_home_power: int = Field(default=0, description="Output power to home electricity in W")
     remain_out_time: int = Field(default=0, description="Remaining discharge time in minutes")
 
@@ -325,8 +341,15 @@ class Properties(BaseModel):
 
     # ==================== Bypass & Reverse - Read-Only ====================
 
-    bypass: int = Field(default=0, alias="pass", description="0: No, 1: Yes (bypass mode)")
+    bypass: int = Field(
+        default=0, alias="pass", description="0: No, 1: Yes – bypass currently active"
+    )
     reverse_state: int = Field(default=0, description="0: No, 1: Reverse flow")
+    pass_mode: int = Field(
+        default=0,
+        alias="passMode",
+        description="Bypass mode setting: 0=auto, 1=always off, 2=always on",
+    )
 
     # ==================== Status - Read-Only ====================
 
@@ -335,14 +358,18 @@ class Properties(BaseModel):
     grid_off_power: int = Field(default=0, description="Grid-off power setting")
     dc_status: int = Field(default=0, description="0: Stopped, 1: Battery input, 2: Battery output")
     pv_status: int = Field(default=0, description="0: Stopped, 1: Running (solar)")
-    ac_status: int = Field(default=0, description="0: Stopped, 1: Grid-connected operation, 2: Charging operation")
+    ac_status: int = Field(
+        default=0, description="0: Stopped, 1: Grid-connected operation, 2: Charging operation"
+    )
     data_ready: int = Field(default=1, description="0: Not ready, 1: Ready")
     grid_state: int = Field(default=1, description="0: Not connected, 1: Connected")
 
     # ==================== Voltage & Monitoring - Read-Only ====================
 
     bat_volt: int = Field(default=0, description="Battery voltage")
-    soc_limit: int = Field(default=0, description="0: Normal, 1: Charge limit reached, 2: Discharge limit reached")
+    soc_limit: int = Field(
+        default=0, description="0: Normal, 1: Charge limit reached, 2: Discharge limit reached"
+    )
     fault_level: int = Field(default=0, description="Fault level indicator")
     write_rsp: int = Field(default=0, description="Read/write response acknowledgment")
 
@@ -353,8 +380,12 @@ class Properties(BaseModel):
     output_limit: int = Field(default=0, description="Output power limit in W")
     soc_set: int = Field(default=1000, description="Max SoC: 700-1000 (70%-100%)")
     min_soc: int = Field(default=0, description="Min SoC: 0-500 (0%-50%)")
-    grid_standard: int = Field(default=0, description="Grid standard: 0=Germany, 1=France, 2=Austria")
-    grid_reverse: int = Field(default=0, description="0: Disabled, 1: Allowed reverse flow, 2: Forbidden reverse flow")
+    grid_standard: int = Field(
+        default=0, description="Grid standard: 0=Germany, 1=France, 2=Austria"
+    )
+    grid_reverse: int = Field(
+        default=0, description="0: Disabled, 1: Allowed reverse flow, 2: Forbidden reverse flow"
+    )
     inverse_max_power: int = Field(default=0, description="Maximum output power limit in W")
     lamp_switch: int = Field(default=0, description="Lamp switch control")
     grid_off_mode: int = Field(default=0, description="Grid-off mode setting")
@@ -377,7 +408,7 @@ class Properties(BaseModel):
     ts_zone: int = Field(default=0, description="Timezone offset")
     smart_mode: int = Field(
         default=1,
-        description="1: Settings not written to flash (volatile), 0: Written to flash (persistent)"
+        description="1: Settings not written to flash (volatile), 0: Written to flash (persistent)",
     )
     charge_max_limit: int = Field(default=0, description="Maximum charge limit")
     phase_switch: int = Field(default=0, description="Phase switch setting")
@@ -408,6 +439,7 @@ class BatteryPack(BaseModel):
 
     Reference: Zendure zenSDK Documentation
     """
+
     model_config = _PYDANTIC_CONFIG
 
     # ==================== Raw Fields from API ====================
@@ -416,7 +448,9 @@ class BatteryPack(BaseModel):
     pack_type: int = Field(default=0, description="Battery pack model type identifier")
     soc_level: int = Field(default=0, description="Battery level 0-100 (%)")
     state: int = Field(default=0, description="0: Stopped, 1: Running, 2: Standby, 3: Shutdown")
-    power: int = Field(default=0, description="Battery power in W (positive=charging, negative=discharging)")
+    power: int = Field(
+        default=0, description="Battery power in W (positive=charging, negative=discharging)"
+    )
     max_temp: int = Field(default=0, description="Maximum cell temperature (Kelvin*10)")
     total_vol: int = Field(default=0, description="Total battery voltage (centivolts, 0.01V)")
     batcur: int = Field(default=0, description="Battery current (16-bit two's complement, /10 = A)")
@@ -430,6 +464,7 @@ class APIResponse(BaseModel):
 
     Implementiert APIResponseProtocol mit pydantic v2.
     """
+
     model_config = _PYDANTIC_CONFIG
 
     timestamp: int
@@ -439,5 +474,3 @@ class APIResponse(BaseModel):
     product: str = ""
     properties: Properties = Field(default_factory=Properties)
     pack_data: List[BatteryPack] = Field(default_factory=list)
-
-

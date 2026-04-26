@@ -78,21 +78,35 @@ class SolarFlowAsyncClient(SolarFlowBase):
         Returns:
             APIResponse (implementiert APIResponseProtocol) oder None bei Fehler
         """
+        url = f"{self._base_url}/properties/report"
         try:
             session = await self._ensure_session()
-            async with session.get(f"{self._base_url}/properties/report") as response:
+            async with session.get(url) as response:
                 response.raise_for_status()
                 json_bytes = await response.read()
-                return self._decoder.validate_json(json_bytes)
+                parsed = self._decoder.validate_json(json_bytes)
+                logger.debug(
+                    "GET %s → %d B  sn=%s  solar=%dW  home=%dW  bypass=%d",
+                    url,
+                    len(json_bytes),
+                    parsed.sn,
+                    parsed.properties.solar_input_power,
+                    parsed.properties.output_home_power,
+                    parsed.properties.bypass,
+                )
+                return parsed
 
         except asyncio.TimeoutError:
-            logger.warning("SolarFlow API Timeout - Gerät antwortet nicht")
+            logger.warning("SolarFlow API Timeout (GET %s) – Gerät antwortet nicht", url)
+            return None
+        except aiohttp.ClientResponseError as e:
+            logger.error("SolarFlow API HTTP-Fehler (GET %s): %s %s", url, e.status, e.message)
             return None
         except aiohttp.ClientError as e:
-            logger.error("SolarFlow API Fehler (GET): %s", e)
+            logger.error("SolarFlow API Verbindungsfehler (GET %s): %s", url, e)
             return None
         except Exception as e:
-            logger.error("SolarFlow unerwarteter Fehler: %s", e)
+            logger.error("SolarFlow unerwarteter Fehler (GET %s): %s", url, e, exc_info=True)
             return None
 
     async def _set_properties(self, properties: Dict, smart_mode: bool = True) -> bool:
@@ -102,27 +116,50 @@ class SolarFlowAsyncClient(SolarFlowBase):
             properties: Dict mit zu setzenden Properties (camelCase Keys!)
             smart_mode: True = nur RAM (empfohlen), False = Flash schreiben
         """
+        url = f"{self._base_url}/properties/write"
         try:
             if self._sn is None:
                 # Erste Anfrage um SN zu bekommen
                 await self._get_full_response(use_cache=False)
                 if self._sn is None:
-                    logger.error("Seriennummer konnte nicht ermittelt werden")
+                    logger.error("_set_properties: Seriennummer konnte nicht ermittelt werden")
                     return False
 
             payload = self._prepare_properties_payload(properties, smart_mode)
+            prop_keys = list(properties.keys())
+            logger.debug(
+                "POST %s sn=%s props=%s",
+                url,
+                self._sn,
+                prop_keys,
+            )
 
             session = await self._ensure_session()
-            async with session.post(f"{self._base_url}/properties/write", json=payload) as response:
+            async with session.post(url, json=payload) as response:
                 self._invalidate_cache()
-                return response.status == 200
+                ok = response.status == 200
+                if ok:
+                    logger.debug("POST %s → OK  %s", url, prop_keys)
+                else:
+                    logger.warning(
+                        "POST %s → HTTP %d (erwartet 200)  props=%s",
+                        url,
+                        response.status,
+                        prop_keys,
+                    )
+                return ok
 
         except asyncio.TimeoutError:
-            logger.warning("SolarFlow API Timeout beim Schreiben")
+            logger.warning(
+                "SolarFlow API Timeout (POST %s) – props=%s", url, list(properties.keys())
+            )
+            return False
+        except aiohttp.ClientResponseError as e:
+            logger.error("SolarFlow API HTTP-Fehler (POST %s): %s %s", url, e.status, e.message)
             return False
         except aiohttp.ClientError as e:
-            logger.error("SolarFlow API Fehler (POST): %s", e)
+            logger.error("SolarFlow API Verbindungsfehler (POST %s): %s", url, e)
             return False
         except Exception as e:
-            logger.error("SolarFlow unerwarteter Fehler beim Schreiben: %s", e)
+            logger.error("SolarFlow unerwarteter Fehler (POST %s): %s", url, e, exc_info=True)
             return False

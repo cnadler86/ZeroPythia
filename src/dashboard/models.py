@@ -56,6 +56,10 @@ class GridSample(BaseModel):
     charge_input_w: Optional[float] = Field(
         default=None, description="Battery AC charge input [W]."
     )
+    bypass_active: Optional[bool] = Field(
+        default=None,
+        description="True wenn Inverter im Bypass-Modus (PV direkt ans Haus, kein Battery-Control).",
+    )
 
     @property
     def total_grid_w(self) -> float:

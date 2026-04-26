@@ -28,12 +28,21 @@ for the last completed control cycle.  Called after ``compute_setpoint()``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Optional, Protocol
 
 from .models import ControlStatus, GridSample
 
 
-class BatteryInverterProtocol:
+class BatteryStateProtocol(Protocol):
+    """Typed subset of battery state used by runtime and dashboards."""
+
+    battery_soc: int
+    grid_input_power: int
+    bypass_mode: bool
+    solar_input_power: int
+
+
+class BatteryInverterProtocol(Protocol):
     """Structural protocol – matches ``ZeroFeedV3Controller.BatteryInverter``."""
 
     async def get_ac_output_power(self) -> Optional[int]: ...
@@ -44,6 +53,9 @@ class BatteryInverterProtocol:
     async def get_ac_output_limit(self) -> Optional[int]: ...
     async def get_ac_input_limit(self) -> Optional[int]: ...
     async def is_settled(self, *, use_cache: bool = True) -> Optional[bool]: ...
+    async def get_state(self, *, use_cache: bool = True) -> Optional[BatteryStateProtocol]: ...
+    async def get_min_soc(self, *, use_cache: bool = True) -> Optional[int]: ...
+    async def get_max_soc(self, *, use_cache: bool = True) -> Optional[int]: ...
 
 
 class RegulatorBase(ABC):
@@ -139,9 +151,11 @@ class RegulatorBase(ABC):
         """Return current settings values matching the ``settings_schema()`` keys."""
         return {}
 
+    @abstractmethod
     def apply_settings(self, data: dict[str, Any]) -> None:
         """Apply settings from a ``{key: value}`` dict (from the GUI form).
 
         Implementations should validate values and update internal state.
         Raise ``ValueError`` with a human-readable message on invalid input.
         """
+        ...

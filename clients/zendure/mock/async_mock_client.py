@@ -1,4 +1,5 @@
 """Async Mock SolarFlow Client - Simuliert Zendure SolarFlow Verhalten.
+
 =====================================================================
 
 Timer-basierte Simulation mit realistischem Timing-Verhalten.
@@ -49,9 +50,7 @@ class SetpointState:
         self.created_at = (
             current_time if current_time is not None else time()
         )  # Echte Erstellungszeit (für skip_delay-Check)
-        self.timestamp = (
-            self.created_at
-        )  # Simulation-Startzeit (kann backdatiert werden)
+        self.timestamp = self.created_at  # Simulation-Startzeit (kann backdatiert werden)
         self.ac_mode = ac_mode
         self.input_limit = input_limit
         self.output_limit = output_limit
@@ -181,9 +180,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
 
     # ==================== Timer-basierte Simulation ====================
 
-    def _set_new_setpoint(
-        self, ac_mode: ACMode, input_limit: int, output_limit: int
-    ) -> None:
+    def _set_new_setpoint(self, ac_mode: ACMode, input_limit: int, output_limit: int) -> None:
         """Setzt neuen Setpoint und startet Timer."""
         # Aktuelle Power berechnen (vor dem neuen Setpoint!)
         current_input, current_output = self._calculate_actual_power()
@@ -194,8 +191,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         # Wichtig: Prüfen auf SETPOINT, nicht auf aktuelle Power!
         if self._current_setpoint:
             was_in_standby = (
-                self._current_setpoint.output_limit == 0
-                and self._current_setpoint.input_limit == 0
+                self._current_setpoint.output_limit == 0 and self._current_setpoint.input_limit == 0
             )
         else:
             # Kein vorheriger Setpoint = wir starten aus Standby
@@ -309,9 +305,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
 
         # 2. Phase: Setpoint verfügbar, warten auf Reaktion
         reaction_delay = (
-            self.to_active_delay
-            if self._current_setpoint.was_in_standby
-            else self.reaction_delay
+            self.to_active_delay if self._current_setpoint.was_in_standby else self.reaction_delay
         )
 
         reaction_start = self.setpoint_delay + reaction_delay
@@ -335,7 +329,9 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             )
             # Stufenrauschen: während der Rampe stärkeres Rauschen
             progress = 1.0 - math.exp(-pt1_elapsed / max(self.pt1_time_constant, 0.01))
-            step_range = abs(self._current_setpoint.output_limit - self._current_setpoint.start_output)
+            step_range = abs(
+                self._current_setpoint.output_limit - self._current_setpoint.start_output
+            )
             if progress < 0.95 and step_range > 10:
                 noise = random.gauss(0, step_range * self.STEP_NOISE_FRACTION)
             else:
@@ -364,9 +360,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
     def _update_soc(self) -> None:
         """Berechnet SOC basierend auf verstrichener Zeit und Energiefluss."""
         # Aktuelle Power erst berechnen!
-        self._actual_input_power, self._actual_output_power = (
-            self._calculate_actual_power()
-        )
+        self._actual_input_power, self._actual_output_power = self._calculate_actual_power()
 
         now = self._get_time()
         elapsed_hours = (now - self._last_update) / 3600.0
@@ -383,9 +377,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
 
         # AC Output (Entladen)
         if self._actual_output_power > 0:
-            energy_flow_wh -= (
-                self._actual_output_power * elapsed_hours / self.EFFICIENCY
-            )
+            energy_flow_wh -= self._actual_output_power * elapsed_hours / self.EFFICIENCY
 
         # Solar Input (immer Laden mit Effizienz)
         if self._solar_input_power > 0:
@@ -415,18 +407,12 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             return
 
         # Bei Output: Wenn SOC zu niedrig
-        if (
-            self._current_setpoint.ac_mode == ACMode.OUTPUT
-            and self._soc <= self._min_soc_percent
-        ):
+        if self._current_setpoint.ac_mode == ACMode.OUTPUT and self._soc <= self._min_soc_percent:
             logger.info("Min SOC %.0f%% erreicht - Auto-Standby", self._soc)
             self._set_new_setpoint(ACMode.OUTPUT, 0, 0)
 
         # Bei Input: Wenn SOC zu hoch
-        elif (
-            self._current_setpoint.ac_mode == ACMode.INPUT
-            and self._soc >= self._max_soc_percent
-        ):
+        elif self._current_setpoint.ac_mode == ACMode.INPUT and self._soc >= self._max_soc_percent:
             logger.info("Max SOC %.0f%% erreicht - Auto-Standby", self._soc)
             self._set_new_setpoint(ACMode.INPUT, 0, 0)
 
@@ -436,10 +422,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             return "standby"
 
         # Status basiert auf Setpoint, nicht auf tatsächlichem Output
-        if (
-            self._current_setpoint.output_limit == 0
-            and self._current_setpoint.input_limit == 0
-        ):
+        if self._current_setpoint.output_limit == 0 and self._current_setpoint.input_limit == 0:
             return "standby"
         elif self._current_setpoint.output_limit > 0:
             return "discharging"
@@ -456,9 +439,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         self._update_soc()
 
         # Aktuelle Power aus Timern berechnen
-        self._actual_input_power, self._actual_output_power = (
-            self._calculate_actual_power()
-        )
+        self._actual_input_power, self._actual_output_power = self._calculate_actual_power()
 
         # Setpoint-Verfügbarkeit prüfen
         available_input, available_output = self._calculate_setpoint_availability()
@@ -503,13 +484,9 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             remain_out_time=0,
             reverse_state=0,
             soc_status=0,
-            dc_status=1
-            if self._actual_output_power > 0 or self._actual_input_power > 0
-            else 0,
+            dc_status=1 if self._actual_output_power > 0 or self._actual_input_power > 0 else 0,
             pv_status=0,
-            ac_status=1
-            if self._actual_output_power > 0 or self._actual_input_power > 0
-            else 0,
+            ac_status=1 if self._actual_output_power > 0 or self._actual_input_power > 0 else 0,
             soc_limit=0,
         )
 
@@ -693,7 +670,5 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             if self._current_setpoint
             else 0,
             "current_status": self._get_current_status(),
-            "was_in_standby": (
-                self._actual_output_power == 0 and self._actual_input_power == 0
-            ),
+            "was_in_standby": (self._actual_output_power == 0 and self._actual_input_power == 0),
         }

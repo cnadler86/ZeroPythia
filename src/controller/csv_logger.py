@@ -1,4 +1,5 @@
 """CSV-Logger für ZeroFeed V3.
+
 ==========================
 
 Loggt pro Tag eine CSV-Datei mit zwei Zeilentypen:
@@ -147,7 +148,9 @@ class SampleLogEntry:
             "osc_C_oscillating": int(self.osc_C_oscillating),
             "osc_C_limit_w": f"{self.osc_C_limit_w:.1f}" if self.osc_C_oscillating else "",
             "osc_total_oscillating": int(self.osc_total_oscillating),
-            "osc_total_limit_w": f"{self.osc_total_limit_w:.1f}" if self.osc_total_oscillating else "",
+            "osc_total_limit_w": f"{self.osc_total_limit_w:.1f}"
+            if self.osc_total_oscillating
+            else "",
         }
 
 
@@ -224,18 +227,28 @@ class ZeroFeedCSVLogger:
     def log_sample(self, entry: SampleLogEntry) -> None:
         """Schreibt eine sample-Zeile."""
         self._ensure_file(entry.unix_ts)
+        writer = self._writer
+        file = self._file
+        if writer is None or file is None:
+            logger.error("CSV-Log nicht initialisiert (sample)")
+            return
         try:
-            self._writer.writerow(entry.to_row())  # type: ignore[union-attr]
-            self._file.flush()  # type: ignore[union-attr]
+            writer.writerow(entry.to_row())
+            file.flush()
         except Exception as e:
             logger.error("CSV-Log Schreibfehler (sample): %s", e)
 
     def log_control(self, entry: ControlLogEntry) -> None:
         """Schreibt eine control-Zeile."""
         self._ensure_file(entry.unix_ts)
+        writer = self._writer
+        file = self._file
+        if writer is None or file is None:
+            logger.error("CSV-Log nicht initialisiert (control)")
+            return
         try:
-            self._writer.writerow(entry.to_row())  # type: ignore[union-attr]
-            self._file.flush()  # type: ignore[union-attr]
+            writer.writerow(entry.to_row())
+            file.flush()
         except Exception as e:
             logger.error("CSV-Log Schreibfehler (control): %s", e)
 
@@ -245,7 +258,7 @@ class ZeroFeedCSVLogger:
             try:
                 self._file.close()
             except Exception:
-                pass
+                logger.debug("CSV-Log konnte nicht sauber geschlossen werden", exc_info=True)
             self._file = None
             self._writer = None
             self._current_date = None

@@ -472,7 +472,7 @@ class ZeroFeedV3GUI:
             correction_values=result.phase_a_correction,
             osc_limits=result.phase_a_osc_limit,
             controlled_grid_values=[
-                p - c for p, c in zip(result.phase_a, result.phase_a_correction)
+                p - c for p, c in zip(result.phase_a, result.phase_a_correction, strict=False)
             ],
             controlled_label="Geregeltes Grid A",
         )
@@ -485,7 +485,7 @@ class ZeroFeedV3GUI:
             correction_values=result.phase_c_correction,
             osc_limits=result.phase_c_osc_limit,
             controlled_grid_values=[
-                p - c for p, c in zip(result.phase_c, result.phase_c_correction)
+                p - c for p, c in zip(result.phase_c, result.phase_c_correction, strict=False)
             ],
             controlled_label="Geregeltes Grid C",
         )
@@ -512,16 +512,17 @@ class ZeroFeedV3GUI:
         osc_active = [math.isfinite(v) for v in osc_limits]
         self._shade_oscillation_regions(ax1, t_axis, osc_active)
         self._shade_oscillation_regions(ax2, t_axis, osc_active)
+        x_axis = mdates.date2num(t_axis)
 
         ax1.plot(
-            t_axis,
+            x_axis,
             phase_values,
             label=f"CSV-Grid {key}",
             color="#1f4e79",
             linewidth=1.2,
         )
         ax1.plot(
-            t_axis,
+            x_axis,
             correction_values,
             label=f"Controller-Correction {key}",
             color="#d97706",
@@ -534,7 +535,7 @@ class ZeroFeedV3GUI:
         ax1.grid(True, alpha=0.22)
 
         ax2.plot(
-            t_axis,
+            x_axis,
             controlled_grid_values,
             label=controlled_label,
             color="#0f766e",
@@ -570,15 +571,16 @@ class ZeroFeedV3GUI:
         target_w = self.settings.manager.target_power_w
         osc_active = [math.isfinite(v) for v in result.phase_b_osc_limit]
         controlled_total_grid = [
-            g - c for g, c in zip(result.grid_total, result.phase_b_correction)
+            g - c for g, c in zip(result.grid_total, result.phase_b_correction, strict=False)
         ]
+        x_axis = mdates.date2num(t_axis)
 
         self._shade_oscillation_regions(ax1, t_axis, osc_active)
         self._shade_oscillation_regions(ax2, t_axis, osc_active)
 
-        ax1.plot(t_axis, result.phase_b, label="CSV-Grid B", color="#1f4e79", linewidth=1.2)
+        ax1.plot(x_axis, result.phase_b, label="CSV-Grid B", color="#1f4e79", linewidth=1.2)
         ax1.plot(
-            t_axis,
+            x_axis,
             result.phase_b_correction,
             label="Controller-Correction B",
             color="#d97706",
@@ -591,14 +593,14 @@ class ZeroFeedV3GUI:
         ax1.grid(True, alpha=0.22)
 
         ax2.plot(
-            t_axis,
+            x_axis,
             controlled_total_grid,
             label="Geregeltes Total-Grid durch Regler B",
             color="#0f766e",
             linewidth=1.2,
         )
         ax2.plot(
-            t_axis,
+            x_axis,
             result.grid_total,
             label="Ist-Total-Grid",
             color="#6b7280",
@@ -638,12 +640,13 @@ class ZeroFeedV3GUI:
         osc_active = [v < self.settings.manager.max_output_w for v in result.osc_limits]
         self._shade_oscillation_regions(ax1, t_axis, osc_active)
         self._shade_oscillation_regions(ax2, t_axis, osc_active)
+        x_axis = mdates.date2num(t_axis)
 
         # --- Plot 1: Grid Power (3 Phasen + Total) ---
-        ax1.plot(t_axis, result.phase_a, label="Phase A", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_axis, result.phase_b, label="Phase B", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_axis, result.phase_c, label="Phase C", alpha=0.6, linewidth=0.5)
-        ax1.plot(t_axis, result.grid_total, label="Total", color="black", linewidth=1.0)
+        ax1.plot(x_axis, result.phase_a, label="Phase A", alpha=0.6, linewidth=0.5)
+        ax1.plot(x_axis, result.phase_b, label="Phase B", alpha=0.6, linewidth=0.5)
+        ax1.plot(x_axis, result.phase_c, label="Phase C", alpha=0.6, linewidth=0.5)
+        ax1.plot(x_axis, result.grid_total, label="Total", color="black", linewidth=1.0)
         target_w = self.settings.manager.target_power_w
         ax1.axhline(
             y=target_w, color="green", linestyle="--", alpha=0.5, label=f"Ziel ({target_w:.0f}W)"
@@ -659,15 +662,15 @@ class ZeroFeedV3GUI:
 
         # --- Plot 2: Battery Output + Setpoint ---
         ax2.plot(
-            t_axis,
+            x_axis,
             result.battery_output,
             label="Battery Output",
             color="orange",
             linewidth=0.8,
         )
-        ax2.plot(t_axis, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7)
+        ax2.plot(x_axis, result.setpoints, label="Setpoint", color="blue", linewidth=1.0, alpha=0.7)
         ax2.plot(
-            t_axis,
+            x_axis,
             result.osc_limits,
             label="Osc Limit",
             color="red",
@@ -701,9 +704,9 @@ class ZeroFeedV3GUI:
             export_wh.append(cum_export)
             battery_wh.append(cum_battery)
 
-        ax3.plot(t_axis, import_wh, label="Import", color="red")
-        ax3.plot(t_axis, export_wh, label="Export", color="green")
-        ax3.plot(t_axis, battery_wh, label="Batterie", color="orange")
+        ax3.plot(x_axis, import_wh, label="Import", color="red")
+        ax3.plot(x_axis, export_wh, label="Export", color="green")
+        ax3.plot(x_axis, battery_wh, label="Batterie", color="orange")
         ax3.set_ylabel("Energie [Wh]")
         ax3.set_xlabel("Uhrzeit")
         ax3.legend(loc="upper left", fontsize=7)

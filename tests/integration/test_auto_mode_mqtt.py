@@ -16,7 +16,7 @@ import json
 import socket
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional, cast
 
 import pytest
 
@@ -401,7 +401,7 @@ class TestControlRuntimeAutoMode:
         grid = FakeGrid()
         runtime = ControlRuntime(
             grid_meter=grid,
-            battery=battery,
+            battery=cast(Any, battery),
             sampling_interval_s=0.1,
             control_interval_s=0.5,
             max_discharge_w=800,

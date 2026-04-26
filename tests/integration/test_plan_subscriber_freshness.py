@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
 from src.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
 
@@ -34,7 +35,9 @@ def _payload(*, published_at: datetime, step_mode: int) -> dict:
 
 def test_older_plan_is_ignored() -> None:
     mqtt = DummyMqttClient()
-    sub = GridPythiaPlanSubscriber(mqtt_client=mqtt, device_id="DEV1", topic_prefix="gridpythia")
+    sub = GridPythiaPlanSubscriber(
+        mqtt_client=cast(Any, mqtt), device_id="DEV1", topic_prefix="gridpythia"
+    )
 
     newer_ts = datetime(2026, 4, 26, 12, 0, 0, tzinfo=timezone.utc)
     older_ts = datetime(2026, 4, 26, 11, 0, 0, tzinfo=timezone.utc)
@@ -50,7 +53,9 @@ def test_older_plan_is_ignored() -> None:
 
 def test_newer_plan_replaces_current() -> None:
     mqtt = DummyMqttClient()
-    sub = GridPythiaPlanSubscriber(mqtt_client=mqtt, device_id="DEV1", topic_prefix="gridpythia")
+    sub = GridPythiaPlanSubscriber(
+        mqtt_client=cast(Any, mqtt), device_id="DEV1", topic_prefix="gridpythia"
+    )
 
     older_ts = datetime(2026, 4, 26, 11, 0, 0, tzinfo=timezone.utc)
     newer_ts = datetime(2026, 4, 26, 12, 0, 0, tzinfo=timezone.utc)

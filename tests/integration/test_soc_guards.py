@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional, cast
 
 import pytest
 
@@ -141,14 +141,14 @@ def _make_runtime(
     min_soc_pct: int = 15,
     min_soc_hysteresis_pct: int = 5,
     full_soc_pct: int = 100,
-    full_soc_resume_delay_s: float = 30.0,
+    full_soc_resume_delay_s: float = 10.0,
     full_soc_resume_threshold_w: int = 50,
     high_soc_charge_limit_pct: int = 90,
     high_soc_charge_limit_w: Optional[int] = None,
 ) -> ControlRuntime:
     rt = ControlRuntime(
         FakeGrid(),
-        battery,
+        cast(Any, battery),
         min_soc_hysteresis_pct=min_soc_hysteresis_pct,
         full_soc_resume_delay_s=full_soc_resume_delay_s,
         full_soc_resume_threshold_w=full_soc_resume_threshold_w,
@@ -200,7 +200,7 @@ async def test_zfi_resumes_after_hysteresis() -> None:
     rt = _make_runtime(batt, min_soc_pct=15, min_soc_hysteresis_pct=5)
     reg = FakeRegulator()
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
-    rt._active_regulator = reg
+    rt._active_regulator = cast(Any, reg)
     rt._zfi_paused_low_soc = True  # was paused
 
     sample = _make_sample(soc=20)
@@ -232,7 +232,7 @@ async def test_full_battery_pauses_zfi() -> None:
 async def test_full_battery_timer_resets_when_grid_low() -> None:
     """Grid draw below threshold must reset the 30s wake-up timer."""
     batt = FakeBattery(soc=100, max_soc=100)
-    rt = _make_runtime(batt, full_soc_pct=100, full_soc_resume_delay_s=30.0, full_soc_resume_threshold_w=50)
+    rt = _make_runtime(batt, full_soc_pct=100, full_soc_resume_delay_s=10.0, full_soc_resume_threshold_w=50)
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
     rt._zfi_paused_full_battery = True
     # Simulate timer already started
@@ -253,12 +253,12 @@ async def test_full_battery_resumes_after_30s() -> None:
     rt = _make_runtime(
         batt,
         full_soc_pct=100,
-        full_soc_resume_delay_s=30.0,
+        full_soc_resume_delay_s=10.0,
         full_soc_resume_threshold_w=50,
     )
     reg = FakeRegulator()
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
-    rt._active_regulator = reg
+    rt._active_regulator = cast(Any, reg)
     rt._zfi_paused_full_battery = True
     # Simulate: timer started 31s ago
     rt._full_battery_resume_since = time.monotonic() - 31.0
@@ -382,8 +382,8 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
         steps=[step],
     )
     # Inject plan directly
-    mgr._subscriber._plan = plan  # noqa: SLF001
-    mgr._subscriber._last_received_at = now  # noqa: SLF001
+    cast(Any, mgr._subscriber)._plan = plan  # noqa: SLF001
+    cast(Any, mgr._subscriber)._last_received_at = now  # noqa: SLF001
 
     await mgr.tick(fake_cb)
 

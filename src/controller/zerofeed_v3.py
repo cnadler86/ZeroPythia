@@ -94,6 +94,43 @@ class BatteryInverter(Protocol):
         """True wenn Inverter-Output nahe am gesetzten Setpoint."""
         ...
 
+    async def get_bypass_state(self, *, use_cache: bool = True) -> Optional[bool]:
+        """Liest den Bypass-Zustand."""
+        ...
+
+    async def disable_bypass(self, *, smart_mode: bool = True) -> bool:
+        """Deaktiviert Bypass per passMode."""
+        ...
+
+    async def get_battery_discharge_power(self, *, use_cache: bool = True) -> Optional[int]:
+        """Liest echte Batterie-Entladeleistung (pack_input_power)."""
+        ...
+
+
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+
+async def _check_bypass(battery: BatteryInverter) -> Optional[bool]:
+    """Liest Bypass-Status vom Inverter wenn unterstützt.
+
+    Returns:
+        True = Bypass aktiv, False = kein Bypass, None = nicht abfragbar
+    """
+    try:
+        return await battery.get_bypass_state(use_cache=False)
+    except Exception:
+        logger.debug("_check_bypass: Fehler beim Lesen des Bypass-Status", exc_info=True)
+        return None
+
+
+async def _read_battery_discharge_power(battery: BatteryInverter) -> Optional[int]:
+    """Liest tatsächliche Batterie-Entladeleistung (pack_input_power)."""
+    try:
+        return await battery.get_battery_discharge_power(use_cache=False)
+    except Exception:
+        logger.debug("_read_battery_discharge_power: Fehler", exc_info=True)
+        return None
+
 
 # ── Datenklassen ─────────────────────────────────────────────────────────────
 
@@ -255,24 +292,140 @@ class ZeroFeedV3Controller:
             return
 
         self._running = True
-
-        # Batterie starten
         min_output = self.settings.manager.min_output_w
-        await self.battery.start_discharge(min_output)
 
-        # Warte auf tatsächlichen Start
-        for _ in range(10):
-            power = await self.battery.get_ac_output_power()
-            if power is not None and power >= min_output:
-                break
-            await asyncio.sleep(self.settings.control_interval_s)
+        logger.info(
+            "ZeroFeed V3: Starte Initialisierung (min_output=%dW, max_output=%dW, "
+            "control_interval=%.1fs)...",
+            min_output,
+            self.settings.manager.max_output_w,
+            self.settings.control_interval_s,
+        )
 
-        self._current_output_limit = min_output
+        # ── Bypass deaktivieren wenn nötig ─────────────────────────────
+        await self._ensure_bypass_inactive()
+
+        # ── Prüfen ob Batterie bereits entlädt ────────────────────────
+        # Maßgeblich ist pack_input_power (Zellen-Output), NICHT output_home_power
+        # (das kann Solar-Bypass sein).  Bei laufender Entladung keinen neuen
+        # Befehl senden – das würde den Inverter kurz auf 0 setzen.
+        batt_discharge_w = await _read_battery_discharge_power(self.battery)
+        if batt_discharge_w is not None and batt_discharge_w >= min_output:
+            current_output = await self.battery.get_ac_output_limit() or min_output
+            self._current_output_limit = current_output
+            logger.info(
+                "Batterie entlädt bereits: pack_input=%dW  output_limit=%dW – "
+                "kein Neustart nötig, übernehme laufenden Setpoint",
+                batt_discharge_w,
+                current_output,
+            )
+        else:
+            # Batterie ist inaktiv (Standby, Bypass, oder erst kurz gestartet) →
+            # explizit starten und auf echten Battery-Output warten
+            logger.info(
+                "Batterie nicht aktiv (pack_input=%s W) – sende start_discharge(%dW)...",
+                batt_discharge_w,
+                min_output,
+            )
+            success = await self.battery.start_discharge(min_output)
+            if not success:
+                logger.warning("start_discharge-Befehl nicht bestätigt – starte trotzdem")
+
+            # Warte bis echte Batterie-Energie fließt (pack_input_power > 0)
+            # Nicht auf output_home_power warten – das könnte Solar-Bypass sein!
+            timeout_s = int(self.settings.control_interval_s * 10)
+            logger.info("Warte auf Batterie-Entladung (timeout=%ds)...", timeout_s)
+            started = False
+            for attempt in range(10):
+                bypass = await _check_bypass(self.battery)
+                if bypass:
+                    logger.warning(
+                        "Start-Check %d/10: Inverter im Bypass – warte auf Bypass-Ende...",
+                        attempt + 1,
+                    )
+                    await asyncio.sleep(self.settings.control_interval_s)
+                    continue
+
+                pack_w = await _read_battery_discharge_power(self.battery)
+                logger.debug(
+                    "Start-Check %d/10: pack_input=%s W  bypass=%s",
+                    attempt + 1,
+                    pack_w,
+                    bypass,
+                )
+                if pack_w is not None and pack_w >= min_output:
+                    started = True
+                    logger.info(
+                        "Batterie bestätigt Entladung nach %d Check(s): pack_input=%dW",
+                        attempt + 1,
+                        pack_w,
+                    )
+                    break
+                await asyncio.sleep(self.settings.control_interval_s)
+
+            if not started:
+                bypass_final = await _check_bypass(self.battery)
+                if bypass_final:
+                    logger.warning(
+                        "Inverter ist nach %ds noch im Bypass. ZFI startet trotzdem, "
+                        "Regelung greift sobald Bypass endet.",
+                        timeout_s,
+                    )
+                else:
+                    pack_w = await _read_battery_discharge_power(self.battery)
+                    logger.warning(
+                        "Batterie hat nach %ds kein pack_input >= %dW gemeldet "
+                        "(aktuell: %s W). Mögliche Ursachen: SoC-Limit, "
+                        "Batterie nicht verbunden, oder API-Verzögerung. "
+                        "Starte Controller trotzdem.",
+                        timeout_s,
+                        min_output,
+                        pack_w,
+                    )
+            self._current_output_limit = min_output
+
         self._last_set_time = asyncio.get_event_loop().time()
-
         self._sampling_task = asyncio.create_task(self._sampling_loop())
         self._control_task = asyncio.create_task(self._control_loop())
-        logger.info("ZeroFeed V3 gestartet (min=%dW)", min_output)
+        logger.info("ZeroFeed V3 gestartet (setpoint=%dW)", self._current_output_limit)
+
+    async def _ensure_bypass_inactive(self) -> bool:
+        """Prüft Bypass-Status und versucht ihn zu deaktivieren.
+
+        Returns:
+            True wenn Bypass inaktiv (oder nicht prüfbar), False wenn Bypass noch aktiv.
+        """
+        bypass = await _check_bypass(self.battery)
+        if bypass is None:
+            logger.debug("_ensure_bypass_inactive: kein get_bypass_state – überspringe")
+            return True
+        if not bypass:
+            logger.debug("_ensure_bypass_inactive: Bypass inaktiv – OK")
+            return True
+
+        logger.warning(
+            "Inverter ist im BYPASS-Modus! PV-Energie direkt ans Haus, "
+            "outputLimit-Befehle werden ignoriert. Versuche Bypass zu deaktivieren..."
+        )
+
+        success = await self.battery.disable_bypass()
+        if not success:
+            logger.error("Bypass-Deaktivierung fehlgeschlagen (API-Fehler)")
+            return False
+
+        for i in range(5):
+            await asyncio.sleep(2.0)
+            bypass = await _check_bypass(self.battery)
+            logger.debug("Bypass-Check %d/5 nach disable: bypass=%s", i + 1, bypass)
+            if bypass is False:
+                logger.info("Bypass erfolgreich deaktiviert nach %ds", (i + 1) * 2)
+                return True
+
+        logger.error(
+            "Bypass ist nach 10s noch aktiv. Controller startet trotzdem, "
+            "Regelung greift erst wenn Bypass endet."
+        )
+        return False
 
     async def stop(self) -> None:
         """Stoppt den Controller."""
@@ -492,6 +645,9 @@ class ZeroFeedV3Controller:
         import time as time_mod
 
         logger.info("Sampling-Loop gestartet (%.1fs)", self.settings.sampling_interval)
+        _bypass_check_interval = 30.0
+        _last_bypass_check: float = 0.0
+        _bypass_was_active: Optional[bool] = None
         try:
             last_time = time_mod.time()
             while self._running:
@@ -502,13 +658,36 @@ class ZeroFeedV3Controller:
                 await asyncio.sleep(sleep)
                 last_time = time_mod.time()
 
+                # Periodischer Bypass-Check (alle ~30s)
+                if (last_time - _last_bypass_check) >= _bypass_check_interval:
+                    _last_bypass_check = last_time
+                    bypass_now = await _check_bypass(self.battery)
+                    if bypass_now is not None and bypass_now != _bypass_was_active:
+                        if bypass_now:
+                            logger.warning(
+                                "Sampling-Loop: Inverter wechselt in Bypass-Modus! "
+                                "PV-Energie direkt ans Haus, Battery-Output = 0. "
+                                "ZFI-Regelung ohne Wirkung bis Bypass endet."
+                            )
+                        elif _bypass_was_active:
+                            logger.info("Sampling-Loop: Bypass deaktiviert – Battery-Control aktiv")
+                        _bypass_was_active = bypass_now
+
                 try:
                     phases = await self.grid_meter.get_phase_powers()
                     if phases is None:
+                        logger.debug("Sampling: Grid-Meter lieferte keine Daten")
                         continue
 
                     phase_a, phase_b, phase_c = phases
                     output = await self.battery.get_ac_output_power() or 0
+
+                    # Im Bypass-Modus ist output_home_power = Solar-Bypass, nicht Batterie.
+                    # Wir loggen das, können aber nichts dagegen tun da pack_input_power
+                    # der echte Battery-Output ist.
+                    if _bypass_was_active:
+                        batt_discharge = await self.battery.get_battery_discharge_power()
+                        output = batt_discharge if batt_discharge is not None else 0
 
                     sample = GridSample(
                         timestamp=last_time,
