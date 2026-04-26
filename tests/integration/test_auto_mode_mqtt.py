@@ -240,9 +240,9 @@ class TestPlanPayloadParsing:
         # 3 merged groups: ZFI, IDLE, AC_CHARGE
         labels = [e.mode_label for e in summary]
         assert labels == ["Zero-Feed", "Idle", "AC Laden"], f"Got: {labels}"
-        # ZFI power = 200 Wh / 0.25 h = 800 W
+        # ZFI/TFI discharge value is intentionally hidden in summary.
         zfi_entry = summary[0]
-        assert zfi_entry.power_w == 800
+        assert zfi_entry.power_w is None
 
 
 @pytest.mark.asyncio

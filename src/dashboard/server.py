@@ -221,6 +221,10 @@ _HTML = """<!DOCTYPE html>
       <span class="label">Aktuell effektiv</span>
       <span id="auto-effective" class="badge badge-gray">–</span>
     </div>
+    <div class="row">
+      <span class="label">ZFI Regelung</span>
+      <span id="auto-zfi-state" class="badge badge-gray">–</span>
+    </div>
     <div id="plan-list" style="margin-top:10px"></div>
   </div>
 
@@ -285,7 +289,7 @@ function render(s) {
   // Auto plan card: show only in auto mode
   const cardAuto = document.getElementById('card-auto');
   cardAuto.style.display = s.mode === 'auto' ? '' : 'none';
-  if (s.auto_status) renderAutoStatus(s.auto_status);
+  if (s.auto_status) renderAutoStatus(s.auto_status, s);
 
   document.getElementById('b-maxdis').textContent = (s.max_discharge_w ?? '–') + ' W';
   if (s.max_discharge_w) document.getElementById('max-dis-w').value = s.max_discharge_w;
@@ -511,7 +515,7 @@ async function deactivateAuto() {
 }
 
 // ── Auto status / plan rendering ───────────────────────────────────────────
-function renderAutoStatus(as) {
+function renderAutoStatus(as, fullState) {
   const connEl = document.getElementById('auto-conn-badge');
   if (as.connected) {
     connEl.textContent = as.has_plan ? 'Verbunden ✓ Plan' : 'Verbunden (kein Plan)';
@@ -520,12 +524,29 @@ function renderAutoStatus(as) {
     connEl.textContent = 'Getrennt';
     connEl.className = 'badge badge-red';
   }
-  document.getElementById('auto-plan-ts').textContent = as.plan_published_at
-    ? as.plan_published_at
-    : (as.plan_received_at ? 'Empfangen ' + as.plan_received_at : '–');
+  document.getElementById('auto-plan-ts').textContent = as.plan_published_at || '–';
   const effEl = document.getElementById('auto-effective');
   effEl.textContent = as.effective_mode || '–';
   effEl.className = 'badge ' + effectiveBadgeClass(as.effective_mode);
+
+  const zfiEl = document.getElementById('auto-zfi-state');
+  const pausedLow = !!fullState?.zfi_paused_low_soc;
+  const pausedFull = !!fullState?.zfi_paused_full_battery;
+  const eff = as.effective_mode || '';
+  const zfiEffective = eff.includes('Zero-Feed') || eff.includes('Entladen');
+  if (pausedLow) {
+    zfiEl.textContent = 'Pausiert (SoC-Minimum)';
+    zfiEl.className = 'badge badge-yellow';
+  } else if (pausedFull) {
+    zfiEl.textContent = 'Pausiert (Batterie voll)';
+    zfiEl.className = 'badge badge-yellow';
+  } else if (zfiEffective) {
+    zfiEl.textContent = 'Aktiv';
+    zfiEl.className = 'badge badge-green';
+  } else {
+    zfiEl.textContent = 'Nicht aktiv';
+    zfiEl.className = 'badge badge-gray';
+  }
 
   const list = document.getElementById('plan-list');
   if (!as.plan_summary || as.plan_summary.length === 0) {
@@ -535,7 +556,12 @@ function renderAutoStatus(as) {
   list.innerHTML = as.plan_summary.map(e => {
     const dateStr = e.date ? `<span style="color:var(--muted);font-size:11px">${e.date} </span>` : '';
     const timeStr = `${e.from_time}–${e.to_time}`;
-    const pwrStr = e.power_w != null ? `${e.power_w} W` : '';
+    let pwrStr = '';
+    if (e.power_w != null) {
+      pwrStr = `${e.power_w} W`;
+    } else if (e.mode_label === 'Zero-Feed' || e.mode_label === 'Entladen') {
+      pwrStr = 'HW-Limit';
+    }
     const icon = planModeIcon(e.mode_label);
     return `<div class="plan-entry">
       <span class="plan-time">${dateStr}${timeStr}</span>

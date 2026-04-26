@@ -51,8 +51,11 @@ def _plan_power_w(step: PlanStep, dt_hours: float) -> Optional[int]:
     """Return the relevant power value for a plan step in Watts."""
     if dt_hours <= 0:
         return None
+    # For ZFI/TFI-style discharge modes, GridPythia discharge Wh is not used as
+    # an effective runtime cap in dashboard control. Showing a number here would
+    # be misleading, so keep the summary power empty for those slots.
     if step.mode in (InverterMode.DISCHARGE, InverterMode.DISCHARGE_ZERO_FEED_IN):
-        return int(step.discharge_ac_wh / dt_hours)
+        return None
     if step.mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
         return int(step.charge_ac_wh / dt_hours)
     return None
