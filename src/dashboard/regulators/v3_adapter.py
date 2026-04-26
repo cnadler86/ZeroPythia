@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from math import ceil
 from typing import Any, Optional
 
-from src.controller.oscillation_detectorv2 import BaseloadHolderSettings
+from src.controller.oscillation_detectorv2 import BaseloadHolderSettings, BaseloadPredictorSettings
 from src.controller.phase_controller import (
     InverterPhaseController,
     InverterPhaseControllerSettings,
@@ -44,7 +44,7 @@ class V3RegulatorSettings:
     # Manager limits
     max_output_w: int = 800
     min_output_w: int = 20
-    target_power_w: float = 3.0
+    target_power_w: float = 1.0
 
     # P-Controller gains
     kp_draw: float = 0.9
@@ -58,11 +58,30 @@ class V3RegulatorSettings:
     # Feedback
     feedback_enabled: bool = True
 
-    # Oscillation detection A+C
-    osc_ac_enabled: bool = False
+    # Oscillation detection A+C (Holder + Predictor, both use global settings below)
+    osc_ac_holder_enabled: bool = False
+    osc_ac_predictor_enabled: bool = False
 
-    # Oscillation detection B
-    osc_b_enabled: bool = False
+    # Oscillation detection B (Holder + Predictor)
+    osc_b_holder_enabled: bool = False
+    osc_b_predictor_enabled: bool = False
+
+    # ── BaseloadHolder settings (global, same for all phases) ──
+    holder_threshold: float = 30.0
+    holder_min_period: float = 1.0
+    holder_max_period: float = 10.0
+    holder_period_variance: float = 1.2
+    holder_time_threshold: float = 0.6
+    holder_min_rising_count: int = 3
+
+    # ── BaseloadPredictor settings (global, same for all phases) ──
+    predictor_threshold: float = 100.0
+    predictor_min_period: float = 8.0
+    predictor_max_period: float = 120.0
+    predictor_period_variance: float = 2.0
+    predictor_time_threshold: float = 2.0
+    predictor_min_rising_count: int = 3
+    predictor_reaction_time: float = 4.0
 
     # Timing
     control_interval_s: float = 3.0
@@ -240,6 +259,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
 
     def settings_schema(self) -> dict[str, Any]:
         return {
+            # ── Regler ───────────────────────────────────────────────────────
             "kp_draw": {
                 "type": "number",
                 "title": "Kp Netzbezug",
@@ -247,6 +267,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 "minimum": 0.0,
                 "maximum": 5.0,
                 "step": 0.05,
+                "group": "Regler",
             },
             "kp_feed_in": {
                 "type": "number",
@@ -255,6 +276,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 "minimum": 0.0,
                 "maximum": 5.0,
                 "step": 0.05,
+                "group": "Regler",
             },
             "kp_ff": {
                 "type": "number",
@@ -263,14 +285,16 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 "minimum": 0.0,
                 "maximum": 5.0,
                 "step": 0.05,
+                "group": "Regler",
             },
             "target_power_w": {
                 "type": "number",
                 "title": "Ziel-Bezug [W]",
-                "default": 3.0,
+                "default": 1.0,
                 "minimum": -50.0,
                 "maximum": 100.0,
                 "step": 1.0,
+                "group": "Regler",
             },
             "hysteresis_w": {
                 "type": "number",
@@ -279,21 +303,13 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 "minimum": 0.0,
                 "maximum": 50.0,
                 "step": 0.5,
+                "group": "Regler",
             },
             "feedback_enabled": {
                 "type": "boolean",
                 "title": "Feedback Phase B",
                 "default": True,
-            },
-            "osc_ac_enabled": {
-                "type": "boolean",
-                "title": "Oszillationserkennung Phase A+C",
-                "default": False,
-            },
-            "osc_b_enabled": {
-                "type": "boolean",
-                "title": "Oszillationserkennung Phase B",
-                "default": False,
+                "group": "Regler",
             },
             "control_interval_s": {
                 "type": "number",
@@ -302,6 +318,150 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 "minimum": 1.0,
                 "maximum": 30.0,
                 "step": 0.5,
+                "group": "Regler",
+            },
+            # ── Oszillationserkennung Aktivierung ────────────────────────────
+            "osc_ac_holder_enabled": {
+                "type": "boolean",
+                "title": "Holder aktiv (Phase A+C)",
+                "default": False,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "osc_b_holder_enabled": {
+                "type": "boolean",
+                "title": "Holder aktiv (Phase B)",
+                "default": False,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_threshold": {
+                "type": "number",
+                "title": "Schwellwert [W]",
+                "default": 30.0,
+                "minimum": 1.0,
+                "maximum": 500.0,
+                "step": 1.0,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_min_period": {
+                "type": "number",
+                "title": "Min. Periode [s]",
+                "default": 1.0,
+                "minimum": 0.5,
+                "maximum": 60.0,
+                "step": 0.5,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_max_period": {
+                "type": "number",
+                "title": "Max. Periode [s]",
+                "default": 10.0,
+                "minimum": 1.0,
+                "maximum": 120.0,
+                "step": 1.0,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_period_variance": {
+                "type": "number",
+                "title": "Perioden-Varianz",
+                "default": 1.2,
+                "minimum": 0.1,
+                "maximum": 5.0,
+                "step": 0.1,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_time_threshold": {
+                "type": "number",
+                "title": "Merge-Fenster [s]",
+                "default": 0.6,
+                "minimum": 0.1,
+                "maximum": 5.0,
+                "step": 0.1,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            "holder_min_rising_count": {
+                "type": "number",
+                "title": "Min. Flanken",
+                "default": 3,
+                "minimum": 2,
+                "maximum": 10,
+                "step": 1,
+                "group": "Holder (kurze Schwingungen)",
+            },
+            # ── Predictor ────────────────────────────────────────────────────
+            "osc_ac_predictor_enabled": {
+                "type": "boolean",
+                "title": "Predictor aktiv (Phase A+C)",
+                "default": False,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "osc_b_predictor_enabled": {
+                "type": "boolean",
+                "title": "Predictor aktiv (Phase B)",
+                "default": False,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_threshold": {
+                "type": "number",
+                "title": "Schwellwert [W]",
+                "default": 100.0,
+                "minimum": 1.0,
+                "maximum": 1000.0,
+                "step": 5.0,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_min_period": {
+                "type": "number",
+                "title": "Min. Periode [s]",
+                "default": 8.0,
+                "minimum": 1.0,
+                "maximum": 300.0,
+                "step": 1.0,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_max_period": {
+                "type": "number",
+                "title": "Max. Periode [s]",
+                "default": 120.0,
+                "minimum": 10.0,
+                "maximum": 600.0,
+                "step": 5.0,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_period_variance": {
+                "type": "number",
+                "title": "Perioden-Varianz",
+                "default": 2.0,
+                "minimum": 0.1,
+                "maximum": 10.0,
+                "step": 0.1,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_time_threshold": {
+                "type": "number",
+                "title": "Merge-Fenster [s]",
+                "default": 2.0,
+                "minimum": 0.1,
+                "maximum": 10.0,
+                "step": 0.1,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_min_rising_count": {
+                "type": "number",
+                "title": "Min. Flanken",
+                "default": 3,
+                "minimum": 2,
+                "maximum": 10,
+                "step": 1,
+                "group": "Predictor (periodische Lasten)",
+            },
+            "predictor_reaction_time": {
+                "type": "number",
+                "title": "Reaktionszeit [s]",
+                "default": 4.0,
+                "minimum": 0.5,
+                "maximum": 30.0,
+                "step": 0.5,
+                "group": "Predictor (periodische Lasten)",
             },
         }
 
@@ -314,31 +474,64 @@ class ZeroFeedV3Regulator(RegulatorBase):
             "target_power_w": c.target_power_w,
             "hysteresis_w": c.hysteresis_w,
             "feedback_enabled": c.feedback_enabled,
-            "osc_ac_enabled": c.osc_ac_enabled,
-            "osc_b_enabled": c.osc_b_enabled,
             "control_interval_s": c.control_interval_s,
+            # Holder
+            "osc_ac_holder_enabled": c.osc_ac_holder_enabled,
+            "osc_b_holder_enabled": c.osc_b_holder_enabled,
+            "holder_threshold": c.holder_threshold,
+            "holder_min_period": c.holder_min_period,
+            "holder_max_period": c.holder_max_period,
+            "holder_period_variance": c.holder_period_variance,
+            "holder_time_threshold": c.holder_time_threshold,
+            "holder_min_rising_count": c.holder_min_rising_count,
+            # Predictor
+            "osc_ac_predictor_enabled": c.osc_ac_predictor_enabled,
+            "osc_b_predictor_enabled": c.osc_b_predictor_enabled,
+            "predictor_threshold": c.predictor_threshold,
+            "predictor_min_period": c.predictor_min_period,
+            "predictor_max_period": c.predictor_max_period,
+            "predictor_period_variance": c.predictor_period_variance,
+            "predictor_time_threshold": c.predictor_time_threshold,
+            "predictor_min_rising_count": c.predictor_min_rising_count,
+            "predictor_reaction_time": c.predictor_reaction_time,
         }
 
     def apply_settings(self, data: dict[str, Any]) -> None:
         c = self._cfg
-        if "kp_draw" in data:
-            c.kp_draw = float(data["kp_draw"])
-        if "kp_feed_in" in data:
-            c.kp_feed_in = float(data["kp_feed_in"])
-        if "kp_ff" in data:
-            c.kp_ff = float(data["kp_ff"])
-        if "target_power_w" in data:
-            c.target_power_w = float(data["target_power_w"])
-        if "hysteresis_w" in data:
-            c.hysteresis_w = float(data["hysteresis_w"])
-        if "feedback_enabled" in data:
-            c.feedback_enabled = bool(data["feedback_enabled"])
-        if "osc_ac_enabled" in data:
-            c.osc_ac_enabled = bool(data["osc_ac_enabled"])
-        if "osc_b_enabled" in data:
-            c.osc_b_enabled = bool(data["osc_b_enabled"])
-        if "control_interval_s" in data:
-            c.control_interval_s = float(data["control_interval_s"])
+        # Regler
+        _f = lambda k: c.__setattr__(k, float(data[k])) if k in data else None
+        _b = lambda k: c.__setattr__(k, bool(data[k])) if k in data else None
+        _i = lambda k: c.__setattr__(k, int(data[k])) if k in data else None
+        for k in (
+            "kp_draw",
+            "kp_feed_in",
+            "kp_ff",
+            "target_power_w",
+            "hysteresis_w",
+            "control_interval_s",
+            "holder_threshold",
+            "holder_min_period",
+            "holder_max_period",
+            "holder_period_variance",
+            "holder_time_threshold",
+            "predictor_threshold",
+            "predictor_min_period",
+            "predictor_max_period",
+            "predictor_period_variance",
+            "predictor_time_threshold",
+            "predictor_reaction_time",
+        ):
+            _f(k)
+        for k in ("holder_min_rising_count", "predictor_min_rising_count"):
+            _i(k)
+        for k in (
+            "feedback_enabled",
+            "osc_ac_holder_enabled",
+            "osc_b_holder_enabled",
+            "osc_ac_predictor_enabled",
+            "osc_b_predictor_enabled",
+        ):
+            _b(k)
         # Rebuild manager with updated settings
         self._manager = self._build_manager(c)
         self._queue = asyncio.Queue(maxsize=self._queue_size())
@@ -350,8 +543,28 @@ class ZeroFeedV3Regulator(RegulatorBase):
 
     @staticmethod
     def _build_manager(cfg: V3RegulatorSettings) -> ZeroFeedManager:
-        holder_ac = BaseloadHolderSettings() if cfg.osc_ac_enabled else None
-        holder_b = BaseloadHolderSettings() if cfg.osc_b_enabled else None
+        holder_settings = BaseloadHolderSettings(
+            threshold=cfg.holder_threshold,
+            min_period=cfg.holder_min_period,
+            max_period=cfg.holder_max_period,
+            period_variance=cfg.holder_period_variance,
+            time_threshold=cfg.holder_time_threshold,
+            min_rising_count=cfg.holder_min_rising_count,
+        )
+        predictor_settings = BaseloadPredictorSettings(
+            threshold=cfg.predictor_threshold,
+            min_period=cfg.predictor_min_period,
+            max_period=cfg.predictor_max_period,
+            period_variance=cfg.predictor_period_variance,
+            time_threshold=cfg.predictor_time_threshold,
+            min_rising_count=cfg.predictor_min_rising_count,
+            reaction_time=cfg.predictor_reaction_time,
+        )
+
+        holder_ac = holder_settings if cfg.osc_ac_holder_enabled else None
+        predictor_ac = predictor_settings if cfg.osc_ac_predictor_enabled else None
+        holder_b = holder_settings if cfg.osc_b_holder_enabled else None
+        predictor_b = predictor_settings if cfg.osc_b_predictor_enabled else None
 
         phase_a = PhaseController(
             settings=PhaseControllerSettings(
@@ -360,6 +573,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 kp_hysteresis=cfg.hysteresis_kp,
             ),
             holder_settings=holder_ac,
+            predictor_settings=predictor_ac,
         )
         phase_b = InverterPhaseController(
             settings=InverterPhaseControllerSettings(
@@ -371,6 +585,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 feedback_enabled=cfg.feedback_enabled,
             ),
             holder_settings=holder_b,
+            predictor_settings=predictor_b,
         )
         phase_c = PhaseController(
             settings=PhaseControllerSettings(
@@ -379,6 +594,7 @@ class ZeroFeedV3Regulator(RegulatorBase):
                 kp_hysteresis=cfg.hysteresis_kp,
             ),
             holder_settings=holder_ac,
+            predictor_settings=predictor_ac,
         )
         return ZeroFeedManager(
             manager_settings=ZeroFeedManagerSettings(

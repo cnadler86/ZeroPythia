@@ -83,7 +83,6 @@ _HTML = """<!DOCTYPE html>
   .phase-label { width: 18px; color: var(--muted); font-size: 11px; }
   .chart-wrap { width: 100%; height: 90px; overflow: hidden; }
   canvas { width: 100%; height: 100%; display: block; }
-  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   #toast { position: fixed; bottom: 20px; right: 20px; background: #22c55e; color: #fff;
            padding: 10px 18px; border-radius: 8px; font-size: 13px; display: none; z-index: 99; }
 </style>
@@ -171,6 +170,18 @@ _HTML = """<!DOCTYPE html>
     <div id="reg-desc" style="color:var(--muted);font-size:12px;margin-top:6px;min-height:30px"></div>
     <div id="reg-settings" style="margin-top:8px"></div>
     <button class="apply-btn" id="reg-apply" onclick="applySettings()">Einstellungen anwenden</button>
+  </div>
+
+  <!-- Holder settings -->
+  <div class="card" id="card-holder" style="display:none">
+    <h2>Holder <span style="color:var(--muted);font-weight:400;font-size:11px">(kurze Schwingungen)</span></h2>
+    <div id="holder-settings"></div>
+  </div>
+
+  <!-- Predictor settings -->
+  <div class="card" id="card-predictor" style="display:none">
+    <h2>Predictor <span style="color:var(--muted);font-weight:400;font-size:11px">(periodische Lasten)</span></h2>
+    <div id="predictor-settings"></div>
   </div>
 
 </div>
@@ -346,22 +357,39 @@ function renderRegSettings() {
   const reg = regulators.find(r => r.name === name);
   if (!reg) return;
   document.getElementById('reg-desc').textContent = reg.description || '';
-  const schema = reg.settings_schema;
-  const current = reg.current_settings;
-  const el = document.getElementById('reg-settings');
-  el.innerHTML = '';
-  for (const [key, def] of Object.entries(schema)) {
-    const val = current[key] ?? def.default ?? '';
+
+  // Split schema fields by group into 3 containers
+  const containers = {
+    'Regler':                       document.getElementById('reg-settings'),
+    'Holder (kurze Schwingungen)':  document.getElementById('holder-settings'),
+    'Predictor (periodische Lasten)': document.getElementById('predictor-settings'),
+  };
+  Object.values(containers).forEach(el => { if (el) el.innerHTML = ''; });
+
+  // Track which extra cards have any fields
+  const hasHolder = { v: false };
+  const hasPredictor = { v: false };
+
+  for (const [key, def] of Object.entries(reg.settings_schema)) {
+    const g = def.group || 'Regler';
+    const target = containers[g] || containers['Regler'];
+    if (g.startsWith('Holder'))    hasHolder.v = true;
+    if (g.startsWith('Predictor')) hasPredictor.v = true;
+    const val = (reg.current_settings[key] ?? def.default ?? '');
     if (def.type === 'boolean') {
-      el.innerHTML += `
-        <label><input type="checkbox" id="s_${key}" ${val?'checked':''}
+      target.innerHTML += `<label style="margin-top:6px">
+        <input type="checkbox" id="s_${key}" ${val?'checked':''}
           style="width:auto;margin-right:6px"> ${def.title}</label>`;
     } else {
-      el.innerHTML += `<label>${def.title}</label>
+      target.innerHTML += `<label>${def.title}</label>
         <input type="number" id="s_${key}" value="${val}"
           min="${def.minimum??''}" max="${def.maximum??''}" step="${def.step??'any'}"/>`;
     }
   }
+
+  // Show/hide the extra cards depending on whether the regulator has those groups
+  document.getElementById('card-holder').style.display    = hasHolder.v    ? '' : 'none';
+  document.getElementById('card-predictor').style.display = hasPredictor.v ? '' : 'none';
 }
 
 function applySettings() {

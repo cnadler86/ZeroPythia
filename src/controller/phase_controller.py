@@ -71,7 +71,7 @@ class InverterPhaseControllerSettings:
     kp_hysteresis: float = 0.3
     """Gedämpfter Kp innerhalb der Hysterese"""
 
-    target_power_w: float = 3.0
+    target_power_w: float = 1.0
     """Ziel-Bezug in Watt – wir regeln auf diesen Wert, nicht auf den aktuellen Netzbezug."""
 
     feedback_enabled: bool = True
@@ -89,7 +89,7 @@ class ZeroFeedManagerSettings:
     max_output_w: int = 800
     """Maximaler Batterie-Output (Hardware-Limit)"""
 
-    target_power_w: float = 3.0
+    target_power_w: float = 1.0
     """Ziel-Bezug in Watt – wir kompensieren nur, was diesen Wert übersteigt.
     Positive Werte reduzieren Einspeisung auf Kosten eines kleinen permanenten Bezugs."""
 

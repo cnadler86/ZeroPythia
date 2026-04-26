@@ -79,7 +79,7 @@ class ZeroFeedV3GUI:
             manager=ZeroFeedManagerSettings(
                 min_output_w=20,
                 max_output_w=800,
-                target_power_w=3.0,
+                target_power_w=1.0,
             ),
             phase_controller=PhaseControllerSettings(
                 kp=1.0,
@@ -91,7 +91,7 @@ class ZeroFeedV3GUI:
                 kp_feed_in=1.05,
                 hysteresis_w=10.0,
                 kp_hysteresis=0.3,
-                target_power_w=3.0,
+                target_power_w=1.0,
             ),
             holder_settings=BaseloadHolderSettings(),
             predictor_settings=BaseloadPredictorSettings(),
