@@ -214,7 +214,7 @@ _HTML = """<!DOCTYPE html>
       <span id="auto-conn-badge" class="badge badge-gray">–</span>
     </div>
     <div class="row">
-      <span class="label">Letzter Plan</span>
+      <span class="label">Plan erstellt</span>
       <span id="auto-plan-ts" style="color:var(--muted);font-size:12px">–</span>
     </div>
     <div class="row">
@@ -520,8 +520,9 @@ function renderAutoStatus(as) {
     connEl.textContent = 'Getrennt';
     connEl.className = 'badge badge-red';
   }
-  document.getElementById('auto-plan-ts').textContent = as.plan_received_at
-    ? 'Empfangen ' + as.plan_received_at : '–';
+  document.getElementById('auto-plan-ts').textContent = as.plan_published_at
+    ? as.plan_published_at
+    : (as.plan_received_at ? 'Empfangen ' + as.plan_received_at : '–');
   const effEl = document.getElementById('auto-effective');
   effEl.textContent = as.effective_mode || '–';
   effEl.className = 'badge ' + effectiveBadgeClass(as.effective_mode);

@@ -133,6 +133,7 @@ class AutoStatus(BaseModel):
 
     connected: bool = False
     has_plan: bool = False
+    plan_published_at: Optional[str] = None
     plan_received_at: Optional[str] = None
     effective_mode: str = "–"
     plan_summary: list[PlanSummaryEntry] = Field(default_factory=list)
@@ -151,6 +152,11 @@ class DashboardState(BaseModel):
     sample: Optional[GridSample] = None
     control: Optional[ControlStatus] = None
     auto_status: Optional[AutoStatus] = None
+    # ZFI regulation pause flags (visible in dashboard)
+    zfi_paused_low_soc: bool = False
+    """ZFI regelung pausiert – SoC unter Mindestschwelle."""
+    zfi_paused_full_battery: bool = False
+    """ZFI regelung pausiert – Batterie voll, wartet auf Lastbedarf (30s)."""
     error: Optional[str] = None
 
 

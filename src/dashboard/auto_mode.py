@@ -258,8 +258,12 @@ class AutoModeManager:
     def get_auto_status(self) -> AutoStatus:
         """Return current auto mode status for inclusion in DashboardState."""
         plan = self._subscriber._plan  # noqa: SLF001 – read via property missing
+        published_at: Optional[str] = None
         received_at: Optional[str] = None
         if plan is not None:
+            # Plan timestamp provided by GridPythia payload (authoritative value).
+            published_at = plan.published_at.astimezone().strftime("%d.%m.%Y %H:%M:%S")
+            # Backward-compatible short field still used by older UI code.
             received_at = plan.published_at.astimezone().strftime("%H:%M")
             # Refresh summary inline so callers always see the current state,
             # even when called between two tick() invocations.
@@ -267,6 +271,7 @@ class AutoModeManager:
         return AutoStatus(
             connected=self._connected,
             has_plan=self._subscriber.has_plan,
+            plan_published_at=published_at,
             plan_received_at=received_at,
             effective_mode=self._effective_mode_label,
             plan_summary=list(self._plan_summary),
@@ -307,9 +312,10 @@ class AutoModeManager:
             await cb(DeviceMode.IDLE, None, None)
 
         elif mode in (InverterMode.DISCHARGE, InverterMode.DISCHARGE_ZERO_FEED_IN):
-            plan_w = int(step.discharge_ac_wh / dt_hours) if dt_hours > 0 else self._config_max_w
-            plan_w = max(self._config_min_w, min(self._config_max_w, plan_w))
-            await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, plan_w)
+            # GridPythia signals the desired mode; for ZFI the discharge power is
+            # not a fixed limit – use the hardware's own configured cap so the
+            # zero-feed regulator runs without an artificial energy constraint.
+            await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
 
         elif mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
             charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400

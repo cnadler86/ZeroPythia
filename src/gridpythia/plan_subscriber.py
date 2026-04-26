@@ -142,4 +142,15 @@ class GridPythiaPlanSubscriber:
         )
 
         with self._lock:
+            current = self._plan
+            if current is not None and plan.published_at < current.published_at:
+                logger.info(
+                    "plan_ignored_older",
+                    extra={
+                        "device_id": self._device_id,
+                        "incoming_published_at": plan.published_at.isoformat(),
+                        "current_published_at": current.published_at.isoformat(),
+                    },
+                )
+                return
             self._plan = plan
