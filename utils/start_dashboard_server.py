@@ -71,6 +71,7 @@ async def run(
     topic_prefix: str,
     status_interval_s: float,
     initial_mode: str,
+    auto_start: bool,
 ) -> None:
     async with (
         ShellyClient(shelly_ip) as shelly_client,
@@ -99,49 +100,24 @@ async def run(
         runtime.register_regulator(ZeroFeedV3Regulator(v3_settings))
 
         # ── Initial mode ──────────────────────────────────────────────────────
-        mode_map = {
-            "idle": DeviceMode.IDLE,
-            "zero_feed": DeviceMode.DISCHARGE_ZERO_FEED,
-        }
-        await runtime.set_mode(mode_map.get(initial_mode, DeviceMode.IDLE))
-
-        # ── MQTT / GridPythia integration ─────────────────────────────────────
-        background_tasks: list[asyncio.Task] = []
-        mqtt_client_ref = None
-
-        if mqtt_broker:
-            from clients.mqtt.client import MqttClient, MqttConfig
-            from src.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
-            from src.gridpythia.status_reporter import GridPythiaStatusReporter
-
-            mqtt_cfg = MqttConfig(
-                broker=mqtt_broker,
-                client_id=f"zerofeed-{device_id}",
-                topic_prefix=topic_prefix,
-            )
-            mqtt_client = MqttClient(mqtt_cfg)
-            mqtt_client_ref = mqtt_client
-
-            plan_subscriber = GridPythiaPlanSubscriber(
-                mqtt_client=mqtt_client,
+        if mqtt_broker and auto_start:
+            # Start in AUTO mode immediately via the new AutoModeManager
+            await runtime.start()  # must be started before enable_auto_mode (creates tasks)
+            await runtime.enable_auto_mode(
+                mqtt_broker=mqtt_broker,
                 device_id=device_id,
                 topic_prefix=topic_prefix,
+                status_interval_s=status_interval_s,
             )
-            plan_subscriber.register()
-            mqtt_client.start()
-            LOG.info("MQTT verbunden: %s (device_id=%s)", mqtt_broker, device_id)
+            LOG.info("Auto-Modus gestartet (device_id=%s, broker=%s)", device_id, mqtt_broker)
+        else:
+            mode_map = {
+                "idle": DeviceMode.IDLE,
+                "zero_feed": DeviceMode.DISCHARGE_ZERO_FEED,
+            }
+            await runtime.set_mode(mode_map.get(initial_mode, DeviceMode.IDLE))
+            await runtime.start()
 
-            reporter = GridPythiaStatusReporter(
-                mqtt_client=mqtt_client,
-                battery=solarflow,
-                device_id=device_id,
-                topic_prefix=topic_prefix,
-                interval_s=status_interval_s,
-            )
-            background_tasks.append(asyncio.create_task(reporter.run(), name="status-reporter"))
-
-        # ── Start runtime ─────────────────────────────────────────────────────
-        await runtime.start()
         LOG.info("ControlRuntime gestartet")
 
         # ── Start HTTP server ─────────────────────────────────────────────────
@@ -157,23 +133,16 @@ async def run(
 
         LOG.info("Dashboard erreichbar auf http://%s:%d", host, port)
 
-        # Run uvicorn alongside the runtime
-        uvicorn_task = asyncio.create_task(server.serve(), name="uvicorn")
-        background_tasks.append(uvicorn_task)
-
         try:
-            await asyncio.gather(*background_tasks)
+            await server.serve()
         except asyncio.CancelledError:
             pass
         finally:
             LOG.info("Fahre Dashboard herunter …")
             server.should_exit = True
-            for t in background_tasks:
-                t.cancel()
-            await asyncio.gather(*background_tasks, return_exceptions=True)
+            if runtime._auto_manager is not None:
+                await runtime.disable_auto_mode()
             await runtime.stop()
-            if mqtt_client_ref is not None:
-                mqtt_client_ref.stop()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -203,11 +172,16 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--mqtt-broker",
         default=None,
         metavar="URL",
-        help="MQTT Broker URL (z.B. mqtt://192.168.1.5:1883)",
+        help="MQTT Broker URL (z.B. mqtt://192.168.1.5:1883). Mit --auto auch sofort AUTO-Modus.",
     )
     parser.add_argument("--device-id", default="SF800Pro", metavar="ID")
     parser.add_argument("--topic-prefix", default="gridpythia", metavar="PREFIX")
     parser.add_argument("--status-interval", type=float, default=60.0, metavar="S")
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Sofort in AUTO-Modus starten (erfordert --mqtt-broker und --device-id).",
+    )
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args(argv)
@@ -217,6 +191,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
+
+    if args.auto and not args.mqtt_broker:
+        parser.error("--auto erfordert --mqtt-broker")
 
     try:
         asyncio.run(
@@ -235,6 +212,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 topic_prefix=args.topic_prefix,
                 status_interval_s=args.status_interval,
                 initial_mode=args.initial_mode,
+                auto_start=args.auto,
             )
         )
     except KeyboardInterrupt:

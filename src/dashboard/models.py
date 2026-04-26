@@ -33,6 +33,9 @@ class DeviceMode(str, Enum):
     DISCHARGE_ZERO_FEED = "discharge_zero_feed"
     """Discharge via the active regulator (zero-feed or custom)."""
 
+    AUTO = "auto"
+    """GridPythia plan-driven dispatch – mode is set automatically per plan slot."""
+
 
 # ── Hardware snapshot ─────────────────────────────────────────────────────────
 
@@ -115,6 +118,26 @@ class RegulatorInfo(BaseModel):
 # ── Full dashboard state ──────────────────────────────────────────────────────
 
 
+class PlanSummaryEntry(BaseModel):
+    """One merged block in the GridPythia plan display."""
+
+    mode_label: str = Field(description="Human-readable mode name.")
+    from_time: str = Field(description="Start time HH:MM (local).")
+    to_time: str = Field(description="End time HH:MM (local).")
+    power_w: Optional[int] = Field(default=None, description="Power [W] (charge or discharge cap).")
+    date: Optional[str] = Field(default=None, description="Date label if not today.")
+
+
+class AutoStatus(BaseModel):
+    """State of the GridPythia auto mode connection and current plan."""
+
+    connected: bool = False
+    has_plan: bool = False
+    plan_received_at: Optional[str] = None
+    effective_mode: str = "–"
+    plan_summary: list[PlanSummaryEntry] = Field(default_factory=list)
+
+
 class DashboardState(BaseModel):
     """Full snapshot broadcast to all WebSocket clients every second."""
 
@@ -127,6 +150,7 @@ class DashboardState(BaseModel):
     active_regulator: Optional[str] = None
     sample: Optional[GridSample] = None
     control: Optional[ControlStatus] = None
+    auto_status: Optional[AutoStatus] = None
     error: Optional[str] = None
 
 
@@ -162,3 +186,12 @@ class UpdateSettingsCommand(BaseModel):
 
     name: str
     settings: dict[str, Any]
+
+
+class AutoConnectCommand(BaseModel):
+    """Command to configure and start the GridPythia MQTT connection."""
+
+    mqtt_broker: str = Field(description="MQTT broker URL, e.g. mqtt://192.168.1.10:1883.")
+    device_id: str = Field(description="Inverter device ID as configured in GridPythia.")
+    topic_prefix: str = Field(default="gridpythia", description="MQTT topic prefix.")
+    status_interval_s: float = Field(default=60.0, ge=10.0, description="Status report interval [s].")

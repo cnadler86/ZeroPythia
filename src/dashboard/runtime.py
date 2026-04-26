@@ -33,6 +33,7 @@ import time
 from typing import Any, Awaitable, Callable, Optional
 
 from .models import (
+    AutoStatus,
     DashboardState,
     DeviceMode,
     GridSample,
@@ -105,6 +106,10 @@ class ControlRuntime:
         self._mode: DeviceMode = DeviceMode.IDLE
         self._charge_power_w: Optional[int] = None
 
+        # AUTO mode: effective mode used for sample routing and control
+        self._auto_effective_mode: DeviceMode = DeviceMode.IDLE
+        self._auto_manager: Optional[Any] = None  # AutoModeManager (avoid circular import)
+
         # State snapshot (updated every sample tick)
         self._state: DashboardState = DashboardState(
             timestamp=time.time(),
@@ -118,6 +123,47 @@ class ControlRuntime:
         # Runtime tasks
         self._running = False
         self._main_task: Optional[asyncio.Task] = None
+
+    def attach_auto_mode_manager(self, manager: Any) -> None:
+        """Register the AutoModeManager used when mode==AUTO."""
+        self._auto_manager = manager
+
+    async def enable_auto_mode(
+        self,
+        mqtt_broker: str,
+        device_id: str,
+        topic_prefix: str = "gridpythia",
+        status_interval_s: float = 60.0,
+    ) -> None:
+        """Create an AutoModeManager, attach it, and switch to AUTO mode."""
+        from .auto_mode import AutoModeManager  # late import – avoids circular dep
+
+        # Stop any existing manager first
+        if self._auto_manager is not None:
+            await self._auto_manager.stop_reporter_task()
+            self._auto_manager.stop()
+
+        manager = AutoModeManager(
+            mqtt_broker=mqtt_broker,
+            device_id=device_id,
+            battery=self._battery,
+            config_max_w=self._max_discharge_w,
+            config_min_w=self._min_discharge_w,
+            topic_prefix=topic_prefix,
+            status_interval_s=status_interval_s,
+        )
+        manager.start()
+        await manager.start_reporter_task()
+        self.attach_auto_mode_manager(manager)
+        await self.set_mode(DeviceMode.AUTO)
+
+    async def disable_auto_mode(self) -> None:
+        """Stop the AutoModeManager and switch back to IDLE."""
+        if self._auto_manager is not None:
+            await self._auto_manager.stop_reporter_task()
+            self._auto_manager.stop()
+            self._auto_manager = None
+        await self.set_mode(DeviceMode.IDLE)
 
     # ── Regulator registry ────────────────────────────────────────────────────
 
@@ -183,8 +229,46 @@ class ControlRuntime:
             # The regulator loop will start the battery on its first compute_setpoint call.
             await self._battery.start_discharge(self._min_discharge_w)
 
+        elif mode == DeviceMode.AUTO:
+            # AUTO: don't touch the battery yet – the AutoModeManager drives it
+            if self._active_regulator:
+                self._active_regulator.reset()
+            self._auto_effective_mode = DeviceMode.IDLE
+
         self._mode = mode
         self._update_state()
+
+    async def apply_effective_mode(
+        self,
+        mode: DeviceMode,
+        charge_power_w: Optional[int] = None,
+        max_discharge_w: Optional[int] = None,
+    ) -> None:
+        """Apply an effective device mode while staying in AUTO. Called by AutoModeManager."""
+        if max_discharge_w is not None:
+            self._max_discharge_w = max_discharge_w
+
+        if mode == DeviceMode.AC_CHARGE:
+            pw = charge_power_w or 400
+            self._charge_power_w = pw
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.start_charge(pw)
+
+        elif mode == DeviceMode.IDLE:
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.stop()
+
+        elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
+            self._charge_power_w = None
+            if self._auto_effective_mode != DeviceMode.DISCHARGE_ZERO_FEED:
+                # Only reset/restart when actually switching into this mode
+                if self._active_regulator:
+                    self._active_regulator.reset()
+                await self._battery.start_discharge(self._min_discharge_w)
+
+        self._auto_effective_mode = mode
 
     async def set_active_regulator(self, name: str) -> None:
         """Switch the active regulator by name (resets its state)."""
@@ -251,18 +335,22 @@ class ControlRuntime:
                 # 1. Sample hardware
                 sample = await self._read_sample()
 
-                # 2. Forward to regulator (in DISCHARGE_ZERO_FEED mode)
-                if (
-                    sample is not None
-                    and self._mode == DeviceMode.DISCHARGE_ZERO_FEED
-                    and self._active_regulator is not None
-                ):
+                # 2. Forward to regulator when in DISCHARGE_ZERO_FEED mode
+                #    (either directly or as effective mode under AUTO)
+                _discharge_active = (
+                    self._mode == DeviceMode.DISCHARGE_ZERO_FEED
+                    or (
+                        self._mode == DeviceMode.AUTO
+                        and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
+                    )
+                )
+                if sample is not None and _discharge_active and self._active_regulator is not None:
                     await self._active_regulator.add_sample(sample)
 
-                # 3. Control tick?
+                # 3. Control tick
                 now = time.monotonic()
                 if (
-                    self._mode == DeviceMode.DISCHARGE_ZERO_FEED
+                    _discharge_active
                     and self._active_regulator is not None
                     and (now - last_control) >= self._control_interval
                 ):
@@ -276,13 +364,30 @@ class ControlRuntime:
                         logger.exception("Regulator compute_setpoint failed")
                     last_control = time.monotonic()
 
+                    # AUTO: tick plan dispatcher on the same interval
+                    if self._mode == DeviceMode.AUTO and self._auto_manager is not None:
+                        try:
+                            await self._auto_manager.tick(self.apply_effective_mode)
+                        except Exception:
+                            logger.exception("AutoModeManager tick failed")
+
+                elif (
+                    self._mode == DeviceMode.AUTO
+                    and self._auto_manager is not None
+                    and not _discharge_active
+                    and (now - last_control) >= self._control_interval
+                ):
+                    # Also tick in non-discharge AUTO sub-modes (IDLE, AC_CHARGE)
+                    try:
+                        await self._auto_manager.tick(self.apply_effective_mode)
+                    except Exception:
+                        logger.exception("AutoModeManager tick failed")
+                    last_control = time.monotonic()
+
                 # 4. Update state snapshot
                 ctrl_status = (
                     self._active_regulator.get_control_status()
-                    if (
-                        self._active_regulator is not None
-                        and self._mode == DeviceMode.DISCHARGE_ZERO_FEED
-                    )
+                    if (self._active_regulator is not None and _discharge_active)
                     else None
                 )
                 self._update_state(sample=sample, control=ctrl_status)
@@ -337,6 +442,9 @@ class ControlRuntime:
         sample: Optional[GridSample] = None,
         control=None,
     ) -> None:
+        auto_status: Optional[AutoStatus] = None
+        if self._auto_manager is not None:
+            auto_status = self._auto_manager.get_auto_status()
         self._state = DashboardState(
             timestamp=time.time(),
             mode=self._mode,
@@ -345,6 +453,7 @@ class ControlRuntime:
             active_regulator=(self._active_regulator.name if self._active_regulator else None),
             sample=sample,
             control=control,
+            auto_status=auto_status,
         )
 
     async def _broadcast(self) -> None:

@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from .models import (
+    AutoConnectCommand,
     DashboardState,
     SelectRegulatorCommand,
     SetModeCommand,
@@ -79,10 +80,18 @@ _HTML = """<!DOCTYPE html>
   label { display: block; color: var(--muted); font-size: 12px; margin: 8px 0 3px; }
   .apply-btn { margin-top: 12px; padding: 8px 16px; background: var(--accent); border: none; border-radius: 6px; color: #fff; cursor: pointer; font-size: 13px; width: 100%; }
   .apply-btn:hover { opacity: .85; }
+  .apply-btn.secondary { background: #374151; }
+  .apply-btn.secondary:hover { background: #4b5563; }
   .osc-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
   .phase-label { width: 18px; color: var(--muted); font-size: 11px; }
   .chart-wrap { width: 100%; height: 90px; overflow: hidden; }
   canvas { width: 100%; height: 100%; display: block; }
+  .plan-entry { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .plan-entry:last-child { border-bottom: none; }
+  .plan-time { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted); min-width: 100px; }
+  .plan-mode { font-weight: 600; flex: 1; }
+  .plan-pwr { font-size: 12px; color: var(--muted); }
+  .plan-active { background: #1e3a5f22; border-radius: 4px; padding: 2px 4px; }
   #toast { position: fixed; bottom: 20px; right: 20px; background: #22c55e; color: #fff;
            padding: 10px 18px; border-radius: 8px; font-size: 13px; display: none; z-index: 99; }
 </style>
@@ -107,11 +116,24 @@ _HTML = """<!DOCTYPE html>
       <button class="mode-btn" id="btn-idle" onclick="setMode('idle')">Idle</button>
       <button class="mode-btn" id="btn-zf" onclick="setMode('discharge_zero_feed')">Zero-Feed</button>
       <button class="mode-btn" id="btn-charge" onclick="openChargeDialog()">AC Laden ▸</button>
+      <button class="mode-btn" id="btn-auto" onclick="openAutoDialog()">Auto ▸</button>
     </div>
     <div id="charge-panel" style="display:none;margin-top:12px">
       <label>Ladeleistung [W]</label>
       <input type="number" id="charge-w" value="400" min="1" max="3000"/>
       <button class="apply-btn" onclick="setMode('ac_charge')">Laden starten</button>
+    </div>
+    <div id="auto-panel" style="display:none;margin-top:12px">
+      <label>MQTT Broker URL</label>
+      <input type="text" id="auto-broker" value="mqtt://192.168.1.10:1883" placeholder="mqtt://host:1883"/>
+      <label>Device ID</label>
+      <input type="text" id="auto-device-id" placeholder="SF800Pro"/>
+      <label>Topic Prefix</label>
+      <input type="text" id="auto-topic" value="gridpythia"/>
+      <label>Status-Intervall [s]</label>
+      <input type="number" id="auto-interval" value="60" min="10" max="600"/>
+      <button class="apply-btn" onclick="activateAuto()">Auto aktivieren</button>
+      <button class="apply-btn secondary" style="margin-top:4px" onclick="deactivateAuto()">Deaktivieren</button>
     </div>
     <div style="margin-top:12px">
       <label>Max. Entlade-Limit [W]</label>
@@ -184,6 +206,24 @@ _HTML = """<!DOCTYPE html>
     <div id="predictor-settings"></div>
   </div>
 
+  <!-- GridPythia Auto Plan -->
+  <div class="card" id="card-auto" style="display:none">
+    <h2>GridPythia Plan</h2>
+    <div class="row">
+      <span class="label">Verbindung</span>
+      <span id="auto-conn-badge" class="badge badge-gray">–</span>
+    </div>
+    <div class="row">
+      <span class="label">Letzter Plan</span>
+      <span id="auto-plan-ts" style="color:var(--muted);font-size:12px">–</span>
+    </div>
+    <div class="row">
+      <span class="label">Aktuell effektiv</span>
+      <span id="auto-effective" class="badge badge-gray">–</span>
+    </div>
+    <div id="plan-list" style="margin-top:10px"></div>
+  </div>
+
 </div>
 
 <div id="toast">✓ Gespeichert</div>
@@ -225,7 +265,8 @@ function render(s) {
   // Mode badge
   const modeMap = {
     idle: ['IDLE','gray'], ac_charge:['AC Laden','yellow'],
-    discharge_zero_feed:['Zero-Feed','green']
+    discharge_zero_feed:['Zero-Feed','green'],
+    auto: ['Auto','blue'],
   };
   const [modeLabel, modeColor] = modeMap[s.mode] || [s.mode, 'gray'];
   const mb = document.getElementById('mode-badge');
@@ -233,12 +274,18 @@ function render(s) {
   mb.className = `badge badge-${modeColor}`;
 
   // Highlight active mode button
-  ['btn-idle','btn-zf','btn-charge'].forEach(id => {
+  ['btn-idle','btn-zf','btn-charge','btn-auto'].forEach(id => {
     document.getElementById(id).classList.remove('active');
   });
   if (s.mode === 'idle') document.getElementById('btn-idle').classList.add('active');
   else if (s.mode === 'discharge_zero_feed') document.getElementById('btn-zf').classList.add('active');
   else if (s.mode === 'ac_charge') document.getElementById('btn-charge').classList.add('active');
+  else if (s.mode === 'auto') document.getElementById('btn-auto').classList.add('active');
+
+  // Auto plan card: show only in auto mode
+  const cardAuto = document.getElementById('card-auto');
+  cardAuto.style.display = s.mode === 'auto' ? '' : 'none';
+  if (s.auto_status) renderAutoStatus(s.auto_status);
 
   document.getElementById('b-maxdis').textContent = (s.max_discharge_w ?? '–') + ' W';
   if (s.max_discharge_w) document.getElementById('max-dis-w').value = s.max_discharge_w;
@@ -411,7 +458,16 @@ function applySettings() {
 // ── Mode control ───────────────────────────────────────────────────────────
 function openChargeDialog() {
   const p = document.getElementById('charge-panel');
-  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('auto-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
+}
+
+function openAutoDialog() {
+  const p = document.getElementById('auto-panel');
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('charge-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
 }
 
 function setMode(mode) {
@@ -427,6 +483,79 @@ function setMode(mode) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(body)
   });
+}
+
+async function activateAuto() {
+  const broker = document.getElementById('auto-broker').value.trim();
+  const device_id = document.getElementById('auto-device-id').value.trim();
+  const topic_prefix = document.getElementById('auto-topic').value.trim() || 'gridpythia';
+  const status_interval_s = parseFloat(document.getElementById('auto-interval').value) || 60;
+  if (!broker || !device_id) { showToast('Broker und Device ID erforderlich'); return; }
+  const res = await fetch('/api/auto/connect', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mqtt_broker: broker, device_id, topic_prefix, status_interval_s})
+  });
+  if (res.ok) {
+    document.getElementById('auto-panel').style.display = 'none';
+    showToast('Auto-Modus aktiviert');
+  } else {
+    const err = await res.json().catch(() => ({}));
+    showToast('Fehler: ' + (err.detail || res.status));
+  }
+}
+
+async function deactivateAuto() {
+  await fetch('/api/auto/disconnect', {method:'POST'});
+  document.getElementById('auto-panel').style.display = 'none';
+  showToast('Auto-Modus deaktiviert');
+}
+
+// ── Auto status / plan rendering ───────────────────────────────────────────
+function renderAutoStatus(as) {
+  const connEl = document.getElementById('auto-conn-badge');
+  if (as.connected) {
+    connEl.textContent = as.has_plan ? 'Verbunden ✓ Plan' : 'Verbunden (kein Plan)';
+    connEl.className = as.has_plan ? 'badge badge-green' : 'badge badge-yellow';
+  } else {
+    connEl.textContent = 'Getrennt';
+    connEl.className = 'badge badge-red';
+  }
+  document.getElementById('auto-plan-ts').textContent = as.plan_received_at
+    ? 'Empfangen ' + as.plan_received_at : '–';
+  const effEl = document.getElementById('auto-effective');
+  effEl.textContent = as.effective_mode || '–';
+  effEl.className = 'badge ' + effectiveBadgeClass(as.effective_mode);
+
+  const list = document.getElementById('plan-list');
+  if (!as.plan_summary || as.plan_summary.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:6px 0">Kein Plan verfügbar</div>';
+    return;
+  }
+  list.innerHTML = as.plan_summary.map(e => {
+    const dateStr = e.date ? `<span style="color:var(--muted);font-size:11px">${e.date} </span>` : '';
+    const timeStr = `${e.from_time}–${e.to_time}`;
+    const pwrStr = e.power_w != null ? `${e.power_w} W` : '';
+    const icon = planModeIcon(e.mode_label);
+    return `<div class="plan-entry">
+      <span class="plan-time">${dateStr}${timeStr}</span>
+      <span class="plan-mode">${icon} ${e.mode_label}</span>
+      <span class="plan-pwr">${pwrStr}</span>
+    </div>`;
+  }).join('');
+}
+
+function effectiveBadgeClass(label) {
+  if (!label || label === '–') return 'badge-gray';
+  if (label.includes('Lade')) return 'badge-yellow';
+  if (label.includes('Fallback') || label === 'Idle') return 'badge-gray';
+  return 'badge-green';
+}
+
+function planModeIcon(label) {
+  if (!label) return '';
+  if (label.includes('Laden')) return '⬆';
+  if (label.includes('Zero-Feed') || label.includes('Entladen')) return '⬇';
+  return '⏸';
 }
 
 function applyMaxDis() {
@@ -498,6 +627,24 @@ def create_app(runtime: ControlRuntime) -> FastAPI:
             await runtime.update_regulator_settings(name, settings)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+        return {"status": "ok"}
+
+    @app.post("/api/auto/connect")
+    async def auto_connect(cmd: AutoConnectCommand) -> dict[str, str]:
+        try:
+            await runtime.enable_auto_mode(
+                mqtt_broker=cmd.mqtt_broker,
+                device_id=cmd.device_id,
+                topic_prefix=cmd.topic_prefix,
+                status_interval_s=cmd.status_interval_s,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+        return {"status": "ok", "device_id": cmd.device_id}
+
+    @app.post("/api/auto/disconnect")
+    async def auto_disconnect() -> dict[str, str]:
+        await runtime.disable_auto_mode()
         return {"status": "ok"}
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
