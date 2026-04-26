@@ -194,4 +194,6 @@ class AutoConnectCommand(BaseModel):
     mqtt_broker: str = Field(description="MQTT broker URL, e.g. mqtt://192.168.1.10:1883.")
     device_id: str = Field(description="Inverter device ID as configured in GridPythia.")
     topic_prefix: str = Field(default="gridpythia", description="MQTT topic prefix.")
-    status_interval_s: float = Field(default=60.0, ge=10.0, description="Status report interval [s].")
+    status_interval_s: float = Field(
+        default=60.0, ge=10.0, description="Status report interval [s]."
+    )

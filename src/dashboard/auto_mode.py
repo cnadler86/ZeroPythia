@@ -20,10 +20,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 from clients.mqtt.client import MqttClient, MqttConfig
+from src.dashboard.models import AutoStatus, DeviceMode, PlanSummaryEntry
 from src.gridpythia.models import InverterMode, InverterPlan, PlanStep
 from src.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
 from src.gridpythia.status_reporter import GridPythiaStatusReporter
-from src.dashboard.models import AutoStatus, DeviceMode, PlanSummaryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +103,7 @@ def build_plan_summary(plan: InverterPlan, now: datetime) -> list[PlanSummaryEnt
 
     # Keep only slots that are not fully in the past
     future = [
-        s
-        for s in plan.steps
-        if s.timestamp.astimezone(timezone.utc).timestamp() + dt_s > now_ts
+        s for s in plan.steps if s.timestamp.astimezone(timezone.utc).timestamp() + dt_s > now_ts
     ]
     if not future:
         return []
@@ -198,6 +196,7 @@ class AutoModeManager:
         # Internal state
         self._connected = False
         self._last_inv_mode: Optional[InverterMode] = None
+        self._in_fallback: bool = False  # True when last dispatch was the no-plan fallback
         self._effective_mode_label: str = "–"
         self._plan_summary: list[PlanSummaryEntry] = []
         self._reporter_task: Optional[asyncio.Task] = None  # type: ignore[type-arg]
@@ -223,9 +222,7 @@ class AutoModeManager:
         """Start the status reporter as an asyncio task (call after event loop is running)."""
         if self._reporter_task is not None:
             return
-        self._reporter_task = asyncio.create_task(
-            self._reporter.run(), name="auto-status-reporter"
-        )
+        self._reporter_task = asyncio.create_task(self._reporter.run(), name="auto-status-reporter")
 
     async def stop_reporter_task(self) -> None:
         """Cancel the status reporter task gracefully."""
@@ -264,6 +261,9 @@ class AutoModeManager:
         received_at: Optional[str] = None
         if plan is not None:
             received_at = plan.published_at.astimezone().strftime("%H:%M")
+            # Refresh summary inline so callers always see the current state,
+            # even when called between two tick() invocations.
+            self._refresh_plan_summary(datetime.now(tz=timezone.utc))
         return AutoStatus(
             connected=self._connected,
             has_plan=self._subscriber.has_plan,
@@ -276,21 +276,22 @@ class AutoModeManager:
 
     async def _apply_fallback(self, cb: ApplyModeCb) -> None:
         """No plan active → fall back to zero-feed discharge with config cap."""
-        if self._last_inv_mode == InverterMode.DISCHARGE_ZERO_FEED_IN:
-            return  # already in fallback
+        if self._last_inv_mode == InverterMode.DISCHARGE_ZERO_FEED_IN and self._in_fallback:
+            return  # already in fallback, nothing changed
         logger.info(
             "AutoMode: no plan active, falling back to DISCHARGE_ZERO_FEED",
             extra={"device_id": self._device_id},
         )
         await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
         self._last_inv_mode = InverterMode.DISCHARGE_ZERO_FEED_IN
+        self._in_fallback = True
         self._effective_mode_label = "Zero-Feed (Fallback)"
 
     async def _apply_step(self, step: PlanStep, cb: ApplyModeCb) -> None:
         """Dispatch a plan step – only calls *cb* when the mode actually changes."""
         mode = step.mode
-        if mode == self._last_inv_mode:
-            return  # no change
+        if mode == self._last_inv_mode and not self._in_fallback:
+            return  # no change (and not coming from a fallback state)
 
         plan = self._subscriber._plan  # noqa: SLF001
         dt_hours = plan.dt_hours if plan is not None else 0.25
@@ -306,20 +307,17 @@ class AutoModeManager:
             await cb(DeviceMode.IDLE, None, None)
 
         elif mode in (InverterMode.DISCHARGE, InverterMode.DISCHARGE_ZERO_FEED_IN):
-            plan_w = (
-                int(step.discharge_ac_wh / dt_hours) if dt_hours > 0 else self._config_max_w
-            )
+            plan_w = int(step.discharge_ac_wh / dt_hours) if dt_hours > 0 else self._config_max_w
             plan_w = max(self._config_min_w, min(self._config_max_w, plan_w))
             await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, plan_w)
 
         elif mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
-            charge_w = (
-                int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
-            )
+            charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
             charge_w = max(100, min(3000, charge_w))
             await cb(DeviceMode.AC_CHARGE, charge_w, None)
 
         self._last_inv_mode = mode
+        self._in_fallback = False
         self._effective_mode_label = _MODE_LABELS.get(mode, mode.name)
 
     def _refresh_plan_summary(self, now: datetime) -> None:

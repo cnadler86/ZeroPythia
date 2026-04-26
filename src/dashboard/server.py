@@ -125,9 +125,9 @@ _HTML = """<!DOCTYPE html>
     </div>
     <div id="auto-panel" style="display:none;margin-top:12px">
       <label>MQTT Broker URL</label>
-      <input type="text" id="auto-broker" value="mqtt://192.168.1.10:1883" placeholder="mqtt://host:1883"/>
+      <input type="text" id="auto-broker" value="mqtt://localhost:1883" placeholder="mqtt://host:1883"/>
       <label>Device ID</label>
-      <input type="text" id="auto-device-id" placeholder="SF800Pro"/>
+      <input type="text" id="auto-device-id" value="SF800Pro" placeholder="SF800Pro"/>
       <label>Topic Prefix</label>
       <input type="text" id="auto-topic" value="gridpythia"/>
       <label>Status-Intervall [s]</label>

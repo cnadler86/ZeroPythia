@@ -337,51 +337,36 @@ class ControlRuntime:
 
                 # 2. Forward to regulator when in DISCHARGE_ZERO_FEED mode
                 #    (either directly or as effective mode under AUTO)
-                _discharge_active = (
-                    self._mode == DeviceMode.DISCHARGE_ZERO_FEED
-                    or (
-                        self._mode == DeviceMode.AUTO
-                        and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
-                    )
+                _discharge_active = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
+                    self._mode == DeviceMode.AUTO
+                    and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
                 )
                 if sample is not None and _discharge_active and self._active_regulator is not None:
                     await self._active_regulator.add_sample(sample)
 
-                # 3. Control tick
+                # 3. Control tick – fires every control_interval_s
                 now = time.monotonic()
-                if (
-                    _discharge_active
-                    and self._active_regulator is not None
-                    and (now - last_control) >= self._control_interval
-                ):
-                    try:
-                        await self._active_regulator.compute_setpoint(
-                            self._battery,
-                            self._max_discharge_w,
-                            self._min_discharge_w,
-                        )
-                    except Exception:
-                        logger.exception("Regulator compute_setpoint failed")
-                    last_control = time.monotonic()
+                _due = (now - last_control) >= self._control_interval
 
-                    # AUTO: tick plan dispatcher on the same interval
+                if _due:
+                    # 3a. Regulator setpoint (only when discharge active + regulator present)
+                    if _discharge_active and self._active_regulator is not None:
+                        try:
+                            await self._active_regulator.compute_setpoint(
+                                self._battery,
+                                self._max_discharge_w,
+                                self._min_discharge_w,
+                            )
+                        except Exception:
+                            logger.exception("Regulator compute_setpoint failed")
+
+                    # 3b. AUTO plan tick – always fires when AUTO mode is active
                     if self._mode == DeviceMode.AUTO and self._auto_manager is not None:
                         try:
                             await self._auto_manager.tick(self.apply_effective_mode)
                         except Exception:
                             logger.exception("AutoModeManager tick failed")
 
-                elif (
-                    self._mode == DeviceMode.AUTO
-                    and self._auto_manager is not None
-                    and not _discharge_active
-                    and (now - last_control) >= self._control_interval
-                ):
-                    # Also tick in non-discharge AUTO sub-modes (IDLE, AC_CHARGE)
-                    try:
-                        await self._auto_manager.tick(self.apply_effective_mode)
-                    except Exception:
-                        logger.exception("AutoModeManager tick failed")
                     last_control = time.monotonic()
 
                 # 4. Update state snapshot
