@@ -192,6 +192,12 @@ class ZeroFeedV3Settings:
     control_interval_s: float = 3.0
     """Regelzyklus in Sekunden"""
 
+    continuous_feed_in_reset_s: float = 10.0
+    """Ab dieser Dauer (s) kontinuierlicher Einspeisung wird der Regler zurückgesetzt."""
+
+    continuous_feed_in_reset_cooldown_s: float = 20.0
+    """Mindestabstand (s) zwischen zwei Watchdog-Resets."""
+
     def get_sample_queue_size(self) -> int:
         """Queue-Größe = Samples pro Regelzyklus + Puffer."""
         return ceil(self.control_interval_s / self.sampling_interval) + 1
@@ -282,6 +288,121 @@ class ZeroFeedV3Controller:
         self._sampling_task: Optional[asyncio.Task] = None
         self._control_task: Optional[asyncio.Task] = None
         self._last_sample: Optional[GridSample] = None  # für Logging
+
+        # Watchdog: kontinuierliche Einspeisung außerhalb Hysterese
+        self._feed_in_violation_since: Optional[float] = None
+        self._last_watchdog_reset_ts: float = float("-inf")
+
+    def _create_manager(self) -> ZeroFeedManager:
+        """Erzeugt einen frischen Manager inkl. neuer Controller-Instanzen."""
+        _holder_ac = (
+            self.settings.holder_settings_ac
+            if self.settings.holder_settings_ac is not None
+            else self.settings.holder_settings
+        )
+        _holder_b = (
+            self.settings.holder_settings_b
+            if self.settings.holder_settings_b is not None
+            else self.settings.holder_settings
+        )
+
+        phase_a = PhaseController(
+            settings=self.settings.phase_controller,
+            holder_settings=_holder_ac,
+            predictor_settings=self.settings.predictor_settings,
+        )
+        phase_b = InverterPhaseController(
+            settings=self.settings.inverter_controller,
+            holder_settings=_holder_b,
+            predictor_settings=self.settings.predictor_settings,
+        )
+        phase_c = PhaseController(
+            settings=self.settings.phase_controller,
+            holder_settings=_holder_ac,
+            predictor_settings=self.settings.predictor_settings,
+        )
+        return ZeroFeedManager(
+            manager_settings=self.settings.manager,
+            phase_a=phase_a,
+            phase_b=phase_b,
+            phase_c=phase_c,
+            total_holder_settings=self.settings.holder_settings,
+            total_predictor_settings=self.settings.predictor_settings,
+        )
+
+    def _clear_sample_queue(self) -> None:
+        """Leert die Sample-Queue vollständig."""
+        while not self._sample_queue.empty():
+            try:
+                self._sample_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def _is_export_outside_hysteresis(self, sample: GridSample) -> bool:
+        """True wenn Gesamtleistung kontinuierlich unterhalb der Hysterese liegt."""
+        hyst = max(
+            self.settings.phase_controller.hysteresis_w,
+            self.settings.inverter_controller.hysteresis_w,
+        )
+        lower_bound = self.settings.manager.target_power_w - hyst
+        return sample.total_grid < lower_bound
+
+    async def _reset_stuck_regulator(self, sample: GridSample, duration_s: float) -> None:
+        """Setzt den Reglerzustand zurück, wenn anhaltende Einspeisung erkannt wurde."""
+        logger.warning(
+            "Watchdog: %.1fs kontinuierliche Einspeisung außerhalb Hysterese erkannt "
+            "(grid_total=%.1fW). Setze Reglerzustand zurück.",
+            duration_s,
+            sample.total_grid,
+        )
+
+        self.manager = self._create_manager()
+        self._clear_sample_queue()
+        self._feed_in_violation_since = None
+
+        min_output = self.settings.manager.min_output_w
+        if self._current_output_limit != min_output:
+            success = await self.battery.set_ac_output_limit(min_output)
+            if success:
+                old = self._current_output_limit
+                self._current_output_limit = min_output
+                self._last_set_time = asyncio.get_event_loop().time()
+                logger.warning(
+                    "Watchdog-Reset: Setpoint %dW -> %dW (sicherer Neustart)",
+                    old,
+                    min_output,
+                )
+            else:
+                logger.error(
+                    "Watchdog-Reset: Rücksetzen auf min_output=%dW fehlgeschlagen",
+                    min_output,
+                )
+
+    async def _update_feed_in_watchdog(self, sample: GridSample) -> None:
+        """Überwacht anhaltende Einspeisung und triggert ggf. Regler-Reset."""
+        if self.settings.continuous_feed_in_reset_s <= 0:
+            return
+
+        if not self._is_export_outside_hysteresis(sample):
+            self._feed_in_violation_since = None
+            return
+
+        if self._feed_in_violation_since is None:
+            self._feed_in_violation_since = sample.timestamp
+            return
+
+        duration_s = sample.timestamp - self._feed_in_violation_since
+        if duration_s < self.settings.continuous_feed_in_reset_s:
+            return
+
+        if (
+            sample.timestamp - self._last_watchdog_reset_ts
+            < self.settings.continuous_feed_in_reset_cooldown_s
+        ):
+            return
+
+        await self._reset_stuck_regulator(sample=sample, duration_s=duration_s)
+        self._last_watchdog_reset_ts = sample.timestamp
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -697,6 +818,10 @@ class ZeroFeedV3Controller:
                         battery_output=float(output),
                     )
                     await self.add_sample(sample)
+
+                    # Watchdog: falls die Regelung in anhaltender Einspeisung hängen bleibt,
+                    # Reglerzustand und Queue zurücksetzen.
+                    await self._update_feed_in_watchdog(sample)
 
                     # Zusätzlich zum festen Control-Takt sofort nachregeln,
                     # wenn A/C-Korrekturen für das aktuelle Sample zu hoch sind.
