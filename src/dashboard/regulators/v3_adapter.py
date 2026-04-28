@@ -60,11 +60,11 @@ class V3RegulatorSettings:
 
     # Oscillation detection A+C (Holder + Predictor, both use global settings below)
     osc_ac_holder_enabled: bool = False
-    osc_ac_predictor_enabled: bool = False
+    osc_ac_predictor_enabled: bool = True
 
     # Oscillation detection B (Holder + Predictor)
     osc_b_holder_enabled: bool = False
-    osc_b_predictor_enabled: bool = False
+    osc_b_predictor_enabled: bool = True
 
     # ── BaseloadHolder settings (global, same for all phases) ──
     holder_threshold: float = 30.0

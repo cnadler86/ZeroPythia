@@ -175,9 +175,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument(
         "--mqtt-broker",
-        default=None,
+        default="mqtt://localhost:1883",
         metavar="URL",
-        help="MQTT Broker URL (z.B. mqtt://192.168.1.5:1883). Mit --auto auch sofort AUTO-Modus.",
+        help="MQTT Broker URL (default: localhost). Mit --auto sofort AUTO-Modus.",
     )
     parser.add_argument("--device-id", default="SF800Pro", metavar="ID")
     parser.add_argument("--topic-prefix", default="gridpythia", metavar="PREFIX")
@@ -185,7 +185,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument(
         "--auto",
         action="store_true",
-        help="Sofort in AUTO-Modus starten (erfordert --mqtt-broker und --device-id).",
+        help="Sofort in AUTO-Modus starten (nutzt MQTT-Broker + device-id).",
     )
     parser.add_argument("--verbose", action="store_true")
 
@@ -196,9 +196,6 @@ def main(argv: Optional[list[str]] = None) -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
     )
-
-    if args.auto and not args.mqtt_broker:
-        parser.error("--auto erfordert --mqtt-broker")
 
     try:
         asyncio.run(
