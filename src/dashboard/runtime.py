@@ -151,6 +151,16 @@ class ControlRuntime:
         # WebSocket broadcast callbacks
         self._callbacks: list[StateCallback] = []
 
+        # Feed-in watchdog (only active during ZFI regulation)
+        self._watchdog_violation_since: Optional[float] = None
+        self._watchdog_last_reset: float = float("-inf")
+        self._watchdog_trigger_s: float = 10.0
+        """Anhaltende Einspeisung über diese Dauer (s) löst Watchdog aus."""
+        self._watchdog_cooldown_s: float = 30.0
+        """Mindestabstand (s) zwischen zwei aufeinanderfolgenden Watchdog-Resets."""
+        self._watchdog_threshold_w: float = -10.0
+        """Einspeisung unter diesem Wert (negativ = Einspeisung) zählt als Verletzung."""
+
         # Runtime tasks
         self._running = False
         self._main_task: Optional[asyncio.Task] = None
@@ -386,6 +396,10 @@ class ControlRuntime:
                 if sample is not None and _discharge_active and self._active_regulator is not None:
                     await self._active_regulator.add_sample(sample)
 
+                # 4b. Feed-in watchdog – resets stuck regulator on sustained export
+                if sample is not None and _discharge_active:
+                    await self._check_feed_in_watchdog(sample, time.monotonic())
+
                 # 5. Control tick – fires every control_interval_s
                 now = time.monotonic()
                 _due = (now - last_control) >= self._control_interval
@@ -571,6 +585,55 @@ class ControlRuntime:
                 )
                 self._charge_power_w = limit_w
                 await self._battery.start_charge(limit_w)
+
+    async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
+        """Erkennt anhaltende Einspeisung und setzt fehlgeschlagenen Regler zurück.
+
+        Wird bei jedem Sampling-Tick aufgerufen, solange ZFI aktiv ist.
+        Beim Auslösen: Regulator-Reset + Setpoint auf min_discharge_w.
+        """
+        total_w = sample.total_grid_w
+
+        if total_w >= self._watchdog_threshold_w:
+            # Kein Einspeise-Problem → Zähler zurücksetzen
+            self._watchdog_violation_since = None
+            return
+
+        # Einspeisung unterhalb des Schwellwerts
+        if self._watchdog_violation_since is None:
+            self._watchdog_violation_since = now_mono
+            return
+
+        duration_s = now_mono - self._watchdog_violation_since
+        if duration_s < self._watchdog_trigger_s:
+            return
+
+        if now_mono - self._watchdog_last_reset < self._watchdog_cooldown_s:
+            # Cooldown läuft noch – nicht zu häufig resetten
+            return
+
+        # ── Watchdog ausgelöst ────────────────────────────────────────────────
+        logger.warning(
+            "Feed-in Watchdog: %.0fs anhaltende Einspeisung (total=%.0fW, "
+            "threshold=%.0fW) – Regler wird zurückgesetzt und Setpoint auf %dW reduziert.",
+            duration_s,
+            total_w,
+            self._watchdog_threshold_w,
+            self._min_discharge_w,
+        )
+
+        if self._active_regulator is not None:
+            self._active_regulator.reset()
+
+        ok = await self._battery.set_ac_output_limit(self._min_discharge_w)
+        if not ok:
+            logger.error(
+                "Feed-in Watchdog: set_ac_output_limit(%d) schlug fehl.",
+                self._min_discharge_w,
+            )
+
+        self._watchdog_violation_since = None
+        self._watchdog_last_reset = now_mono
 
     async def _read_sample(self) -> Optional[GridSample]:
         try:

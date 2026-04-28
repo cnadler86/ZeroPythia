@@ -231,49 +231,12 @@ class ZeroFeedV3Controller:
         self.battery = battery
         self._csv_logger = csv_logger
 
-        # Per-Phase Osc-Settings: holder_settings_ac / holder_settings_b überschreiben
-        # den allgemeinen holder_settings-Wert für die jeweiligen Phasen.
-        _holder_ac = (
-            settings.holder_settings_ac
-            if settings.holder_settings_ac is not None
-            else settings.holder_settings
-        )
-        _holder_b = (
-            settings.holder_settings_b
-            if settings.holder_settings_b is not None
-            else settings.holder_settings
-        )
-        _pred_ac = settings.predictor_settings
-        _pred_b = settings.predictor_settings
-
-        phase_a = PhaseController(
-            settings=settings.phase_controller,
-            holder_settings=_holder_ac,
-            predictor_settings=_pred_ac,
-        )
-        phase_b = InverterPhaseController(
-            settings=settings.inverter_controller,
-            holder_settings=_holder_b,
-            predictor_settings=_pred_b,
-        )
-        phase_c = PhaseController(
-            settings=settings.phase_controller,
-            holder_settings=_holder_ac,
-            predictor_settings=_pred_ac,
-        )
-        self.manager = ZeroFeedManager(
-            manager_settings=settings.manager,
-            phase_a=phase_a,
-            phase_b=phase_b,
-            phase_c=phase_c,
-            total_holder_settings=settings.holder_settings,
-            total_predictor_settings=settings.predictor_settings,
-        )
+        self.manager = self._create_manager()
         logger.info(
             "ZeroFeedV3Controller initialisiert: feedback_enabled=%s  osc_ac=%s  osc_b=%s",
             settings.inverter_controller.feedback_enabled,
-            _holder_ac is not None,
-            _holder_b is not None,
+            settings.holder_settings_ac is not None or settings.holder_settings is not None,
+            settings.holder_settings_b is not None or settings.holder_settings is not None,
         )
 
         # Sample Queue
