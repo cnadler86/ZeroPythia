@@ -173,37 +173,52 @@ _HTML = """<!DOCTYPE html>
     <div class="row"><span class="label">Regler</span><span class="value" id="ctrl-name">–</span></div>
     <div class="row"><span class="label">Setpoint</span><span class="value" id="ctrl-sp">–</span></div>
     <div class="row"><span class="label">Ziel (roh)</span><span class="value" id="ctrl-raw">–</span></div>
-    <div class="row"><span class="label">FF</span><span class="value" id="ctrl-ff">–</span></div>
-    <div class="row"><span class="label">Feedback</span><span class="value" id="ctrl-fb">–</span></div>
+    <div class="row"><span class="label">FF total</span><span class="value" id="ctrl-ff">–</span></div>
+    <div class="row"><span class="label">FF A</span><span class="value" id="ctrl-ff-a" style="font-size:12px">–</span></div>
+    <div class="row"><span class="label">FF C</span><span class="value" id="ctrl-ff-c" style="font-size:12px">–</span></div>
+    <div class="row"><span class="label">Feedback (Bat.)</span><span class="value" id="ctrl-fb">–</span></div>
     <div class="row"><span class="label">Osc-Limit</span><span class="value" id="ctrl-osc">–</span></div>
+    <div class="row">
+      <span class="label">Watchdog Resets</span>
+      <span class="value" id="ctrl-wdog" style="color:var(--yellow)">0</span>
+    </div>
     <div style="margin-top:10px">
-      <h2>Oszillation</h2>
-      <div class="osc-row"><span class="phase-label">A</span><span id="osc-a" class="badge badge-gray">–</span><span id="osc-a-lim" style="color:var(--muted);font-size:12px"></span></div>
-      <div class="osc-row"><span class="phase-label">B</span><span id="osc-b" class="badge badge-gray">–</span><span id="osc-b-lim" style="color:var(--muted);font-size:12px"></span></div>
-      <div class="osc-row"><span class="phase-label">C</span><span id="osc-c" class="badge badge-gray">–</span><span id="osc-c-lim" style="color:var(--muted);font-size:12px"></span></div>
-      <div class="osc-row"><span class="phase-label">Σ</span><span id="osc-tot" class="badge badge-gray">–</span><span id="osc-tot-lim" style="color:var(--muted);font-size:12px"></span></div>
+      <h2>Oscillation</h2>
+      <div class="osc-row"><span class="phase-label" id="osc-label-a" style="min-width:70px;color:var(--muted);font-size:11px">A</span><span id="osc-a" class="badge badge-gray">–</span><span id="osc-a-det" style="color:var(--accent);font-size:11px;margin-left:4px"></span><span id="osc-a-lim" style="color:var(--muted);font-size:12px;margin-left:4px"></span></div>
+      <div class="osc-row"><span class="phase-label" id="osc-label-b" style="min-width:70px;color:var(--muted);font-size:11px">B</span><span id="osc-b" class="badge badge-gray">–</span><span id="osc-b-det" style="color:var(--accent);font-size:11px;margin-left:4px"></span><span id="osc-b-lim" style="color:var(--muted);font-size:12px;margin-left:4px"></span></div>
+      <div class="osc-row"><span class="phase-label" id="osc-label-c" style="min-width:70px;color:var(--muted);font-size:11px">C</span><span id="osc-c" class="badge badge-gray">–</span><span id="osc-c-det" style="color:var(--accent);font-size:11px;margin-left:4px"></span><span id="osc-c-lim" style="color:var(--muted);font-size:12px;margin-left:4px"></span></div>
     </div>
   </div>
 
-  <!-- Regulator Selection -->
-  <div class="card">
-    <h2>Regler wählen</h2>
-    <select id="reg-select" onchange="selectRegulator()"></select>
-    <div id="reg-desc" style="color:var(--muted);font-size:12px;margin-top:6px;min-height:30px"></div>
-    <div id="reg-settings" style="margin-top:8px"></div>
-    <button class="apply-btn" id="reg-apply" onclick="applySettings()">Einstellungen anwenden</button>
+  <!-- General Settings (regulator select + global params) -->
+  <div class="card" id="card-general">
+    <h2>Regler</h2>
+    <select id="reg-select" onchange="onRegSelectChange()"></select>
+    <div id="reg-desc" style="color:var(--muted);font-size:12px;margin-top:6px;min-height:24px"></div>
+    <button class="apply-btn secondary" style="margin-top:6px" onclick="selectRegulator()">Regler aktivieren</button>
+    <div id="general-settings" style="margin-top:10px"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applyGroupSettings('General')">Allgemein anwenden</button>
   </div>
 
-  <!-- Holder settings -->
-  <div class="card" id="card-holder" style="display:none">
-    <h2>Holder <span style="color:var(--muted);font-weight:400;font-size:11px">(kurze Schwingungen)</span></h2>
-    <div id="holder-settings"></div>
+  <!-- Phase A Settings -->
+  <div class="card" id="card-phase-A" style="display:none">
+    <h2 id="ph-head-A">Phase A</h2>
+    <div id="phase-settings-A"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applyGroupSettings('Phase A')">Anwenden</button>
   </div>
 
-  <!-- Predictor settings -->
-  <div class="card" id="card-predictor" style="display:none">
-    <h2>Predictor <span style="color:var(--muted);font-weight:400;font-size:11px">(periodische Lasten)</span></h2>
-    <div id="predictor-settings"></div>
+  <!-- Phase B Settings -->
+  <div class="card" id="card-phase-B" style="display:none">
+    <h2 id="ph-head-B">Phase B</h2>
+    <div id="phase-settings-B"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applyGroupSettings('Phase B')">Anwenden</button>
+  </div>
+
+  <!-- Phase C Settings -->
+  <div class="card" id="card-phase-C" style="display:none">
+    <h2 id="ph-head-C">Phase C</h2>
+    <div id="phase-settings-C"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applyGroupSettings('Phase C')">Anwenden</button>
   </div>
 
   <!-- GridPythia Auto Plan -->
@@ -328,12 +343,21 @@ function render(s) {
     document.getElementById('ctrl-sp').textContent = c.setpoint_w + ' W';
     document.getElementById('ctrl-raw').innerHTML = c.raw_target_w != null ? Number(c.raw_target_w).toFixed(0) + ' W' : '–';
     document.getElementById('ctrl-ff').innerHTML = c.ff_output_w != null ? Number(c.ff_output_w).toFixed(0) + ' W' : '–';
+    // Per-phase FF: show all phases that appear in ff_per_phase
+    const ffp = c.ff_per_phase || {};
+    document.getElementById('ctrl-ff-a').innerHTML = ffp['A'] != null ? Number(ffp['A']).toFixed(0) + ' W' : '–';
+    document.getElementById('ctrl-ff-c').innerHTML = ffp['C'] != null ? Number(ffp['C']).toFixed(0) + ' W' : '–';
     document.getElementById('ctrl-fb').innerHTML = c.feedback_output_w != null ? Number(c.feedback_output_w).toFixed(0) + ' W' : '–';
     document.getElementById('ctrl-osc').textContent = c.osc_limit_w != null ? Number(c.osc_limit_w).toFixed(0) + ' W' : '∞';
-    renderOsc('osc-a', 'osc-a-lim', c.osc_a);
-    renderOsc('osc-b', 'osc-b-lim', c.osc_b);
-    renderOsc('osc-c', 'osc-c-lim', c.osc_c);
-    renderOsc('osc-tot', 'osc-tot-lim', c.osc_total);
+    const wd = c.watchdog_resets ?? 0;
+    const wdEl = document.getElementById('ctrl-wdog');
+    wdEl.textContent = wd;
+    wdEl.style.color = wd > 0 ? 'var(--red)' : 'var(--muted)';
+    // Annotate phase labels with role from osc state (holder_active is set for FF phases)
+    updatePhaseRoleLabels(c);
+    renderOsc('osc-a', 'osc-a-det', 'osc-a-lim', c.osc_a);
+    renderOsc('osc-b', 'osc-b-det', 'osc-b-lim', c.osc_b);
+    renderOsc('osc-c', 'osc-c-det', 'osc-c-lim', c.osc_c);
   } else {
     ['ctrl-name','ctrl-sp','ctrl-raw','ctrl-ff','ctrl-fb','ctrl-osc'].forEach(id => {
       document.getElementById(id).textContent = '–';
@@ -341,12 +365,44 @@ function render(s) {
   }
 }
 
-function renderOsc(badgeId, limId, osc) {
+function renderOsc(badgeId, detId, limId, osc) {
   if (!osc) return;
   const b = document.getElementById(badgeId);
   b.textContent = osc.oscillating ? 'OSZ!' : 'OK';
   b.className = 'badge ' + (osc.oscillating ? 'badge-red' : 'badge-green');
   document.getElementById(limId).textContent = osc.limit_w != null ? Number(osc.limit_w).toFixed(0) + ' W' : '';
+  // Detector indicator: H=holder, P=predictor; highlighted when oscillating
+  const parts = [];
+  if (osc.holder_active)    parts.push(osc.holder_oscillating    ? '<b style="color:var(--red)">H</b>'    : '<span style="color:var(--muted)">H</span>');
+  if (osc.predictor_active) parts.push(osc.predictor_oscillating ? '<b style="color:var(--red)">P</b>' : '<span style="color:var(--muted)">P</span>');
+  const detEl = document.getElementById(detId);
+  if (detEl) detEl.innerHTML = parts.length ? '[' + parts.join('·') + ']' : '';
+}
+
+// Update osc-section phase labels to show role (FF vs. Regulation)
+// We infer: a phase with ff_per_phase entry = feedforward; the rest = regulation
+function updatePhaseRoleLabels(c) {
+  const ffp = c.ff_per_phase || {};
+  [['A', 'osc-label-a'], ['B', 'osc-label-b'], ['C', 'osc-label-c']].forEach(([ph, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (ffp[ph] !== undefined) {
+      el.textContent = ph + ' (FF)';
+      el.style.color = 'var(--accent)';
+    } else {
+      el.textContent = ph + ' (Bat)';
+      el.style.color = 'var(--green)';
+    }
+  });
+  // Also update FF row labels in ctrl card
+  const aInFF = ffp['A'] !== undefined;
+  const cInFF = ffp['C'] !== undefined;
+  const ffALabel = document.querySelector('label[for-ff-a]');  // plain id approach below
+  // Update dynamic FF sub-rows visibility
+  const rowFA = document.getElementById('ctrl-ff-a')?.closest?.('.row');
+  const rowFC = document.getElementById('ctrl-ff-c')?.closest?.('.row');
+  if (rowFA) rowFA.style.display = aInFF ? '' : 'none';
+  if (rowFC) rowFC.style.display = cInFF ? '' : 'none';
 }
 
 // ── Mini sparkline chart ───────────────────────────────────────────────────
@@ -403,60 +459,88 @@ function selectRegulator() {
   }).then(() => { fetchRegulators(); showToast('Regler gewechselt'); });
 }
 
+function onRegSelectChange() {
+  renderRegSettings();
+}
+
 function renderRegSettings() {
   const name = document.getElementById('reg-select').value;
   const reg = regulators.find(r => r.name === name);
   if (!reg) return;
   document.getElementById('reg-desc').textContent = reg.description || '';
 
-  // Split schema fields by group into 3 containers
-  const containers = {
-    'Regler':                       document.getElementById('reg-settings'),
-    'Holder (kurze Schwingungen)':  document.getElementById('holder-settings'),
-    'Predictor (periodische Lasten)': document.getElementById('predictor-settings'),
-  };
-  Object.values(containers).forEach(el => { if (el) el.innerHTML = ''; });
+  // Highlight active regulator in select
+  const sel = document.getElementById('reg-select');
+  [...sel.options].forEach(o => {
+    const r = regulators.find(x => x.name === o.value);
+    o.style.fontWeight = r?.is_active ? '700' : 'normal';
+  });
 
-  // Track which extra cards have any fields
-  const hasHolder = { v: false };
-  const hasPredictor = { v: false };
-
+  // Group fields by their group name
+  const groups = {};
   for (const [key, def] of Object.entries(reg.settings_schema)) {
-    const g = def.group || 'Regler';
-    const target = containers[g] || containers['Regler'];
-    if (g.startsWith('Holder'))    hasHolder.v = true;
-    if (g.startsWith('Predictor')) hasPredictor.v = true;
-    const val = (reg.current_settings[key] ?? def.default ?? '');
-    if (def.type === 'boolean') {
-      target.innerHTML += `<label style="margin-top:6px">
-        <input type="checkbox" id="s_${key}" ${val?'checked':''}
-          style="width:auto;margin-right:6px"> ${def.title}</label>`;
-    } else {
-      target.innerHTML += `<label>${def.title}</label>
-        <input type="number" id="s_${key}" value="${val}"
-          min="${def.minimum??''}" max="${def.maximum??''}" step="${def.step??'any'}"/>`;
-    }
+    const g = def.group || 'General';
+    if (!groups[g]) groups[g] = [];
+    groups[g].push([key, def]);
   }
 
-  // Show/hide the extra cards depending on whether the regulator has those groups
-  document.getElementById('card-holder').style.display    = hasHolder.v    ? '' : 'none';
-  document.getElementById('card-predictor').style.display = hasPredictor.v ? '' : 'none';
+  // Fill General card
+  fillSettingsContainer('general-settings', groups['General'] || [], reg.current_settings);
+
+  // Fill per-phase cards
+  ['A', 'B', 'C'].forEach(ph => {
+    const gKey = Object.keys(groups).find(g => g.startsWith('Phase ' + ph));
+    const card = document.getElementById('card-phase-' + ph);
+    if (!card) return;
+    if (!gKey) { card.style.display = 'none'; return; }
+    const hd = document.getElementById('ph-head-' + ph);
+    if (hd) hd.textContent = gKey;
+    fillSettingsContainer('phase-settings-' + ph, groups[gKey], reg.current_settings);
+    card.style.display = '';
+  });
 }
 
-function applySettings() {
+function fillSettingsContainer(containerId, fields, currentSettings) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!fields || fields.length === 0) { el.innerHTML = ''; return; }
+  el.innerHTML = fields.map(([key, def]) => {
+    const val = currentSettings[key] ?? def.default ?? '';
+    if (def.type === 'boolean') {
+      return `<label style="margin-top:6px;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="s_${key}" ${val ? 'checked' : ''}
+          style="width:auto"> ${def.title}</label>`;
+    }
+    if (def.type === 'string' && def.enum) {
+      const opts = def.enum.map(v =>
+        `<option value="${v}" ${v === String(val) ? 'selected' : ''}>${v}</option>`
+      ).join('');
+      return `<label>${def.title}</label><select id="s_${key}">${opts}</select>`;
+    }
+    return `<label>${def.title}</label>
+      <input type="number" id="s_${key}" value="${val}"
+        min="${def.minimum ?? ''}" max="${def.maximum ?? ''}" step="${def.step ?? 'any'}"/>`;
+  }).join('');
+}
+
+function applyGroupSettings(groupPrefix) {
   const name = document.getElementById('reg-select').value;
   const reg = regulators.find(r => r.name === name);
   if (!reg) return;
   const settings = {};
   for (const [key, def] of Object.entries(reg.settings_schema)) {
+    const g = def.group || 'General';
+    if (!g.startsWith(groupPrefix)) continue;
     const el = document.getElementById('s_' + key);
     if (!el) continue;
-    settings[key] = def.type === 'boolean' ? el.checked : Number(el.value);
+    if (def.type === 'boolean') settings[key] = el.checked;
+    else if (def.type === 'string') settings[key] = el.value;
+    else settings[key] = Number(el.value);
   }
   fetch(`/api/regulators/${name}/settings`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings)
-  }).then(() => { fetchRegulators(); showToast('Einstellungen gespeichert'); });
+  }).then(() => { fetchRegulators(); showToast('Gespeichert'); });
 }
 
 // ── Mode control ───────────────────────────────────────────────────────────
@@ -602,7 +686,6 @@ function showToast(msg) {
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 connect();
-document.getElementById('reg-select').addEventListener('change', renderRegSettings);
 </script>
 </body>
 </html>"""

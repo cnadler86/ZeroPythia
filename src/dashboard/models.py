@@ -75,10 +75,18 @@ class GridSample(BaseModel):
 
 
 class OscState(BaseModel):
-    """Oscillation detector state for one phase (or total)."""
+    """Oscillation detector state for one phase."""
 
     oscillating: bool = False
     limit_w: Optional[float] = None
+    holder_active: bool = False
+    """True = holder detector is configured for this phase."""
+    predictor_active: bool = False
+    """True = predictor detector is configured for this phase."""
+    holder_oscillating: bool = False
+    """True = holder is currently detecting oscillation."""
+    predictor_oscillating: bool = False
+    """True = predictor is currently detecting oscillation."""
 
 
 # ── Controller output ─────────────────────────────────────────────────────────
@@ -93,11 +101,15 @@ class ControlStatus(BaseModel):
     raw_target_w: Optional[float] = None
     ff_output_w: Optional[float] = None
     feedback_output_w: Optional[float] = None
+    ff_per_phase: dict[str, float] = Field(default_factory=dict)
+    """Per-phase feedforward output [W], e.g. {\"A\": 120.0, \"C\": 80.0}."""
     osc_limit_w: Optional[float] = None
     osc_a: OscState = Field(default_factory=OscState)
     osc_b: OscState = Field(default_factory=OscState)
     osc_c: OscState = Field(default_factory=OscState)
     osc_total: OscState = Field(default_factory=OscState)
+    watchdog_resets: int = 0
+    """Total number of watchdog resets since regulator started."""
 
 
 # ── Regulator metadata ────────────────────────────────────────────────────────

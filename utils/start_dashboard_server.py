@@ -19,16 +19,21 @@ Usage:
 import argparse
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
 
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
+from src.config.zerofeed_v4 import ZeroFeedV4Config
 from src.dashboard.models import DeviceMode
 from src.dashboard.regulators.v3_adapter import V3RegulatorSettings, ZeroFeedV3Regulator
+from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
+
+_V4_CONFIG = Path("config") / "zerofeed_v4.yaml"
 
 LOG = logging.getLogger("start_dashboard")
 
@@ -98,6 +103,13 @@ async def run(
             control_interval_s=control_interval,
         )
         runtime.register_regulator(ZeroFeedV3Regulator(v3_settings))
+
+        # ── V4 Regulator ──────────────────────────────────────────────────────
+        v4_settings = ZeroFeedV4Config(
+            max_output_w=max_output,
+            min_output_w=min_discharge,
+        )
+        runtime.register_regulator(ZeroFeedV4Regulator(settings=v4_settings, yaml_path=_V4_CONFIG))
 
         # ── Initial mode ──────────────────────────────────────────────────────
         if mqtt_broker and auto_start:
