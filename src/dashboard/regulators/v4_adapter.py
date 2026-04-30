@@ -181,13 +181,34 @@ class _V4Core:
         real_fb_samples: Optional[list[PhaseSample]] = None
         if ctrl_samples and batt_hist:
             n = min(len(ctrl_samples), len(batt_hist))
+            # Estimated real load on the feedback phase:
+            #   real_load = phase_grid + battery_output
+            # The ff_sum (A+C compensation) must NOT be subtracted here because
+            # phases A/B/C are electrically independent – changes on A/C do not
+            # affect the Phase-B grid reading.  Subtracting ff_sum would make
+            # all samples negative whenever the battery over-compensates A+C,
+            # starving the oscillation detector of positive samples.
             real_fb_samples = [
                 PhaseSample(
                     timestamp=ctrl_samples[i].timestamp,
-                    value=ctrl_samples[i].value + batt_hist[i] - ff_sum,
+                    value=ctrl_samples[i].value + batt_hist[i],
                 )
                 for i in range(n)
             ]
+            # DIAG: log real_fb_samples to debug oscillation detection starvation
+            _vals = [round(s.value, 1) for s in real_fb_samples]
+            _pos = sum(1 for v in _vals if v > 0)
+            logger.debug(
+                "OSC-DIAG [%s]: ff_sum=%.0fW  batt_hist[-1]=%.0fW  "
+                "ctrl_grid[-1]=%.0fW  real_fb_samples=%s  pos_count=%d/%d",
+                ctrl_ph,
+                ff_sum,
+                batt_hist[-1] if batt_hist else float("nan"),
+                ctrl_samples[-1].value if ctrl_samples else float("nan"),
+                _vals,
+                _pos,
+                len(_vals),
+            )
 
         # 3) Feedback phase controller
         fb_correction = self._fb.calculate(
