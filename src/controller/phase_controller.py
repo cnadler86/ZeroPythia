@@ -141,18 +141,30 @@ class _OscillationMixin:
 
     def get_osc_limit(self, samples: Optional[list[PhaseSample]] = None) -> float:
         if samples:
+            passed, filtered = 0, 0
             for sample in samples:
                 if sample.value > 0:
+                    passed += 1
                     if self.holder:
                         self.holder.add_sample(sample.value, sample.timestamp)
                     if self.predictor:
                         self.predictor.add_sample(sample.value, sample.timestamp)
+                else:
+                    filtered += 1
+            if filtered > 0:
+                logger.debug(
+                    "get_osc_limit: %d sample(s) filtered (<=0), %d passed",
+                    filtered,
+                    passed,
+                )
 
         limits: list[float] = []
         if self.holder and self.holder.is_oscillating:
             limits.append(self.holder.get_limit())
         if self.predictor and self.predictor.is_oscillating:
             limits.append(self.predictor.get_limit())
+        if limits:
+            logger.debug("get_osc_limit: active limits=%s → %.0fW", limits, min(limits))
         return min(limits) if limits else float("inf")
 
 

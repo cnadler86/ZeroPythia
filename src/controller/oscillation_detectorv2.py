@@ -57,10 +57,24 @@ class EdgeDetector:
         if diff > self.threshold:
             self._rising_edges.append(timestamp)
             self._rising_cache = None  # Invalidate cache
+            logger.debug(
+                "EdgeDetector RISING  val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                value,
+                prev_value,
+                diff,
+                self.threshold,
+            )
             return "rising"
         elif diff < -self.threshold:
             self._falling_edges.append(timestamp)
             self._falling_cache = None  # Invalidate cache
+            logger.debug(
+                "EdgeDetector FALLING val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                value,
+                prev_value,
+                diff,
+                self.threshold,
+            )
             return "falling"
 
         # Pop all values on history that are older than timestamp - self.time_threshold
