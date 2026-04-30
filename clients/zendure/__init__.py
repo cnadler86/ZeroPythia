@@ -1,6 +1,6 @@
-"""Zendure SolarFlow Client.
+"""Zendure SolarFlow client.
 
 =========================
 
-Client für Zendure SolarFlow Batterie-Systeme.
+Client for Zendure SolarFlow battery systems.
 """

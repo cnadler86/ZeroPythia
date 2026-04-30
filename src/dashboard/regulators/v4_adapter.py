@@ -320,12 +320,6 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
     entries: dict[str, Any] = {}
 
     if is_fb:
-        entries[p + "feedback_enabled"] = {
-            "type": "boolean",
-            "title": "Feedback enabled",
-            "default": True,
-            "group": group,
-        }
         entries[p + "kp_draw"] = {
             "type": "number",
             "title": "Kp draw",

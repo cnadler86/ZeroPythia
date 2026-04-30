@@ -1,13 +1,13 @@
-"""Zendure Dashboard Server – Startscript.
+"""Zendure Dashboard Server – startup script.
 
-Startet den Dashboard-Server mit echtem Shelly 3EM und Zendure SolarFlow.
+Starts the dashboard server with real Shelly 3EM and Zendure SolarFlow.
 
 Features:
-  - WebSocket Dashboard GUI auf http://<host>:<port>/
-  - Modus-Steuerung: AC Laden, Idle, Zero-Feed Entladung
-  - Regler-Auswahl und Konfiguration per GUI
-  - Live-Anzeige: Shelly, Batterie, Oszillationserkennung
-  - Optional: GridPythia MQTT-Integration
+  - WebSocket dashboard GUI at http://<host>:<port>/
+  - Mode control: AC charge, idle, zero-feed discharge
+  - Regulator selection and configuration via GUI
+  - Live view: Shelly, battery, oscillation detection
+  - Optional: GridPythia MQTT integration
 
 Usage:
     python utils/start_dashboard_server.py
@@ -26,7 +26,7 @@ import uvicorn
 
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
-from src.config.zerofeed_v4 import ZeroFeedV4Config
+from src.config.zerofeed_v4 import ZeroFeedV4Config, load_config
 from src.dashboard.models import DeviceMode
 from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
@@ -110,7 +110,7 @@ async def run(
                 topic_prefix=topic_prefix,
                 status_interval_s=status_interval_s,
             )
-            LOG.info("Auto-Modus gestartet (device_id=%s, broker=%s)", device_id, mqtt_broker)
+            LOG.info("Auto mode started (device_id=%s, broker=%s)", device_id, mqtt_broker)
         else:
             mode_map = {
                 "idle": DeviceMode.IDLE,
@@ -119,10 +119,13 @@ async def run(
             await runtime.set_mode(mode_map.get(initial_mode, DeviceMode.IDLE))
             await runtime.start()
 
-        LOG.info("ControlRuntime gestartet")
+        LOG.info("ControlRuntime started")
 
         # ── Start HTTP server ─────────────────────────────────────────────────
-        app = create_app(runtime)
+        # Read language from config file (fallback: "en")
+        yaml_cfg = load_config(_V4_CONFIG)
+        lang = yaml_cfg.language if yaml_cfg is not None else "en"
+        app = create_app(runtime, lang=lang)
         config = uvicorn.Config(
             app,
             host=host,
@@ -132,14 +135,14 @@ async def run(
         )
         server = uvicorn.Server(config)
 
-        LOG.info("Dashboard erreichbar auf http://%s:%d", host, port)
+        LOG.info("Dashboard available at http://%s:%d", host, port)
 
         try:
             await server.serve()
         except asyncio.CancelledError:
             pass
         finally:
-            LOG.info("Fahre Dashboard herunter …")
+            LOG.info("Shutting down dashboard…")
             server.should_exit = True
             if runtime._auto_manager is not None:
                 await runtime.disable_auto_mode()
@@ -151,7 +154,7 @@ async def run(
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Zendure Dashboard Server – Steuerung + Live-Monitoring",
+        description="Zendure Dashboard Server – control + live monitoring",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--shelly", default="192.168.178.77", metavar="IP")
@@ -160,7 +163,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--host",
         default="127.0.0.1",
         metavar="HOST",
-        help="Server-Bindungsadresse (z.B. 0.0.0.0 für LAN-Zugriff)",
+        help="Server bind address (e.g. 0.0.0.0 for LAN access)",
     )
     parser.add_argument("--port", type=int, default=8765, metavar="PORT")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
@@ -170,13 +173,13 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--initial-mode",
         choices=["idle", "zero_feed"],
         default="idle",
-        help="Startmodus: idle (sicher) oder zero_feed",
+        help="Initial mode: idle (safe) or zero_feed",
     )
     parser.add_argument(
         "--mqtt-broker",
         default="mqtt://localhost:1883",
         metavar="URL",
-        help="MQTT Broker URL (default: localhost). Mit --auto sofort AUTO-Modus.",
+        help="MQTT broker URL. Use --auto to immediately enter AUTO mode.",
     )
     parser.add_argument("--device-id", default="SF800Pro", metavar="ID")
     parser.add_argument("--topic-prefix", default="gridpythia", metavar="PREFIX")
@@ -184,7 +187,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument(
         "--auto",
         action="store_true",
-        help="Sofort in AUTO-Modus starten (nutzt MQTT-Broker + device-id).",
+        help="Start immediately in AUTO mode (uses --mqtt-broker + --device-id).",
     )
     parser.add_argument("--verbose", action="store_true")
 
@@ -215,7 +218,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         )
     except KeyboardInterrupt:
-        LOG.info("Durch Benutzer beendet")
+        LOG.info("Stopped by user")
 
 
 if __name__ == "__main__":

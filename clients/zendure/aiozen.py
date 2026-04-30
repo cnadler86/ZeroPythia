@@ -1,13 +1,13 @@
-"""Async SolarFlow Client - Lokale HTTP API (HAL Implementation).
+"""Async SolarFlow client – local HTTP API (HAL implementation).
 
-Asynchroner Client für Zendure SolarFlow Geräte.
-Implementiert Hardware Abstraction Layer (HAL) mit aiohttp.
+Asynchronous client for Zendure SolarFlow devices.
+Implements the Hardware Abstraction Layer (HAL) with aiohttp.
 
-Diese Klasse kümmert sich nur um:
-- HTTP Session-Verwaltung
-- Low-Level API-Calls (_fetch_response, _set_properties)
+This class only handles:
+- HTTP session management
+- Low-level API calls (_fetch_response, _set_properties)
 
-Alle High-Level Methoden werden von SolarFlowBase geerbt.
+All high-level methods are inherited from SolarFlowBase.
 """
 
 import asyncio
@@ -23,25 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 class SolarFlowAsyncClient(SolarFlowBase):
-    """Asynchroner Client für Zendure SolarFlow Local API.
+    """Asynchronous client for the Zendure SolarFlow local API.
 
-    Implementiert HAL:
+    Implements HAL:
     - _fetch_response(): HTTP GET → APIResponse
     - _set_properties(): HTTP POST
 
-    Erbt von SolarFlowBase:
+    Inherits from SolarFlowBase:
     - get_state(), get_battery_packs()
-    - get/set für: output_limit, input_limit, ac_mode, min_soc, max_soc
+    - get/set for: output_limit, input_limit, ac_mode, min_soc, max_soc
     - start_discharge(), start_charge(), stop()
     """
 
     def __init__(self, device_ip: str, *, timeout: float = 2.0, cache_ttl: float = 1.0):
-        """Initialisierung des asynchronen Clients.
+        """Initialise the asynchronous client.
 
         Args:
-            device_ip: IP-Adresse des SolarFlow Geräts
-            timeout: HTTP Timeout in Sekunden
-            cache_ttl: Cache Time-To-Live in Sekunden
+            device_ip: IP address of the SolarFlow device
+            timeout: HTTP timeout in seconds
+            cache_ttl: cache time-to-live in seconds
         """
         super().__init__(device_ip=device_ip, cache_ttl=cache_ttl)
 
@@ -49,13 +49,13 @@ class SolarFlowAsyncClient(SolarFlowBase):
         self._timeout = aiohttp.ClientTimeout(total=timeout)
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Stellt sicher dass eine HTTP Session existiert."""
+        """Ensure an HTTP session exists."""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=self._timeout)
         return self._session
 
     async def close(self) -> None:
-        """Schließt die HTTP Session."""
+        """Close the HTTP session."""
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -70,13 +70,13 @@ class SolarFlowAsyncClient(SolarFlowBase):
     # ==================== HAL Implementation (2 Methoden) ====================
 
     async def _fetch_response(self) -> Optional[APIResponseProtocol]:
-        """Pure HW-Zugriff: HTTP GET Request.
+        """Pure hardware access: HTTP GET request.
 
-        Verwendet pydantic TypeAdapter für schnelles JSON-Parsing.
-        Cache-Handling erfolgt in SolarFlowBase._get_full_response()!
+        Uses a Pydantic TypeAdapter for fast JSON parsing.
+        Cache handling is done in SolarFlowBase._get_full_response().
 
         Returns:
-            APIResponse (implementiert APIResponseProtocol) oder None bei Fehler
+            APIResponse (implements APIResponseProtocol) or None on error
         """
         url = f"{self._base_url}/properties/report"
         try:
@@ -97,32 +97,32 @@ class SolarFlowAsyncClient(SolarFlowBase):
                 return parsed
 
         except asyncio.TimeoutError:
-            logger.warning("SolarFlow API Timeout (GET %s) – Gerät antwortet nicht", url)
+            logger.warning("SolarFlow API timeout (GET %s) – device not responding", url)
             return None
         except aiohttp.ClientResponseError as e:
-            logger.error("SolarFlow API HTTP-Fehler (GET %s): %s %s", url, e.status, e.message)
+            logger.error("SolarFlow API HTTP error (GET %s): %s %s", url, e.status, e.message)
             return None
         except aiohttp.ClientError as e:
-            logger.error("SolarFlow API Verbindungsfehler (GET %s): %s", url, e)
+            logger.error("SolarFlow API connection error (GET %s): %s", url, e)
             return None
         except Exception as e:
-            logger.error("SolarFlow unerwarteter Fehler (GET %s): %s", url, e, exc_info=True)
+            logger.error("SolarFlow unexpected error (GET %s): %s", url, e, exc_info=True)
             return None
 
     async def _set_properties(self, properties: Dict, smart_mode: bool = True) -> bool:
-        """Properties setzen via HTTP POST.
+        """Set properties via HTTP POST.
 
         Args:
-            properties: Dict mit zu setzenden Properties (camelCase Keys!)
-            smart_mode: True = nur RAM (empfohlen), False = Flash schreiben
+            properties: dict of properties to set (camelCase keys!)
+            smart_mode: True = RAM only (recommended), False = write to flash
         """
         url = f"{self._base_url}/properties/write"
         try:
             if self._sn is None:
-                # Erste Anfrage um SN zu bekommen
+                # First request to obtain the serial number
                 await self._get_full_response(use_cache=False)
                 if self._sn is None:
-                    logger.error("_set_properties: Seriennummer konnte nicht ermittelt werden")
+                    logger.error("_set_properties: serial number could not be determined")
                     return False
 
             payload = self._prepare_properties_payload(properties, smart_mode)
@@ -142,7 +142,7 @@ class SolarFlowAsyncClient(SolarFlowBase):
                     logger.debug("POST %s → OK  %s", url, prop_keys)
                 else:
                     logger.warning(
-                        "POST %s → HTTP %d (erwartet 200)  props=%s",
+                        "POST %s → HTTP %d (expected 200)  props=%s",
                         url,
                         response.status,
                         prop_keys,
@@ -151,15 +151,15 @@ class SolarFlowAsyncClient(SolarFlowBase):
 
         except asyncio.TimeoutError:
             logger.warning(
-                "SolarFlow API Timeout (POST %s) – props=%s", url, list(properties.keys())
+                "SolarFlow API timeout (POST %s) – props=%s", url, list(properties.keys())
             )
             return False
         except aiohttp.ClientResponseError as e:
-            logger.error("SolarFlow API HTTP-Fehler (POST %s): %s %s", url, e.status, e.message)
+            logger.error("SolarFlow API HTTP error (POST %s): %s %s", url, e.status, e.message)
             return False
         except aiohttp.ClientError as e:
-            logger.error("SolarFlow API Verbindungsfehler (POST %s): %s", url, e)
+            logger.error("SolarFlow API connection error (POST %s): %s", url, e)
             return False
         except Exception as e:
-            logger.error("SolarFlow unerwarteter Fehler (POST %s): %s", url, e, exc_info=True)
+            logger.error("SolarFlow unexpected error (POST %s): %s", url, e, exc_info=True)
             return False

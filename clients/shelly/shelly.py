@@ -1,15 +1,15 @@
-"""Async Shelly Client für Shelly 3EM Stromzähler.
+"""Async Shelly client for Shelly 3EM energy meters.
 
-Vollständig asynchroner Client für Shelly 3EM (Pro).
+Fully asynchronous client for Shelly 3EM (Pro).
 
-Architektur (zwei Layer):
-  Layer 1 Hardware-Kommunikation (_fetch_raw):
-      Erkennt die Gerätegeneration, ruft den passenden Endpunkt ab und
-      speichert die rohe JSON-Antwort im Cache.
+Architecture (two layers):
+  Layer 1 – hardware communication (_fetch_raw):
+      Detects the device generation, calls the appropriate endpoint, and
+      stores the raw JSON response in a cache.
 
-  Layer 2 Daten-Extraktion (get_state, get_consumption, get_power):
-      Liest aus dem Raw-Cache und wandelt die Rohdaten in typisierte
-      Domain-Objekte um.  Kein HTTP-Call findet hier statt.
+  Layer 2 – data extraction (get_state, get_consumption, get_power):
+      Reads from the raw cache and converts raw data into typed domain
+      objects.  No HTTP call happens here.
 """
 
 import logging
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class GridState:
-    """Aktuelle Netzleistung (Watt)."""
+    """Current grid power (watts)."""
 
     total_power_w: float
     phase_a_power_w: float
@@ -34,7 +34,7 @@ class GridState:
 
 @dataclass
 class GridConsumption:
-    """Kumulierter Netzverbrauch (Wh)."""
+    """Cumulative grid energy consumption (Wh)."""
 
     total_power_wh: float = 0.0
     phase_a_power_wh: float = 0.0
@@ -51,7 +51,7 @@ class GridConsumption:
 
 
 # ---------------------------------------------------------------------------
-# Statische Parser (Layer 2 – reine Daten-Transformation, kein I/O)
+# Static parsers (Layer 2 – pure data transformation, no I/O)
 # ---------------------------------------------------------------------------
 
 
@@ -87,9 +87,9 @@ def _parse_gen2_state(data: dict) -> GridState:
 
 
 class ShellyClient:
-    """Asynchroner Client für Shelly 3EM (Pro) Stromzähler.
+    """Asynchronous client for Shelly 3EM (Pro) energy meters.
 
-    Unterstützt:
+    Supports:
     - Shelly 3EM (Gen1)
     - Shelly Pro 3EM (Gen2)
     """
@@ -99,29 +99,29 @@ class ShellyClient:
         self._http_timeout = aiohttp.ClientTimeout(total=cache_ttl)
         self._session: Optional[aiohttp.ClientSession] = None
 
-        # Layer 1 – Raw-Cache: speichert die unveränderte JSON-Antwort des Geräts
+        # Layer 1 – raw cache: stores the unmodified JSON response from the device
         self._raw_cache: Optional[dict] = None
         self._cache_timestamp: float = 0
         self._cache_ttl: float = cache_ttl
 
-        # Stale-Data-Timeout: wie lange alte Daten bei Verbindungsproblemen noch gültig sind
+        # Stale-data timeout: how long old data remains valid when the connection fails
         self._stale_timeout: float = timeout
 
-        # Gerätegeneration (wird beim ersten Abruf automatisch erkannt)
+        # Device generation (auto-detected on first fetch)
         self._gen: Optional[int] = None
 
     # ------------------------------------------------------------------
-    # Session-Verwaltung
+    # Session management
     # ------------------------------------------------------------------
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
-        """Stellt sicher dass eine Session existiert."""
+        """Ensure a session exists."""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=self._http_timeout)
         return self._session
 
     async def close(self) -> None:
-        """Schließt die Session."""
+        """Close the session."""
         if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
@@ -134,75 +134,74 @@ class ShellyClient:
         await self.close()
 
     # ------------------------------------------------------------------
-    # Layer 1 – Hardware-Kommunikation
+    # Layer 1 – hardware communication
     # ------------------------------------------------------------------
 
     async def _detect_generation(self) -> int:
-        """Erkennt automatisch die Shelly Generation (wird nur einmal aufgerufen)."""
+        """Auto-detect the Shelly generation (called only once)."""
         if self._gen is not None:
             return self._gen
 
         session = await self._ensure_session()
 
-        # Versuche Gen2 API (Shelly Pro 3EM)
+        # Try Gen2 API (Shelly Pro 3EM)
         try:
             async with session.get(f"{self._base_url}/rpc/Shelly.GetDeviceInfo") as response:
                 if response.status == 200:
                     data = await response.json()
                     if "gen" in data:
                         self._gen = data.get("gen", 1)
-                        logger.info("Shelly Gen%d erkannt", self._gen)
+                        logger.info("Shelly Gen%d detected", self._gen)
                         return self._gen  # type: ignore[return-value]
         except Exception:
-            logger.debug("Shelly Gen2 Detection fehlgeschlagen", exc_info=True)
+            logger.debug("Shelly Gen2 detection failed", exc_info=True)
 
         # Fallback: Gen1 (Shelly 3EM)
         try:
             async with session.get(f"{self._base_url}/status") as response:
                 if response.status == 200:
                     self._gen = 1
-                    logger.info("Shelly Gen1 erkannt")
+                    logger.info("Shelly Gen1 detected")
                     return self._gen
         except Exception:
-            logger.debug("Shelly Gen1 Detection fehlgeschlagen", exc_info=True)
+            logger.debug("Shelly Gen1 detection failed", exc_info=True)
 
         # Default
         self._gen = 1
         return self._gen
 
     async def _fetch_gen1_raw(self) -> Optional[dict]:
-        """GET /status  →  rohe JSON-Antwort (Gen1)."""
+        """GET /status → raw JSON response (Gen1)."""
         try:
             session = await self._ensure_session()
             async with session.get(f"{self._base_url}/status") as response:
                 response.raise_for_status()
                 return await response.json()
         except Exception as e:
-            logger.error("Shelly Gen1 Fehler: %s", e)
+            logger.error("Shelly Gen1 error: %s", e)
             return None
 
     async def _fetch_gen2_raw(self) -> Optional[dict]:
-        """GET /rpc/EM.GetStatus?id=0  →  rohe JSON-Antwort (Gen2)."""
+        """GET /rpc/EM.GetStatus?id=0 → raw JSON response (Gen2)."""
         try:
             session = await self._ensure_session()
             async with session.get(f"{self._base_url}/rpc/EM.GetStatus?id=0") as response:
                 response.raise_for_status()
                 return await response.json()
         except Exception as e:
-            logger.error("Shelly Gen2 Fehler: %s", e)
+            logger.error("Shelly Gen2 error: %s", e)
             return None
 
     async def _fetch_raw(self, use_cache: bool = True) -> Optional[tuple[int, dict]]:
-        """Layer-1-Einstiegspunkt: liefert (generation, raw_data).
+        """Layer-1 entry point: returns (generation, raw_data).
 
-        Gibt gecachte Rohdaten zurück, solange sie frisch genug sind.
-        Bei Verbindungsfehlern werden Stale-Daten bis zum stale_timeout
-        weiterverwendet.  Gibt None zurück, wenn keine gültigen Daten
-        verfügbar sind.
+        Returns cached raw data as long as it is fresh enough.
+        On connection errors, stale data is reused up to stale_timeout.
+        Returns None when no valid data is available.
         """
         now = time()
 
-        # Schneller Cache-Hit innerhalb cache_ttl
+        # Fast cache hit within cache_ttl
         if (
             use_cache
             and self._raw_cache is not None
@@ -211,10 +210,10 @@ class ShellyClient:
         ):
             return self._gen, self._raw_cache
 
-        # Gerätegeneration (einmalig) ermitteln
+        # Detect device generation (once)
         gen = await self._detect_generation()
 
-        # Passenden Endpunkt abrufen
+        # Fetch from the appropriate endpoint
         raw = await (self._fetch_gen2_raw() if gen >= 2 else self._fetch_gen1_raw())
 
         if raw is not None:
@@ -222,24 +221,24 @@ class ShellyClient:
             self._cache_timestamp = now
             return gen, raw
 
-        # Fehler beim Abruf – Stale-Daten verwenden, falls noch gültig
+        # Fetch failed – use stale data if still within timeout
         if self._raw_cache is not None and (now - self._cache_timestamp) < self._stale_timeout:
             logger.warning(
-                "Shelly: verwende veraltete Daten (%.1fs alt)", now - self._cache_timestamp
+                "Shelly: using stale data (%.1f s old)", now - self._cache_timestamp
             )
             return gen, self._raw_cache
 
         return None
 
     # ------------------------------------------------------------------
-    # Layer 2 – Daten-Extraktion aus dem Raw-Cache
+    # Layer 2 – data extraction from the raw cache
     # ------------------------------------------------------------------
 
     async def get_state(self, use_cache: bool = True) -> Optional[GridState]:
-        """Aktuelle Netzleistung als GridState.
+        """Current grid power as a GridState.
 
         Returns:
-            GridState oder None wenn keine (gültigen) Daten verfügbar sind.
+            GridState or None when no (valid) data is available.
         """
         result = await self._fetch_raw(use_cache)
         if result is None:
@@ -248,36 +247,36 @@ class ShellyClient:
         try:
             return _parse_gen2_state(data) if gen >= 2 else _parse_gen1_state(data)
         except (KeyError, IndexError) as e:
-            logger.error("Shelly GridState Parsing-Fehler: %s", e)
+            logger.error("Shelly GridState parsing error: %s", e)
             return None
 
     async def get_consumption(self, use_cache: bool = True) -> Optional[GridConsumption]:
-        """Kumulierter Netzverbrauch als GridConsumption.
+        """Cumulative grid consumption as a GridConsumption object.
 
-        Aktuell nur für Gen1 verfügbar (Gen2 liefert diese Daten an
-        einem separaten Endpunkt – noch nicht implementiert).
+        Currently only available for Gen1 (Gen2 provides this data at a
+        separate endpoint – not yet implemented).
 
         Returns:
-            GridConsumption oder None.
+            GridConsumption or None.
         """
         result = await self._fetch_raw(use_cache)
         if result is None:
             return None
         gen, data = result
         if gen >= 2:
-            logger.debug("Shelly Gen2: GridConsumption noch nicht implementiert")
+            logger.debug("Shelly Gen2: GridConsumption not yet implemented")
             return None
         try:
             return _parse_gen1_consumption(data)
         except (KeyError, IndexError) as e:
-            logger.error("Shelly GridConsumption Parsing-Fehler: %s", e)
+            logger.error("Shelly GridConsumption parsing error: %s", e)
             return None
 
     async def get_power(self, use_cache: bool = True) -> Optional[float]:
-        """Aktuelle Gesamtleistung in Watt.
+        """Current total power in watts.
 
         Returns:
-            Positiv = Netzbezug, Negativ = Einspeisung, None bei Fehler.
+            Positive = grid draw, negative = feed-in, None on error.
         """
         state = await self.get_state(use_cache)
         return state.total_power_w if state else None

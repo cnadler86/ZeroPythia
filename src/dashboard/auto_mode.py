@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 from clients.mqtt.client import MqttClient, MqttConfig
@@ -35,10 +35,10 @@ ApplyModeCb = Callable[
 
 _MODE_LABELS: dict[InverterMode, str] = {
     InverterMode.IDLE: "Idle",
-    InverterMode.DISCHARGE: "Entladen",
+    InverterMode.DISCHARGE: "Discharge",
     InverterMode.DISCHARGE_ZERO_FEED_IN: "Zero-Feed",
-    InverterMode.AC_CHARGE: "AC Laden",
-    InverterMode.AC_CHARGE_ZERO_FEED_IN: "AC Laden",
+    InverterMode.AC_CHARGE: "AC Charge",
+    InverterMode.AC_CHARGE_ZERO_FEED_IN: "AC Charge",
 }
 
 MAX_SUMMARY_ENTRIES = 6
@@ -87,8 +87,17 @@ def _make_entry(
     end_local = datetime.fromtimestamp(end_ts, tz=start_local.tzinfo)
 
     today_date = datetime.now().date()
+    tomorrow_date = today_date + timedelta(days=1)
     entry_date = start_local.date()
-    date_label = start_local.strftime("%a %d.%m") if entry_date != today_date else None
+
+    if entry_date == today_date:
+        date_label = None
+    elif entry_date == tomorrow_date:
+        date_label = "Tomorrow"
+    else:
+        date_label = start_local.strftime("%a")  # e.g. "Mon", "Tue"
+
+    end_next_day = end_local.date() != start_local.date()
 
     return PlanSummaryEntry(
         mode_label=_MODE_LABELS.get(step.mode, step.mode.name),
@@ -96,6 +105,7 @@ def _make_entry(
         to_time=end_local.strftime("%H:%M"),
         power_w=_plan_power_w(step, plan.dt_hours),
         date=date_label,
+        end_next_day=end_next_day,
     )
 
 

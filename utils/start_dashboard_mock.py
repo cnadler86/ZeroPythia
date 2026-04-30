@@ -1,11 +1,11 @@
-"""Dashboard Server mit Mock-Hardware – für lokales Testen ohne Shelly/Zendure.
+"""Dashboard server with mock hardware – for local testing without Shelly/Zendure.
 
-Verwendet:
-  - SolarFlowAsyncMockClient  (simulierte Batterie mit realistischem Timing)
-  - MockGridMeter              (konstante Last mit konfigurierbaren Werten)
+Uses:
+  - SolarFlowAsyncMockClient  (simulated battery with realistic timing)
+  - MockGridMeter              (constant load with configurable values)
 
-Startet Dashboard auf http://localhost:8765/
-V4 Einstellungen werden in config/zerofeed_v4.yaml gespeichert.
+Starts dashboard at http://localhost:8765/
+V4 settings are stored in config/zerofeed_v4.yaml.
 
 Usage:
     python utils/start_dashboard_mock.py
@@ -36,7 +36,7 @@ from src.dashboard.server import create_app
 
 LOG = logging.getLogger("start_dashboard_mock")
 
-# YAML-Konfigurationspfad für V4 (relativ zum Projektroot)
+# YAML config path for V4 (relative to project root)
 _V4_CONFIG = Path("config") / "zerofeed_v4.yaml"
 
 
@@ -201,8 +201,8 @@ async def run(
         battery=battery,  # subtract battery output from phase B grid reading
     )
     LOG.info(
-        "Mock-Hardware: Batterie=SolarFlowAsyncMockClient  "
-        "Grid: A=%.0fW B=%.0fW C=%.0fW  Rauschen=%.0fW  A+C=oscillating",
+        "Mock hardware: battery=SolarFlowAsyncMockClient  "
+        "Grid: A=%.0f W  B=%.0f W  C=%.0f W  noise=%.0f W  A+C=oscillating",
         load_a,
         load_b,
         load_c,
@@ -229,14 +229,14 @@ async def run(
     v4 = ZeroFeedV4Regulator(settings=v4_settings, yaml_path=v4_yaml)
     runtime.register_regulator(v4)
     LOG.info(
-        "V4 Einstellungen: %s (Datei: %s)", v4_yaml, "vorhanden" if v4_yaml.exists() else "neu"
+        "V4 settings: %s (file: %s)", v4_yaml, "present" if v4_yaml.exists() else "new"
     )
 
     # ── Initial mode ──────────────────────────────────────────────────────────
     mode_map = {"idle": DeviceMode.IDLE, "zero_feed": DeviceMode.DISCHARGE_ZERO_FEED}
     await runtime.set_mode(mode_map.get(initial_mode, DeviceMode.IDLE))
     await runtime.start()
-    LOG.info("ControlRuntime gestartet (Modus: %s)", initial_mode)
+    LOG.info("ControlRuntime started (mode: %s)", initial_mode)
 
     # ── HTTP Server ───────────────────────────────────────────────────────────
     app = create_app(runtime)
@@ -248,7 +248,7 @@ async def run(
         access_log=False,
     )
     server = uvicorn.Server(config)
-    LOG.info("Dashboard erreichbar auf http://%s:%d", host, port)
+    LOG.info("Dashboard available at http://%s:%d", host, port)
 
     try:
         await server.serve()
@@ -257,7 +257,7 @@ async def run(
     finally:
         server.should_exit = True
         await runtime.stop()
-        LOG.info("Dashboard gestoppt")
+        LOG.info("Dashboard stopped")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -265,22 +265,22 @@ async def run(
 
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Dashboard Server mit Mock-Hardware (kein Shelly/Zendure nötig)",
+        description="Dashboard server with mock hardware (no Shelly/Zendure needed)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--host", default="127.0.0.1", metavar="HOST")
     parser.add_argument("--port", type=int, default=8765, metavar="PORT")
     parser.add_argument(
-        "--load-a", type=float, default=150.0, metavar="W", help="Konstante Last an Phase A [W]"
+        "--load-a", type=float, default=150.0, metavar="W", help="Constant load on phase A [W]"
     )
     parser.add_argument(
-        "--load-b", type=float, default=250.0, metavar="W", help="Konstante Last an Phase B [W]"
+        "--load-b", type=float, default=250.0, metavar="W", help="Constant load on phase B [W]"
     )
     parser.add_argument(
-        "--load-c", type=float, default=100.0, metavar="W", help="Konstante Last an Phase C [W]"
+        "--load-c", type=float, default=100.0, metavar="W", help="Constant load on phase C [W]"
     )
     parser.add_argument(
-        "--noise", type=float, default=5.0, metavar="W", help="Zufälliges Rauschen ±W"
+        "--noise", type=float, default=5.0, metavar="W", help="Random noise ± W"
     )
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")
@@ -288,7 +288,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         "--initial-mode",
         choices=["idle", "zero_feed"],
         default="idle",
-        help="Startmodus",
+        help="Initial mode",
     )
     parser.add_argument("--verbose", action="store_true")
 
@@ -315,7 +315,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         )
     except KeyboardInterrupt:
-        LOG.info("Durch Benutzer beendet")
+        LOG.info("Stopped by user")
 
 
 if __name__ == "__main__":

@@ -56,9 +56,12 @@ class GridSample(BaseModel):
     charge_input_w: Optional[float] = Field(
         default=None, description="Battery AC charge input [W]."
     )
+    solar_input_w: Optional[float] = Field(
+        default=None, description="Solar PV input power reported by the inverter [W]."
+    )
     bypass_active: Optional[bool] = Field(
         default=None,
-        description="True wenn Inverter im Bypass-Modus (PV direkt ans Haus, kein Battery-Control).",
+        description="True when the inverter is in bypass mode (PV direct to house, no battery control).",
     )
 
     @property
@@ -142,7 +145,14 @@ class PlanSummaryEntry(BaseModel):
     from_time: str = Field(description="Start time HH:MM (local).")
     to_time: str = Field(description="End time HH:MM (local).")
     power_w: Optional[int] = Field(default=None, description="Power [W] (charge or discharge cap).")
-    date: Optional[str] = Field(default=None, description="Date label if not today.")
+    date: Optional[str] = Field(
+        default=None,
+        description="Day label when entry does not start today (e.g. 'Mon', 'Tomorrow').",
+    )
+    end_next_day: bool = Field(
+        default=False,
+        description="True when the slot ends on a different calendar day than it starts.",
+    )
 
 
 class AutoStatus(BaseModel):

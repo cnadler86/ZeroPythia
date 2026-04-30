@@ -1,14 +1,14 @@
-"""SolarFlow Base Classes - Interface und gemeinsame Implementierung.
+"""SolarFlow base classes – interface and shared implementation.
 
 ==================================================================
 
-Dieses Modul definiert:
-- ISolarFlowClient: Abstrakte HAL-Schnittstelle (2 Methoden)
-- SolarFlowBase: Gemeinsame High-Level Implementierung
-- Pydantic Models für verarbeitete/konvertierte Daten
+This module defines:
+- ISolarFlowClient: abstract HAL interface (2 methods)
+- SolarFlowBase: shared high-level implementation
+- Pydantic models for processed / converted data
 
-Die Base-Klasse arbeitet mit abstrakten Protokollen (models.py) und
-wandelt Raw-API-Daten in typsichere Pydantic Models mit berechneten Feldern.
+The base class works with abstract protocols (models.py) and converts
+raw API data into type-safe Pydantic models with computed fields.
 """
 
 import logging
@@ -38,33 +38,33 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class InverterEnergyCounters:
-    """Monoton steigende Energiezähler (Dead-Reckoning aus Setpoints).
+    """Monotonically increasing energy counters (dead-reckoning from setpoints).
 
-    Die Werte werden durch Integration der gesetzten Leistungssetpoints über
-    die Zeit berechnet.  Sie starten bei 0 beim Programmstart und zählen nur hoch.
+    Values are computed by integrating the active power setpoints over time.
+    They start at 0 on program start and only count upward.
 
-    Formel:
+    Formula:
         discharge_wh += output_setpoint_W × Δt_h
         charge_wh    += input_setpoint_W  × Δt_h
 
-    Usage auf höherer Ebene (HEMS):
+    Usage at a higher level (HEMS):
         delta_discharge = counters.discharge_wh - prev_discharge_wh
         delta_charge    = counters.charge_wh    - prev_charge_wh
         real_load_delta = grid_delta + delta_discharge - delta_charge
     """
 
-    discharge_wh: float  # kumulierte Energie die der Inverter ins Haus geliefert hat [Wh]
-    charge_wh: float  # kumulierte Energie die der Inverter aus dem Netz bezogen hat [Wh]
+    discharge_wh: float  # cumulative energy delivered to the house [Wh]
+    charge_wh: float  # cumulative energy drawn from the grid (AC charge) [Wh]
 
 
 # ==================== Processed Pydantic Models ====================
-# Diese Models enthalten verarbeitete/konvertierte Daten mit computed fields.
+# These models contain processed/converted data with computed fields.
 
 
 class ProcessedBatteryPack(BaseModel):
-    """Verarbeitete Battery Pack Daten mit konvertierten Werten.
+    """Processed battery-pack data with converted values.
 
-    Konvertierungen gemäß Zendure zenSDK Documentation:
+    Conversions per Zendure zenSDK documentation:
     - maxTemp: Kelvin*10 → Celsius
     - totalVol: centivolts → Volt
     - batcur: 16-bit two's complement / 10 → Ampere
@@ -79,7 +79,7 @@ class ProcessedBatteryPack(BaseModel):
     power_w: int = Field(default=0, description="Battery power in W")
     software_version: int = Field(default=0, description="Software version")
 
-    # ===== Konvertierte Felder =====
+    # ===== Converted fields =====
     temperature_celsius: float = Field(default=0.0, description="Temperature in °C")
     voltage_v: float = Field(default=0.0, description="Total voltage in V")
     current_a: float = Field(default=0.0, description="Current in A (signed)")
@@ -90,7 +90,7 @@ class ProcessedBatteryPack(BaseModel):
     @computed_field
     @property
     def battery_state(self) -> BatteryState:
-        """Battery State als Enum."""
+        """Battery state as enum."""
         try:
             return BatteryState(self.state)
         except ValueError:
@@ -99,7 +99,7 @@ class ProcessedBatteryPack(BaseModel):
     @computed_field
     @property
     def is_healthy(self) -> bool:
-        """Prüft ob Batterie im gesunden Bereich."""
+        """Returns True if battery metrics are within healthy limits."""
         if self.min_cell_voltage_v == 0:
             return True  # Keine Daten = assume healthy
         return (
@@ -109,7 +109,7 @@ class ProcessedBatteryPack(BaseModel):
 
     @classmethod
     def from_protocol(cls, pack: BatteryPackProtocol) -> "ProcessedBatteryPack":
-        """Erstellt ProcessedBatteryPack aus Raw Protocol Daten."""
+        """Build a ProcessedBatteryPack from raw protocol data."""
         # Temperature: Kelvin*10 → Celsius
         temp_celsius = (pack.max_temp - 2731) / 10.0 if pack.max_temp else 0.0
 
@@ -144,9 +144,9 @@ class ProcessedBatteryPack(BaseModel):
 
 
 class DeviceState(BaseModel):
-    """Verarbeiteter Device State mit allen relevanten Properties.
+    """Processed device state with all relevant properties.
 
-    Konvertiert Raw API Daten zu nutzbaren Werten:
+    Converts raw API data to usable values:
     - hyperTmp: Kelvin*10 → Celsius
     - minSoc: 0-500 → 0-50%
     - socSet: 700-1000 → 70-100%
@@ -173,7 +173,7 @@ class DeviceState(BaseModel):
     pack_count: int = Field(default=0, description="Number of battery packs")
     battery_packs: List[ProcessedBatteryPack] = Field(default_factory=list)
 
-    # ===== Limits (konvertiert zu %) =====
+    # ===== Limits (converted to %) =====
     min_soc: int = Field(default=0, ge=0, le=50, description="Min SOC in % (0-50)")
     max_soc: int = Field(default=100, ge=70, le=100, description="Max SOC in % (70-100)")
     input_limit: int = Field(default=0, description="AC input limit in W")
@@ -187,7 +187,7 @@ class DeviceState(BaseModel):
     grid_connected: bool = Field(default=True, description="Grid connected")
     heating_active: bool = Field(default=False, description="Heating active")
 
-    # ===== Temperature (konvertiert) =====
+    # ===== Temperature (converted) =====
     temperature_celsius: Optional[float] = Field(default=None, description="Enclosure temp in °C")
 
     # ===== Status Flags =====
@@ -197,7 +197,7 @@ class DeviceState(BaseModel):
 
     @classmethod
     def from_response(cls, response: APIResponseProtocol) -> "DeviceState":
-        """Erstellt DeviceState aus API Response Protocol."""
+        """Build a DeviceState from an API response protocol object."""
         props = response.properties
 
         # Temperature: Kelvin*10 → Celsius
@@ -209,7 +209,7 @@ class DeviceState(BaseModel):
         min_soc_percent = props.min_soc // 10
         max_soc_percent = props.soc_set // 10
 
-        # Battery Packs verarbeiten
+        # Process battery packs
         processed_packs = [ProcessedBatteryPack.from_protocol(pack) for pack in response.pack_data]
 
         return cls(
@@ -251,38 +251,38 @@ class DeviceState(BaseModel):
 
 
 class ISolarFlowClient(ABC):
-    """Abstract Base Class - Minimal Interface für SolarFlow Clients (HAL).
+    """Abstract base class – minimal interface for SolarFlow clients (HAL).
 
-    Alle Clients müssen nur 2 Low-Level Hardware-Methoden implementieren:
-    1. _fetch_response() - Pure HW-Zugriff ohne Cache
-    2. _set_properties() - Daten schreiben
+    Clients only need to implement two low-level hardware methods:
+    1. _fetch_response() – pure HW access without cache
+    2. _set_properties() – write data to device
 
-    Cache-Handling und alle High-Level Methoden sind in SolarFlowBase implementiert.
+    Cache handling and all high-level methods are in SolarFlowBase.
     """
 
     @abstractmethod
     async def _fetch_response(self) -> Optional[APIResponseProtocol]:
-        """Pure Hardware-Zugriff: Response vom Device holen (ohne Cache!).
+        """Pure hardware access: fetch a response from the device (no cache).
 
-        Hardware Abstraction Layer (HAL) - Implementiert von:
-        - SolarFlowAsyncClient: HTTP GET Request
-        - SolarFlowAsyncMockClient: Mock-Daten generieren
+        Hardware Abstraction Layer (HAL) – implemented by:
+        - SolarFlowAsyncClient: HTTP GET request
+        - SolarFlowAsyncMockClient: generate mock data
 
         Returns:
-            APIResponseProtocol oder None bei Fehler
+            APIResponseProtocol or None on error
         """
         pass
 
     @abstractmethod
     async def _set_properties(self, properties: Dict, smart_mode: bool = True) -> bool:
-        """Device Properties setzen (Low-Level Control).
+        """Set device properties (low-level control).
 
         Args:
-            properties: Dict mit zu setzenden Properties (camelCase Keys!)
-            smart_mode: True = nur RAM (empfohlen), False = in Flash schreiben (persistent)
+            properties: dict of properties to set (camelCase keys!)
+            smart_mode: True = RAM only (recommended), False = write to flash (persistent)
 
         Returns:
-            True bei Erfolg, False bei Fehler
+            True on success, False on error
         """
         pass
 
@@ -291,28 +291,28 @@ class ISolarFlowClient(ABC):
 
 
 class SolarFlowBase(ISolarFlowClient):
-    """Basis-Klasse mit gemeinsamer Implementierung für alle SolarFlow Clients.
+    """Base class with shared implementation for all SolarFlow clients.
 
-    Enthält:
-    - Cache-Verwaltung
-    - Validierungslogik
-    - High-Level API (snake_case Methoden)
-    - Konvertierung Raw → Processed Data
+    Provides:
+    - Cache management
+    - Validation logic
+    - High-level API (snake_case methods)
+    - Conversion raw → processed data
 
-    Subklassen implementieren nur:
-    - _fetch_response() - Pure HW-Zugriff
-    - _set_properties() - HW-Schreibzugriff
+    Subclasses only implement:
+    - _fetch_response() – pure HW access
+    - _set_properties() – HW write access
     """
 
-    # Pydantic TypeAdapter für JSON-Parsing (wird von HAL verwendet)
+    # Pydantic TypeAdapter for JSON parsing (used by HAL)
     _decoder = TypeAdapter(APIResponse)
 
     def __init__(self, device_ip: str, *, cache_ttl: float = 1.0):
-        """Initialisierung der Basis-Komponenten.
+        """Initialise base components.
 
         Args:
-            device_ip: IP-Adresse des SolarFlow Geräts
-            cache_ttl: Cache Time-To-Live in Sekunden
+            device_ip: IP address of the SolarFlow device
+            cache_ttl: cache time-to-live in seconds
         """
         self.device_ip = device_ip
         self._port = 80
@@ -330,11 +330,11 @@ class SolarFlowBase(ISolarFlowClient):
             charge_limit=0, discharge_limit=0, solar_limit=0
         )
 
-        # Dead-Reckoning Energiezähler
-        # Ein einziges vorzeichenbehaftetes Setpoint: +W = Entladen, -W = Laden.
-        # Batterie kann physikalisch nur eine Richtung gleichzeitig — kein paralleles
-        # Laden+Entladen möglich.
-        self._setpoint_w: int = 0  # aktueller effektiver Leistungssetpoint [W]
+        # Dead-reckoning energy counters.
+        # A single signed setpoint: +W = discharging, -W = charging.
+        # The battery can only go in one direction at a time – no simultaneous
+        # charge + discharge.
+        self._setpoint_w: int = 0  # current effective power setpoint [W]
         self._setpoint_timestamp: float = time()
         self._accumulated_discharge_wh: float = 0.0
         self._accumulated_charge_wh: float = 0.0
@@ -342,11 +342,11 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== Cache Management ====================
 
     def _is_cache_valid(self) -> bool:
-        """Prüft ob Cache noch gültig ist."""
+        """Return True if the cache is still valid."""
         return (time() - self._cache_timestamp) < self.cache_ttl
 
     def _update_cache(self, data: APIResponseProtocol) -> None:
-        """Aktualisiert Cache, Serial Number und modellbezogene Limits."""
+        """Update cache, serial number, and model-specific limits."""
         self._response_cache = data
         self._cache_timestamp = time()
         if self._sn is None:
@@ -367,26 +367,26 @@ class SolarFlowBase(ISolarFlowClient):
                     min_power=limits.min_power,
                 )
             else:
-                logger.warning("Unbekanntes SolarFlow-Modell aus API: %s", data.product)
+                logger.warning("Unknown SolarFlow model from API: %s", data.product)
 
     def _invalidate_cache(self) -> None:
-        """Invalidiert Cache."""
+        """Invalidate the cache."""
         self._cache_timestamp = 0
 
     async def _get_full_response(self, use_cache: bool = True) -> Optional[APIResponseProtocol]:
-        """Komplette API-Response abrufen (mit Cache-Handling!).
+        """Fetch the complete API response (with cache handling).
 
         Args:
-            use_cache: True = Cache verwenden wenn gültig
+            use_cache: True = use cache when valid
 
         Returns:
-            APIResponseProtocol oder None bei Fehler
+            APIResponseProtocol or None on error
         """
-        # Cache-Hit?
+        # Cache hit?
         if use_cache and self._is_cache_valid():
             return self._response_cache
 
-        # HW-Zugriff über HAL
+        # Hardware access via HAL
         try:
             response = await self._fetch_response()
             if response:
@@ -400,27 +400,27 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== Validation ====================
 
     def validate_output_limit(self, power_w: int) -> int:
-        """Validiert und begrenzt Output Limit."""
+        """Validate and clamp the output limit."""
         return max(0, min(self._limits.discharge_limit, int(power_w)))
 
     def validate_input_limit(self, power_w: int) -> int:
-        """Validiert und begrenzt Input Limit."""
+        """Validate and clamp the input limit."""
         return max(0, min(self._limits.charge_limit, int(power_w)))
 
     def validate_min_soc(self, soc_percent: int) -> int:
-        """Validiert Min SoC (0-50%) und konvertiert zu API-Wert (0-500)."""
+        """Validate min SoC (0-50%) and convert to API value (0-500)."""
         if not 0 <= soc_percent <= 50:
             raise ValueError(f"Invalid min SOC: {soc_percent} (must be 0-50%)")
         return soc_percent * 10
 
     def validate_max_soc(self, soc_percent: int) -> int:
-        """Validiert Max SoC (70-100%) und konvertiert zu API-Wert (700-1000)."""
+        """Validate max SoC (70-100%) and convert to API value (700-1000)."""
         if not 70 <= soc_percent <= 100:
             raise ValueError(f"Invalid max SOC: {soc_percent} (must be 70-100%)")
         return soc_percent * 10
 
     def validate_ac_mode(self, mode: ACMode) -> ACMode:
-        """Validiert AC Mode (INPUT oder OUTPUT)."""
+        """Validate AC mode (INPUT or OUTPUT)."""
         if mode not in [ACMode.INPUT, ACMode.OUTPUT]:
             raise ValueError(f"Invalid AC mode: {mode} (must be INPUT or OUTPUT)")
         return mode
@@ -429,37 +429,37 @@ class SolarFlowBase(ISolarFlowClient):
 
     @property
     def serial_number(self) -> Optional[str]:
-        """Gibt Seriennummer zurück (nach erstem Request verfügbar)."""
+        """Return the serial number (available after the first request)."""
         return self._sn
 
     @property
     def max_charge_power(self) -> int:
-        """Maximale Ladeleistung für dieses Modell."""
+        """Maximum charge power for this model."""
         return self._limits.charge_limit
 
     @property
     def max_discharge_power(self) -> int:
-        """Maximale Entladeleistung für dieses Modell."""
+        """Maximum discharge power for this model."""
         return self._limits.discharge_limit
 
     @property
     def max_solar_power(self) -> int:
-        """Maximale Solar-Eingangsleistung für dieses Modell."""
+        """Maximum solar input power for this model."""
         return self._limits.solar_limit
 
     @property
     def min_power(self) -> int:
-        """Minimale Ausgangsleistung für dieses Modell."""
+        """Minimum output power for this model."""
         return self._limits.min_power
 
     # ==================== Helper ====================
 
     def _prepare_properties_payload(self, properties: Dict, smart_mode: bool = True) -> Dict:
-        """Bereitet Properties Payload für Write-Request vor.
+        """Prepare the properties payload for a write request.
 
         Args:
-            properties: Dict mit Properties (camelCase Keys!)
-            smart_mode: True = nur RAM, False = Flash schreiben
+            properties: dict of properties (camelCase keys!)
+            smart_mode: True = RAM only, False = write to flash
         """
         if "smartMode" not in properties:
             properties["smartMode"] = 1 if smart_mode else 0
@@ -468,11 +468,11 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== Energy Accumulator ====================
 
     def _flush_energy_to_now(self) -> None:
-        """Akkumuliert Energie für den Zeitraum seit dem letzten Setpoint-Wechsel.
+        """Accumulate energy for the period since the last setpoint change.
 
-        Muss synchron VOR jedem Setpoint-Wechsel aufgerufen werden, damit die
-        bisher mit dem alten Setpoint gelaufene Zeit korrekt erfasst wird.
-        Positiver Setpoint → Entladung, negativer → Ladung.
+        Must be called synchronously BEFORE every setpoint change so that
+        the time elapsed under the old setpoint is correctly accounted for.
+        Positive setpoint → discharge; negative → charge.
         """
         now = time()
         dt_h = (now - self._setpoint_timestamp) / 3600.0
@@ -483,13 +483,13 @@ class SolarFlowBase(ISolarFlowClient):
         self._setpoint_timestamp = now
 
     def get_energy_counters(self) -> InverterEnergyCounters:
-        """Gibt aktuelle monoton steigende Energiezähler zurück.
+        """Return the current monotonically increasing energy counters.
 
-        Flusht zuerst die seit dem letzten Setpoint-Wechsel aufgelaufene Energie,
-        damit der Wert immer aktuell ist, auch wenn kein Setpoint-Wechsel stattfand.
+        Flushes accumulated energy since the last setpoint change first,
+        so the value is always up-to-date even without a setpoint change.
 
         Returns:
-            InverterEnergyCounters mit discharge_wh und charge_wh
+            InverterEnergyCounters with discharge_wh and charge_wh
         """
         self._flush_energy_to_now()
         return InverterEnergyCounters(
@@ -500,13 +500,13 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== High-Level API - Getters ====================
 
     async def get_state(self, *, use_cache: bool = True) -> Optional[DeviceState]:
-        """Vollständigen Device State abrufen (verarbeitet).
+        """Fetch the complete device state (processed).
 
         Args:
-            use_cache: True = Cache verwenden wenn gültig
+            use_cache: True = use cache when valid
 
         Returns:
-            DeviceState mit allen verarbeiteten Properties oder None bei Fehler
+            DeviceState with all processed properties, or None on error
         """
         response = await self._get_full_response(use_cache)
         if not response:
@@ -514,13 +514,13 @@ class SolarFlowBase(ISolarFlowClient):
         return DeviceState.from_response(response)
 
     async def get_battery_packs(self, *, use_cache: bool = True) -> List[ProcessedBatteryPack]:
-        """Battery Pack Daten abrufen (verarbeitet).
+        """Fetch battery pack data (processed).
 
         Args:
-            use_cache: True = Cache verwenden wenn gültig
+            use_cache: True = use cache when valid
 
         Returns:
-            Liste von ProcessedBatteryPack Objekten
+            List of ProcessedBatteryPack objects
         """
         response = await self._get_full_response(use_cache)
         if not response or not response.pack_data:
@@ -528,27 +528,27 @@ class SolarFlowBase(ISolarFlowClient):
         return [ProcessedBatteryPack.from_protocol(pack) for pack in response.pack_data]
 
     async def get_solar_input_power(self, *, use_cache: bool = True) -> Optional[int]:
-        """Solar-Eingangsleistung abrufen (W)."""
+        """Fetch solar input power (W)."""
         response = await self._get_full_response(use_cache)
         return response.properties.solar_input_power if response else None
 
     async def get_ac_output_power(self, *, use_cache: bool = True) -> Optional[int]:
-        """Aktuelle AC-Ausgangsleistung abrufen (W)."""
+        """Fetch current AC output power (W)."""
         response = await self._get_full_response(use_cache)
         return response.properties.output_home_power if response else None
 
     async def get_ac_output_limit(self, *, use_cache: bool = True) -> Optional[int]:
-        """Output-Limit abrufen (W)."""
+        """Fetch output limit (W)."""
         response = await self._get_full_response(use_cache)
         return response.properties.output_limit if response else None
 
     async def get_ac_input_limit(self, *, use_cache: bool = True) -> Optional[int]:
-        """Input-Limit abrufen (W)."""
+        """Fetch input limit (W)."""
         response = await self._get_full_response(use_cache)
         return response.properties.input_limit if response else None
 
     async def get_ac_mode(self, *, use_cache: bool = True) -> Optional[ACMode]:
-        """AC-Modus abrufen."""
+        """Fetch AC mode."""
         response = await self._get_full_response(use_cache)
         if not response:
             return None
@@ -558,22 +558,22 @@ class SolarFlowBase(ISolarFlowClient):
             return ACMode.OUTPUT
 
     async def get_min_soc(self, *, use_cache: bool = True) -> Optional[int]:
-        """Minimalen SoC abrufen (0-50%)."""
+        """Fetch minimum SoC (0-50%)."""
         response = await self._get_full_response(use_cache)
         return response.properties.min_soc // 10 if response else None
 
     async def get_max_soc(self, *, use_cache: bool = True) -> Optional[int]:
-        """Maximalen SoC abrufen (70-100%)."""
+        """Fetch maximum SoC (70-100%)."""
         response = await self._get_full_response(use_cache)
         return response.properties.soc_set // 10 if response else None
 
     async def get_battery_soc(self, *, use_cache: bool = True) -> Optional[int]:
-        """Aktuellen Batterie-SOC abrufen (0-100%)."""
+        """Fetch current battery SoC (0-100%)."""
         response = await self._get_full_response(use_cache)
         return response.properties.electric_level if response else None
 
     async def get_temperature_celsius(self, *, use_cache: bool = True) -> Optional[float]:
-        """Gehäusetemperatur abrufen (°C)."""
+        """Fetch enclosure temperature (°C)."""
         response = await self._get_full_response(use_cache)
         if not response or response.properties.hyper_tmp == 0:
             return None
@@ -582,55 +582,55 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== High-Level API - Setters ====================
 
     async def set_ac_output_limit(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """Ausgangsleistungslimit setzen.
+        """Set the AC output power limit.
 
         Args:
-            power_w: Leistung in Watt
-            smart_mode: True = nur RAM, False = Flash schreiben
+            power_w: power in watts
+            smart_mode: True = RAM only, False = write to flash
         """
         power_w = self.validate_output_limit(power_w)
         self._flush_energy_to_now()
-        self._setpoint_w = power_w  # positiv = Entladen
+        self._setpoint_w = power_w  # positive = discharging
         return await self._set_properties({"outputLimit": power_w}, smart_mode)
 
     async def set_ac_input_limit(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """Eingangsleistungslimit setzen.
+        """Set the AC input power limit.
 
         Args:
-            power_w: Leistung in Watt
-            smart_mode: True = nur RAM, False = Flash schreiben
+            power_w: power in watts
+            smart_mode: True = RAM only, False = write to flash
         """
         power_w = self.validate_input_limit(power_w)
         self._flush_energy_to_now()
-        self._setpoint_w = -power_w  # negativ = Laden
+        self._setpoint_w = -power_w  # negative = charging
         return await self._set_properties({"inputLimit": power_w}, smart_mode)
 
     async def set_ac_mode(self, mode: ACMode, *, smart_mode: bool = True) -> bool:
-        """AC-Modus setzen.
+        """Set the AC mode.
 
         Args:
-            mode: ACMode.INPUT (Laden) oder ACMode.OUTPUT (Entladen)
-            smart_mode: True = nur RAM, False = Flash schreiben
+            mode: ACMode.INPUT (charge) or ACMode.OUTPUT (discharge)
+            smart_mode: True = RAM only, False = write to flash
         """
         mode = self.validate_ac_mode(mode)
         return await self._set_properties({"acMode": mode.value}, smart_mode)
 
     async def set_min_soc(self, soc_percent: int, *, smart_mode: bool = True) -> bool:
-        """Minimalen SoC setzen.
+        """Set the minimum SoC.
 
         Args:
-            soc_percent: SOC in Prozent (0-50%)
-            smart_mode: True = nur RAM, False = Flash schreiben
+            soc_percent: SoC in percent (0-50%)
+            smart_mode: True = RAM only, False = write to flash
         """
         validated = self.validate_min_soc(soc_percent)
         return await self._set_properties({"minSoc": validated}, smart_mode)
 
     async def set_max_soc(self, soc_percent: int, *, smart_mode: bool = True) -> bool:
-        """Maximalen SoC setzen.
+        """Set the maximum SoC.
 
         Args:
-            soc_percent: SOC in Prozent (70-100%)
-            smart_mode: True = nur RAM, False = Flash schreiben
+            soc_percent: SoC in percent (70-100%)
+            smart_mode: True = RAM only, False = write to flash
         """
         validated = self.validate_max_soc(soc_percent)
         return await self._set_properties({"socSet": validated}, smart_mode)
@@ -638,14 +638,14 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== Bypass / Convenience ====================
 
     async def get_bypass_state(self, *, use_cache: bool = True) -> Optional[bool]:
-        """Bypass-Status abrufen.
+        """Fetch bypass state.
 
-        Wenn Bypass aktiv ist, leitet der SF800Pro PV-Energie direkt ans Haus weiter
-        und ignoriert outputLimit-Befehle.  output_home_power zeigt dann den
-        Solar-Bypass-Wert, nicht die Batterie-Ausgabe.
+        When bypass is active, the SF800Pro routes PV energy directly to the house
+        and ignores outputLimit commands.  output_home_power then reflects the
+        solar bypass value, not the battery output.
 
         Returns:
-            True = Bypass aktiv, False = kein Bypass, None = Fehler
+            True = bypass active, False = no bypass, None = error
         """
         response = await self._get_full_response(use_cache)
         if response is None:
@@ -653,33 +653,33 @@ class SolarFlowBase(ISolarFlowClient):
         return bool(response.properties.bypass)
 
     async def disable_bypass(self, *, smart_mode: bool = True) -> bool:
-        """Bypass deaktivieren (passMode=1 = always off).
+        """Disable bypass (passMode=1 = always off).
 
-        Nützlich wenn der Inverter im Bypass-Modus ist und dadurch
-        Entladebefehle ignoriert werden.
+        Useful when the inverter is in bypass mode and therefore
+        ignores discharge commands.
 
         Args:
-            smart_mode: True = nur RAM, False = Flash schreiben
+            smart_mode: True = RAM only, False = write to flash
 
         Returns:
-            True bei Erfolg
+            True on success
         """
-        logger.info("disable_bypass: Setze passMode=1 (always off)...")
+        logger.info("disable_bypass: setting passMode=1 (always off)…")
         success = await self._set_properties({"passMode": 1}, smart_mode)
         if success:
             self._invalidate_cache()
-            logger.info("disable_bypass: Befehl gesendet")
+            logger.info("disable_bypass: command sent")
         else:
-            logger.warning("disable_bypass: Befehl nicht bestätigt (HTTP-Fehler?)")
+            logger.warning("disable_bypass: command not confirmed (HTTP error?)")
         return success
 
     async def get_battery_discharge_power(self, *, use_cache: bool = True) -> Optional[int]:
-        """Tatsächliche Batterie-Entladeleistung abrufen (W).
+        """Fetch the actual battery discharge power (W).
 
-        Gibt packInputPower zurück – die Leistung die die Batterie-Packs
-        tatsächlich liefern, unabhängig vom Bypass-Status.
-        In Bypass-Modus ist dieser Wert 0 während output_home_power
-        die Solar-Bypass-Leistung anzeigt.
+        Returns packInputPower – the power actually supplied by the battery packs,
+        regardless of bypass state.
+        In bypass mode this value is 0 while output_home_power shows the
+        solar bypass power.
         """
         response = await self._get_full_response(use_cache)
         return response.properties.pack_input_power if response else None
@@ -687,16 +687,16 @@ class SolarFlowBase(ISolarFlowClient):
     # ==================== Convenience Methods ====================
 
     async def is_settled(self, *, use_cache: bool = True) -> Optional[bool]:
-        """Prüft ob Inverter im aktuellen Setpoint "settled" ist (Leistung nahe Setpoint).
+        """Check whether the inverter is settled at the current setpoint (output ≈ setpoint).
 
-        In Bypass-Modus gibt output_home_power die Solar-Bypass-Leistung wider,
-        nicht den Battery-Output – daher wird None zurückgegeben wenn Bypass aktiv.
+        In bypass mode output_home_power reflects the solar bypass power, not the
+        battery output – returns None when bypass is active.
 
         Args:
-            use_cache: True = Cache verwenden
+            use_cache: True = use cache
 
         Returns:
-            True wenn settled, False wenn nicht, None bei Fehler oder Bypass aktiv
+            True if settled, False if not, None on error or when bypass is active
         """
         state = await self.get_state(use_cache=use_cache)
         if not state:
@@ -704,7 +704,7 @@ class SolarFlowBase(ISolarFlowClient):
 
         if state.bypass_mode:
             logger.debug(
-                "is_settled: Bypass aktiv (solar=%dW) – Setpoint-Vergleich nicht aussagekräftig",
+                "is_settled: bypass active (solar=%d W) – setpoint comparison not meaningful",
                 state.solar_input_power,
             )
             return None
@@ -721,14 +721,14 @@ class SolarFlowBase(ISolarFlowClient):
         return settled
 
     async def start_discharge(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """Entladung starten.
+        """Start discharging.
 
         Args:
-            power_w: Entladeleistung in Watt
-            smart_mode: True = nur RAM, False = Flash schreiben
+            power_w: discharge power in watts
+            smart_mode: True = RAM only, False = write to flash
         """
         if self._limits.discharge_limit == 0:
-            logger.debug("start_discharge: Limits noch unbekannt – lese Device-State...")
+            logger.debug("start_discharge: limits not yet known – reading device state…")
             await self.get_state(use_cache=False)  # Force cache update to get limits
         clamped = (
             min(power_w, self._limits.discharge_limit)
@@ -737,15 +737,15 @@ class SolarFlowBase(ISolarFlowClient):
         )
         if clamped != power_w:
             logger.info(
-                "start_discharge: %dW → geclippt auf %dW (Discharge-Limit: %dW)",
+                "start_discharge: %d W → clipped to %d W (discharge limit: %d W)",
                 power_w,
                 clamped,
                 self._limits.discharge_limit,
             )
         else:
-            logger.info("start_discharge: %dW (acMode=OUTPUT, inputLimit=0)", clamped)
+            logger.info("start_discharge: %d W (acMode=OUTPUT, inputLimit=0)", clamped)
         self._flush_energy_to_now()
-        self._setpoint_w = clamped  # positiv = Entladen
+        self._setpoint_w = clamped  # positive = discharging
         success = await self._set_properties(
             {
                 "acMode": ACMode.OUTPUT.value,
@@ -755,32 +755,30 @@ class SolarFlowBase(ISolarFlowClient):
             smart_mode,
         )
         if not success:
-            logger.warning(
-                "start_discharge: Setpoint-Befehl nicht bestätigt (HTTP-Fehler?)",
-            )
+            logger.warning("start_discharge: setpoint command not confirmed (HTTP error?)")
         return success
 
     async def start_charge(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """AC-Ladung starten.
+        """Start AC charging.
 
         Args:
-            power_w: Ladeleistung in Watt
-            smart_mode: True = nur RAM, False = Flash schreiben
+            power_w: charge power in watts
+            smart_mode: True = RAM only, False = write to flash
         """
         clamped = (
             min(power_w, self._limits.charge_limit) if self._limits.charge_limit > 0 else power_w
         )
         if clamped != power_w:
             logger.info(
-                "start_charge: %dW → geclippt auf %dW (Charge-Limit: %dW)",
+                "start_charge: %d W → clipped to %d W (charge limit: %d W)",
                 power_w,
                 clamped,
                 self._limits.charge_limit,
             )
         else:
-            logger.info("start_charge: %dW (acMode=INPUT, outputLimit=0)", clamped)
+            logger.info("start_charge: %d W (acMode=INPUT, outputLimit=0)", clamped)
         self._flush_energy_to_now()
-        self._setpoint_w = -clamped  # negativ = Laden
+        self._setpoint_w = -clamped  # negative = charging
         success = await self._set_properties(
             {
                 "acMode": ACMode.INPUT.value,
@@ -790,14 +788,14 @@ class SolarFlowBase(ISolarFlowClient):
             smart_mode,
         )
         if not success:
-            logger.warning("start_charge: Setpoint-Befehl nicht bestätigt")
+            logger.warning("start_charge: setpoint command not confirmed")
         return success
 
     async def stop(self, *, smart_mode: bool = True) -> bool:
-        """Alle Aktivitäten stoppen.
+        """Stop all activity.
 
         Args:
-            smart_mode: True = nur RAM, False = Flash schreiben
+            smart_mode: True = RAM only, False = write to flash
         """
         logger.info("stop: acMode=OUTPUT outputLimit=0 inputLimit=0")
         self._flush_energy_to_now()
@@ -811,23 +809,22 @@ class SolarFlowBase(ISolarFlowClient):
             smart_mode,
         )
         if not success:
-            logger.warning("stop: Befehl nicht bestätigt")
+            logger.warning("stop: command not confirmed")
         return success
 
     async def get_usable_energy_wh(
         self, battery_capacity_wh: int, *, use_cache: bool = True
     ) -> Optional[float]:
-        """Berechnet nutzbare Energie in der Batterie.
+        """Compute usable energy in the battery.
 
-        Die nutzbare Energie berücksichtigt den min_soc, der nicht
-        unterschritten werden darf.
+        Takes min_soc into account, which must not be undercut.
 
         Args:
-            battery_capacity_wh: Batteriekapazität in Wh
-            use_cache: True = Cache verwenden
+            battery_capacity_wh: total battery capacity in Wh
+            use_cache: True = use cache
 
         Returns:
-            Nutzbare Energie in Wh oder None bei Fehler
+            Usable energy in Wh, or None on error
         """
         state = await self.get_state(use_cache=use_cache)
         if not state:

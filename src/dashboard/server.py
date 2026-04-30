@@ -11,17 +11,26 @@ HTTP + WebSocket endpoints:
 
 The server receives a ``ControlRuntime`` instance from the entry point and
 registers/removes WebSocket callbacks on connect/disconnect.
+
+Language support
+----------------
+``create_app`` accepts a ``lang`` parameter (default ``"en"``).  Translations
+are looked up in ``i18n.TRANSLATIONS``; unknown codes fall back to English.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import logging
+import tomllib
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from .i18n import TRANSLATIONS, build_js_t
 from .models import (
     AutoConnectCommand,
     DashboardState,
@@ -33,14 +42,36 @@ from .runtime import ControlRuntime
 logger = logging.getLogger(__name__)
 
 
-# ── HTML GUI (single-file, no build step) ────────────────────────────────────
+# ── Project metadata ──────────────────────────────────────────────────────────
 
-_HTML = """<!DOCTYPE html>
-<html lang="de">
+
+def _read_project_info() -> tuple[str, str]:
+    """Return (version, github_url) from pyproject.toml, or safe defaults."""
+    try:
+        p = Path(__file__).parent.parent.parent / "pyproject.toml"
+        with open(p, "rb") as f:
+            data = tomllib.load(f)
+        version = data.get("project", {}).get("version", "dev")
+        urls = data.get("project", {}).get("urls", {})
+        github = urls.get("Repository", urls.get("Homepage", ""))
+        return version, github
+    except Exception:
+        return "dev", ""
+
+
+_PROJECT_VERSION, _GITHUB_URL = _read_project_info()
+
+
+# ── HTML template (single-file, no build step) ────────────────────────────────
+# Placeholders use <<<key>>> syntax to avoid conflicts with CSS/JS syntax.
+
+_HTML_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="<<<lang>>>">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Zendure Dashboard</title>
+<title><<<t_title>>></title>
 <style>
   :root {
     --bg: #0f1117; --card: #1c1f2e; --border: #2a2d3e;
@@ -50,25 +81,37 @@ _HTML = """<!DOCTYPE html>
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
-  h1 { font-size: 1.15rem; font-weight: 600; }
-  h2 { font-size: 0.78rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+  h1 { font-size: 1.1rem; font-weight: 600; }
+  h2 { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
        letter-spacing: .05em; margin-bottom: .5rem; }
-  /* ── Header ─────────────────────────────────── */
-  .header { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
-            border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .header-metrics { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+  /* ── Header ───────────────────────────────── */
+  .header { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+            border-bottom: 1px solid var(--border); flex-wrap: wrap; row-gap: 4px; }
+  .header-left { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .header-zendure { display: flex; gap: 10px; flex: 0 0 auto; }
+  .header-grid { display: flex; gap: 10px; margin-left: auto; flex: 0 0 auto; }
+  @media (max-width: 440px) {
+    .header-zendure { margin-left: auto; }
+    .header-grid {
+      flex: 0 0 100%; margin-left: 0;
+      justify-content: space-around;
+      border-top: 1px solid var(--border); padding-top: 5px;
+    }
+  }
   .metric { display: flex; align-items: center; gap: 4px; font-size: 12px; }
-  .metric-icon { font-size: 13px; }
+  .metric-icon { font-size: 14px; }
   .metric-val { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 46px; font-size: 12px; }
   .metric-label { color: var(--muted); font-size: 10px; }
-  /* ── Layout grid ────────────────────────────── */
+  /* ── Layout grid ──────────────────────────── */
   .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 10px; padding: 12px 12px 0; max-width: 1500px; margin: 0 auto; }
   .layout-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 10px; padding: 8px 12px 12px; max-width: 1500px; margin: 0 auto; }
+            gap: 10px; padding: 8px 12px 0; max-width: 1500px; margin: 0 auto; }
   .card { background: var(--card); border: 1px solid var(--border);
           border-radius: 10px; padding: 12px; }
-  /* ── Misc helpers ───────────────────────────── */
+  .card-head { display: flex; align-items: center; justify-content: space-between;
+               margin-bottom: 6px; }
+  /* ── Misc helpers ─────────────────────────── */
   .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); flex-shrink:0; }
   .dot.live { background:var(--green); box-shadow: 0 0 5px var(--green); }
   .dot.error { background:var(--red); }
@@ -102,230 +145,262 @@ _HTML = """<!DOCTYPE html>
   .apply-btn:hover { opacity: .85; }
   .apply-btn.secondary { background: #374151; }
   .apply-btn.secondary:hover { background: #4b5563; }
-  /* ── Mini chart ─────────────────────────────── */
+  /* ── Mini chart ───────────────────────────── */
   .chart-wrap { width: 100%; height: 80px; overflow: hidden; margin-top: 8px; }
   canvas { width: 100%; height: 100%; display: block; }
-  /* ── Per-phase card ─────────────────────────── */
+  /* ── Per-phase card ───────────────────────── */
   .phase-header { display: flex; align-items: center; justify-content: space-between;
                   margin-bottom: 6px; }
   .osc-inline { display: flex; align-items: center; gap: 5px; font-size: 12px; }
-  /* ── Plan list ──────────────────────────────── */
-  .plan-entry { display: flex; align-items: center; gap: 8px; padding: 4px 0;
-                border-bottom: 1px solid var(--border); }
+  /* ── Plan list (CSS grid for column alignment) */
+  .plan-entry {
+    display: grid;
+    grid-template-columns: 5em 1fr auto;
+    gap: 4px; padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: start;
+  }
   .plan-entry:last-child { border-bottom: none; }
-  .plan-time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); min-width: 90px; }
-  .plan-mode { font-weight: 600; flex: 1; font-size: 12px; }
-  .plan-pwr  { font-size: 11px; color: var(--muted); }
-  /* ── Toast ──────────────────────────────────── */
+  .plan-time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); }
+  .plan-day  { display: block; font-size: 10px; }
+  .plan-next-day { color: var(--yellow); font-size: 9px; vertical-align: super; margin-left: 1px; }
+  .plan-mode { font-weight: 600; font-size: 12px; }
+  .plan-pwr  { font-size: 11px; color: var(--muted); white-space: nowrap; text-align: right; }
+  /* ── Footer ───────────────────────────────── */
+  .footer {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 8px 12px; border-top: 1px solid var(--border);
+    margin: 12px auto 0; max-width: 1500px;
+    color: var(--muted); font-size: 11px;
+  }
+  .footer a { color: var(--muted); text-decoration: none; }
+  .footer a:hover { color: var(--accent); }
+  .footer-spacer { flex: 1; }
+  /* ── Toast ────────────────────────────────── */
   #toast { position: fixed; bottom: 18px; right: 18px; background: #22c55e; color: #fff;
            padding: 9px 16px; border-radius: 8px; font-size: 13px; display: none; z-index: 99; }
 </style>
 </head>
 <body>
 
-<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
 <div class="header">
-  <div class="dot" id="ws-dot"></div>
-  <h1>Zendure Dashboard</h1>
-  <span id="mode-badge" class="badge badge-gray" style="font-size:12px">–</span>
-  <span id="zfi-pause-badge" class="badge badge-yellow" style="display:none">⏸ Pausiert</span>
-  <div class="header-metrics">
+  <div class="header-left">
+    <div class="dot" id="ws-dot"></div>
+    <h1><<<t_title>>></h1>
+    <span id="zfi-pause-badge" class="badge badge-yellow" style="display:none">&#8987;</span>
+  </div>
+  <div class="header-zendure">
     <div class="metric">
-      <span class="metric-icon">⚡</span>
+      <span class="metric-icon">&#9728;&#65039;</span>
       <div>
-        <div class="metric-label">Grid</div>
-        <div class="metric-val" id="hm-total">–</div>
+        <div class="metric-label"><<<t_pv>>></div>
+        <div class="metric-val" id="hm-pv">&#8211;</div>
       </div>
     </div>
     <div class="metric">
-      <span class="metric-icon">🏠</span>
+      <span class="metric-icon">&#128202;</span>
       <div>
-        <div class="metric-label">Load</div>
-        <div class="metric-val" id="hm-cons">–</div>
-      </div>
-    </div>
-    <div class="metric">
-      <span class="metric-icon">🔋</span>
-      <div>
-        <div class="metric-label">Bat</div>
-        <div class="metric-val" id="hm-batt">–</div>
-      </div>
-    </div>
-    <div class="metric">
-      <span class="metric-icon">📊</span>
-      <div>
-        <div class="metric-label">SoC</div>
-        <div class="metric-val" id="hm-soc">–</div>
+        <div class="metric-label"><<<t_soc>>></div>
+        <div class="metric-val" id="hm-soc">&#8211;</div>
       </div>
     </div>
   </div>
-  <span id="ts" style="color:var(--muted);font-size:11px;white-space:nowrap"></span>
+  <div class="header-grid">
+    <div class="metric">
+      <span class="metric-icon">&#9889;</span>
+      <div>
+        <div class="metric-label"><<<t_grid>>></div>
+        <div class="metric-val" id="hm-total">&#8211;</div>
+      </div>
+    </div>
+    <div class="metric">
+      <span class="metric-icon">&#127968;</span>
+      <div>
+        <div class="metric-label"><<<t_load>>></div>
+        <div class="metric-val" id="hm-cons">&#8211;</div>
+      </div>
+    </div>
+    <div class="metric">
+      <span class="metric-icon">&#128267;</span>
+      <div>
+        <div class="metric-label"><<<t_bat>>></div>
+        <div class="metric-val" id="hm-batt">&#8211;</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="layout-live">
 
-  <!-- ── Betriebsmodus ─────────────────────────────────────────────────────── -->
-  <div class="card" id="card-mode">
-    <h2>Betriebsmodus</h2>
-    <div class="btn-row">
-      <button class="mode-btn" id="btn-idle" onclick="setMode('idle')">Idle</button>
-      <button class="mode-btn" id="btn-zf"   onclick="setMode('discharge_zero_feed')">Zero-Feed</button>
-      <button class="mode-btn" id="btn-charge" onclick="openChargeDialog()">AC Laden ▸</button>
-      <button class="mode-btn" id="btn-auto"   onclick="openAutoDialog()">Auto ▸</button>
+  <!-- ── Overview & Controller ───────────────────────────────────────────── -->
+  <div class="card">
+    <div class="phase-header">
+      <h2><<<t_overview_card>>></h2>
+      <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">&#8211;</span>
     </div>
-    <div id="charge-panel" style="display:none;margin-top:10px">
-      <label>Ladeleistung [W]</label>
-      <input type="number" id="charge-w" value="400" min="1" max="3000"/>
-      <button class="apply-btn" onclick="setMode('ac_charge')">Laden starten</button>
+    <div class="row"><span class="label"><<<t_controller>>></span><span class="value" id="ctrl-name">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_setpoint>>></span><span class="value" id="ctrl-sp">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_raw_target>>></span><span class="value" id="ctrl-raw">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_ff_total>>></span><span class="value" id="ctrl-ff">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_feedback>>></span><span class="value" id="ctrl-fb">&#8211;</span></div>
+    <div class="row">
+      <span class="label"><<<t_watchdog_resets>>></span>
+      <span class="value" id="ctrl-wdog" style="color:var(--muted)">0</span>
     </div>
-    <div id="auto-panel" style="display:none;margin-top:10px">
-      <label>MQTT Broker URL</label>
-      <input type="text" id="auto-broker" value="mqtt://localhost:1883"/>
-      <label>Device ID</label>
-      <input type="text" id="auto-device-id" value="SF800Pro"/>
-      <button class="apply-btn" onclick="activateAuto()">Auto aktivieren</button>
-      <button class="apply-btn secondary" style="margin-top:4px" onclick="deactivateAuto()">Deaktivieren</button>
+    <div class="row">
+      <span class="label"><<<t_deviation>>></span>
+      <span class="value" id="ctrl-delta">&#8211;</span>
     </div>
+    <div class="chart-wrap"><canvas id="chart-global"></canvas></div>
   </div>
 
-  <!-- ── Phase A ────────────────────────────────────────────────────────────── -->
+  <!-- ── Phase A ─────────────────────────────────────────────────────────── -->
   <div class="card" id="card-live-A">
     <div class="phase-header">
       <h2>Phase A &nbsp;<span id="ph-role-A" class="badge badge-blue" style="font-size:10px">FF</span></h2>
       <div class="osc-inline">
-        <span id="osc-badge-A" class="badge badge-gray" style="font-size:11px">–</span>
+        <span id="osc-badge-A" class="badge badge-gray" style="font-size:11px">&#8211;</span>
         <span id="osc-det-A" style="color:var(--accent);font-size:11px"></span>
       </div>
     </div>
-    <div class="row"><span class="label">Netz</span><span class="value" id="ph-grid-A">–</span></div>
-    <div class="row"><span class="label">Anforderung</span><span class="value" id="ph-sp-A">–</span></div>
-    <div class="row" id="osc-lim-row-A" style="display:none"><span class="label">OSZ-Limit</span><span class="value" id="osc-lim-A" style="color:var(--yellow)">–</span></div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-A">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_demand>>></span><span class="value" id="ph-sp-A">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-A" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-A" style="color:var(--yellow)">&#8211;</span></div>
     <div class="chart-wrap"><canvas id="chart-A"></canvas></div>
   </div>
 
-  <!-- ── Phase B ────────────────────────────────────────────────────────────── -->
+  <!-- ── Phase B ─────────────────────────────────────────────────────────── -->
   <div class="card" id="card-live-B">
     <div class="phase-header">
       <h2>Phase B &nbsp;<span id="ph-role-B" class="badge badge-green" style="font-size:10px">Bat</span></h2>
       <div class="osc-inline">
-        <span id="osc-badge-B" class="badge badge-gray" style="font-size:11px">–</span>
+        <span id="osc-badge-B" class="badge badge-gray" style="font-size:11px">&#8211;</span>
         <span id="osc-det-B" style="color:var(--accent);font-size:11px"></span>
       </div>
     </div>
-    <div class="row"><span class="label">Netz</span><span class="value" id="ph-grid-B">–</span></div>
-    <div class="row"><span class="label">Verbrauch (est.)</span><span class="value" id="ph-cons-B">–</span></div>
-    <div class="row"><span class="label">Setpoint (FB)</span><span class="value" id="ph-sp-B">–</span></div>
-    <div class="row" id="osc-lim-row-B" style="display:none"><span class="label">OSZ-Limit</span><span class="value" id="osc-lim-B" style="color:var(--yellow)">–</span></div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-B">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_load_est>>></span><span class="value" id="ph-cons-B">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_setpoint_fb>>></span><span class="value" id="ph-sp-B">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-B" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-B" style="color:var(--yellow)">&#8211;</span></div>
     <div class="chart-wrap"><canvas id="chart-B"></canvas></div>
   </div>
 
-  <!-- ── Phase C ────────────────────────────────────────────────────────────── -->
+  <!-- ── Phase C ─────────────────────────────────────────────────────────── -->
   <div class="card" id="card-live-C">
     <div class="phase-header">
       <h2>Phase C &nbsp;<span id="ph-role-C" class="badge badge-blue" style="font-size:10px">FF</span></h2>
       <div class="osc-inline">
-        <span id="osc-badge-C" class="badge badge-gray" style="font-size:11px">–</span>
+        <span id="osc-badge-C" class="badge badge-gray" style="font-size:11px">&#8211;</span>
         <span id="osc-det-C" style="color:var(--accent);font-size:11px"></span>
       </div>
     </div>
-    <div class="row"><span class="label">Netz</span><span class="value" id="ph-grid-C">–</span></div>
-    <div class="row"><span class="label">Anforderung</span><span class="value" id="ph-sp-C">–</span></div>
-    <div class="row" id="osc-lim-row-C" style="display:none"><span class="label">OSZ-Limit</span><span class="value" id="osc-lim-C" style="color:var(--yellow)">–</span></div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-C">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_demand>>></span><span class="value" id="ph-sp-C">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-C" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-C" style="color:var(--yellow)">&#8211;</span></div>
     <div class="chart-wrap"><canvas id="chart-C"></canvas></div>
   </div>
 
-  <!-- ── Globale Statistik + Gesamtplot ─────────────────────────────────────── -->
-  <div class="card">
-    <div class="phase-header">
-      <h2>Gesamt &amp; Regler</h2>
-      <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">–</span>
+  <!-- ── Operating Mode ──────────────────────────────────────────────────── -->
+  <div class="card" id="card-mode">
+    <h2><<<t_mode_card>>></h2>
+    <div class="btn-row">
+      <button class="mode-btn" id="btn-idle" onclick="setMode('idle')"><<<t_btn_idle>>></button>
+      <button class="mode-btn" id="btn-zf"   onclick="setMode('discharge_zero_feed')"><<<t_btn_zf>>></button>
+      <button class="mode-btn" id="btn-charge" onclick="openChargeDialog()"><<<t_btn_charge>>></button>
+      <button class="mode-btn" id="btn-auto"   onclick="openAutoDialog()"><<<t_btn_auto>>></button>
     </div>
-    <div class="row"><span class="label">Regler</span><span class="value" id="ctrl-name">–</span></div>
-    <div class="row"><span class="label">Setpoint Batterie</span><span class="value" id="ctrl-sp">–</span></div>
-    <div class="row"><span class="label">Ziel (roh)</span><span class="value" id="ctrl-raw">–</span></div>
-    <div class="row"><span class="label">FF gesamt</span><span class="value" id="ctrl-ff">–</span></div>
-    <div class="row"><span class="label">Feedback</span><span class="value" id="ctrl-fb">–</span></div>
-    <div class="row">
-      <span class="label">Watchdog Resets</span>
-      <span class="value" id="ctrl-wdog" style="color:var(--muted)">0</span>
+    <div id="charge-panel" style="display:none;margin-top:10px">
+      <label><<<t_charge_power_label>>></label>
+      <input type="number" id="charge-w" value="400" min="1" max="3000"/>
+      <button class="apply-btn" onclick="setMode('ac_charge')"><<<t_charge_start>>></button>
     </div>
-    <div class="row" id="zfi-status-row" style="display:none">
-      <span class="label">ZFI Regelung</span>
-      <span id="auto-zfi-state" class="badge badge-gray">–</span>
+    <div id="auto-panel" style="display:none;margin-top:10px">
+      <label><<<t_broker_label>>></label>
+      <input type="text" id="auto-broker" value="mqtt://localhost:1883"/>
+      <label><<<t_device_id_label>>></label>
+      <input type="text" id="auto-device-id" value="SF800Pro"/>
+      <button class="apply-btn" onclick="activateAuto()"><<<t_auto_activate>>></button>
+      <button class="apply-btn secondary" style="margin-top:4px" onclick="deactivateAuto()"><<<t_auto_deactivate>>></button>
     </div>
-    <div class="row">
-      <span class="label">Abweichung (Netz − Ziel)</span>
-      <span class="value" id="ctrl-delta">–</span>
-    </div>
-    <div class="chart-wrap"><canvas id="chart-global"></canvas></div>
-  </div></div>
-
-<div class="layout-settings">
-  <!-- ── Regler-Einstellungen (allgemein) ───────────────────────────────────── -->
-  <div class="card" id="card-general">
-    <h2>Regler-Einstellungen</h2>
-    <select id="reg-select" onchange="onRegSelectChange()"></select>
-    <div id="reg-desc" style="color:var(--muted);font-size:11px;margin-top:5px;min-height:20px"></div>
-    <div id="general-settings" style="margin-top:8px"></div>
-    <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettingsAndActivate('General')">Anwenden &amp; aktivieren</button>
   </div>
 
-  <!-- ── Phase A Einstellungen ─────────────────────────────────────────────── -->
+</div>
+
+<div class="layout-settings">
+
+  <!-- ── Controller Settings ─────────────────────────────────────────────── -->
+  <div class="card" id="card-general">
+    <h2><<<t_settings_card>>></h2>
+    <select id="reg-select" onchange="onRegSelectChange()" style="display:none"></select>
+    <div id="general-settings" style="margin-top:8px"></div>
+    <button class="apply-btn" style="margin-top:8px"
+            onclick="applyGroupSettings('General')"><<<t_apply>>></button>
+  </div>
+
+  <!-- ── Phase A Settings ────────────────────────────────────────────────── -->
   <div class="card" id="card-phase-A" style="display:none">
     <h2 id="ph-head-A">Phase A</h2>
     <div id="phase-settings-A"></div>
     <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase A')">Anwenden</button>
+            onclick="applyGroupSettings('Phase A')"><<<t_apply>>></button>
   </div>
 
-  <!-- ── Phase B Einstellungen ─────────────────────────────────────────────── -->
+  <!-- ── Phase B Settings ────────────────────────────────────────────────── -->
   <div class="card" id="card-phase-B" style="display:none">
     <h2 id="ph-head-B">Phase B</h2>
     <div id="phase-settings-B"></div>
     <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase B')">Anwenden</button>
+            onclick="applyGroupSettings('Phase B')"><<<t_apply>>></button>
   </div>
 
-  <!-- ── Phase C Einstellungen ─────────────────────────────────────────────── -->
+  <!-- ── Phase C Settings ────────────────────────────────────────────────── -->
   <div class="card" id="card-phase-C" style="display:none">
     <h2 id="ph-head-C">Phase C</h2>
     <div id="phase-settings-C"></div>
     <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase C')">Anwenden</button>
+            onclick="applyGroupSettings('Phase C')"><<<t_apply>>></button>
   </div>
 
-  <!-- ── GridPythia Auto Plan ───────────────────────────────────────────────── -->
+  <!-- ── GridPythia Plan ─────────────────────────────────────────────────── -->
   <div class="card" id="card-auto" style="display:none">
-    <h2>GridPythia Plan</h2>
-    <div class="row">
-      <span class="label">Verbindung</span>
-      <span id="auto-conn-badge" class="badge badge-gray">–</span>
+    <div class="card-head">
+      <h2><<<t_auto_card>>></h2>
+      <div id="auto-conn-dot" class="dot" title=""></div>
     </div>
     <div class="row">
-      <span class="label">Plan erstellt</span>
-      <span id="auto-plan-ts" style="color:var(--muted);font-size:11px">–</span>
+      <span class="label"><<<t_plan_published>>></span>
+      <span id="auto-plan-ts" style="color:var(--muted);font-size:11px">&#8211;</span>
     </div>
     <div class="row">
-      <span class="label">Aktuell effektiv</span>
-      <span id="auto-effective" class="badge badge-gray">–</span>
+      <span class="label"><<<t_effective_label>>></span>
+      <span id="auto-effective" class="badge badge-gray">&#8211;</span>
     </div>
     <div id="plan-list" style="margin-top:8px"></div>
   </div>
 
 </div>
-<div id="toast">✓ Gespeichert</div>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<div class="footer">
+  <span id="ts"></span>
+  <span><<<t_version_prefix>>><<<VERSION>>></span>
+  <span class="footer-spacer"></span>
+  <<<GITHUB_LINK>>>
+  <span><<<t_footer_project>>></span>
+</div>
+
+<div id="toast">&#10003; <<<t_saved>>></div>
 
 <script>
 // ── State & history ────────────────────────────────────────────────────────
 let ws, state = null, regulators = [];
 const HISTORY = 60;
-// Per-phase histories: {grid: [], sp: [], cons: [] (for batt phase)}
 const phHist = { A:{grid:[],sp:[],cons:[],err:[]}, B:{grid:[],sp:[],cons:[],err:[]}, C:{grid:[],sp:[],cons:[],err:[]} };
-// Global history: tracking error (total_grid - target_w)
 const globalHist = { err:[] };
-// Last known target_w from regulator settings (updated on each render)
-let lastTargetW = 0;
+
+// ── i18n strings (injected server-side) ───────────────────────────────────
+const T = <<<T_JSON>>>;
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -339,9 +414,9 @@ function dot(cls) { document.getElementById('ws-dot').className = 'dot ' + cls; 
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 function w(v, dec=0, unit='W') {
-  if (v == null) return '–';
+  if (v == null) return '&#8211;';
   const n = Number(v);
-  const s = n.toFixed(dec) + ' ' + unit;
+  const s = n.toFixed(dec) + '\u00a0' + unit;
   if (n > 0) return `<span style="color:var(--red)">${s}</span>`;
   if (n < 0) return `<span style="color:var(--green)">${s}</span>`;
   return s;
@@ -362,28 +437,23 @@ function drawChartWithZero(id, data, color) {
   const mn = Math.min(...data, -5), mx = Math.max(...data, 5);
   const range = mx - mn || 1;
   const zeroY = H - ((0 - mn) / range) * H;
-  // Zero-line
   ctx.strokeStyle = '#3d4460'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(W, zeroY); ctx.stroke();
-  // Fill area: above zero = red (feed-in, bad), below zero = green (draw, ok)
   ctx.beginPath();
   data.forEach((v, i) => {
     const x = (i / (HISTORY - 1)) * W;
     const y = H - ((v - mn) / range) * H;
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
-  // close to zero line
   ctx.lineTo(((data.length-1)/(HISTORY-1))*W, zeroY);
   ctx.lineTo(0, zeroY);
   ctx.closePath();
-  // Split fill: positive = red-tinted, negative = green-tinted
   const grad = ctx.createLinearGradient(0, 0, 0, H);
   grad.addColorStop(0, 'rgba(239,68,68,0.25)');
   grad.addColorStop((zeroY/H), 'rgba(239,68,68,0.05)');
   grad.addColorStop((zeroY/H), 'rgba(34,197,94,0.05)');
   grad.addColorStop(1, 'rgba(34,197,94,0.25)');
   ctx.fillStyle = grad; ctx.fill();
-  // Line
   ctx.strokeStyle = color; ctx.lineWidth = 1.5 * dpr;
   ctx.setLineDash([]);
   ctx.beginPath();
@@ -395,162 +465,107 @@ function drawChartWithZero(id, data, color) {
   ctx.stroke();
 }
 
-function drawChart(id, series) {
-  const canvas = document.getElementById(id);
-  if (!canvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const W = rect.width * dpr, H = rect.height * dpr;
-  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, W, H);
-  // Zero line
-  ctx.strokeStyle = '#2a2d3e'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-  const allVals = series.flatMap(s => s.data);
-  if (!allVals.length) return;
-  const mn = Math.min(...allVals, -1), mx = Math.max(...allVals, 1);
-  const range = mx - mn || 1;
-  for (const {data, color, dash} of series) {
-    if (!data.length) continue;
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5 * dpr;
-    ctx.setLineDash(dash || []);
-    ctx.beginPath();
-    data.forEach((v, i) => {
-      const x = (i / (HISTORY - 1)) * W;
-      const y = H - ((v - mn) / range) * H;
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-}
-
 // ── Main render ────────────────────────────────────────────────────────────
 function render(s) {
   document.getElementById('ts').textContent = new Date(s.timestamp*1000).toLocaleTimeString();
 
-  // ── Mode badge & buttons
-  const modeMap = { idle:['IDLE','gray'], ac_charge:['AC Laden','yellow'],
-                    discharge_zero_feed:['Zero-Feed','green'], auto:['Auto','blue'] };
-  const [ml, mc] = modeMap[s.mode] || [s.mode, 'gray'];
-  const mb = document.getElementById('mode-badge');
-  mb.textContent = ml; mb.className = `badge badge-${mc}`;
+  // Mode buttons
   ['btn-idle','btn-zf','btn-charge','btn-auto'].forEach(id =>
     document.getElementById(id).classList.remove('active'));
-  if (s.mode==='idle')                   document.getElementById('btn-idle').classList.add('active');
+  if (s.mode==='idle')                    document.getElementById('btn-idle').classList.add('active');
   else if (s.mode==='discharge_zero_feed') document.getElementById('btn-zf').classList.add('active');
-  else if (s.mode==='ac_charge')          document.getElementById('btn-charge').classList.add('active');
-  else if (s.mode==='auto')               document.getElementById('btn-auto').classList.add('active');
+  else if (s.mode==='ac_charge')           document.getElementById('btn-charge').classList.add('active');
+  else if (s.mode==='auto')                document.getElementById('btn-auto').classList.add('active');
 
-  // ── Pause badge
+  // Pause badge
   const paused = s.zfi_paused_low_soc || s.zfi_paused_full_battery;
   const pauseBadge = document.getElementById('zfi-pause-badge');
   pauseBadge.style.display = paused ? '' : 'none';
-  if (s.zfi_paused_low_soc)      pauseBadge.textContent = '⏸ SoC-Min';
-  else if (s.zfi_paused_full_battery) pauseBadge.textContent = '⏸ Batt. voll';
+  if (s.zfi_paused_low_soc)           pauseBadge.textContent = '\u23f8 ' + T.paused_soc;
+  else if (s.zfi_paused_full_battery) pauseBadge.textContent = '\u23f8 ' + T.paused_full;
 
-  // ── Auto plan card
+  // Auto plan card
   const cardAuto = document.getElementById('card-auto');
   cardAuto.style.display = s.mode === 'auto' ? '' : 'none';
   if (s.auto_status) renderAutoStatus(s.auto_status, s);
 
-  // ── Sample data
+  // Sample data
   const sm = s.sample;
-  const total = sm ? (sm.phase_a_w||0)+(sm.phase_b_w||0)+(sm.phase_c_w||0) : null;
-  const cons  = sm ? (total + (sm.battery_output_w||0)) : null;
+  const total  = sm ? (sm.phase_a_w||0)+(sm.phase_b_w||0)+(sm.phase_c_w||0) : null;
+  const cons   = sm ? (total + (sm.battery_output_w||0)) : null;
   const battOut = sm?.battery_output_w;
   const battIn  = sm?.charge_input_w;
+  const pvW     = sm?.solar_input_w;
 
   // Header metrics
   document.getElementById('hm-total').innerHTML = w(total);
   document.getElementById('hm-cons').innerHTML  = w(cons);
-  // Battery: show output or charge input
-  if (battOut > 0)      document.getElementById('hm-batt').innerHTML = `<span style="color:var(--green)">↓${battOut.toFixed(0)} W</span>`;
-  else if (battIn > 0)  document.getElementById('hm-batt').innerHTML = `<span style="color:var(--yellow)">↑${battIn.toFixed(0)} W</span>`;
-  else                  document.getElementById('hm-batt').textContent = '—';
-  document.getElementById('hm-soc').textContent = sm?.soc_percent != null ? sm.soc_percent + ' %' : '–';
+  if (battOut > 0)     document.getElementById('hm-batt').innerHTML = `<span style="color:var(--green)">\u2193${battOut.toFixed(0)}\u00a0W</span>`;
+  else if (battIn > 0) document.getElementById('hm-batt').innerHTML = `<span style="color:var(--yellow)">\u2191${battIn.toFixed(0)}\u00a0W</span>`;
+  else                 document.getElementById('hm-batt').textContent = '\u2014';
+  document.getElementById('hm-soc').textContent = sm?.soc_percent != null ? sm.soc_percent + '\u00a0%' : '\u2013';
+  document.getElementById('hm-pv').textContent  = pvW != null ? pvW.toFixed(0) + '\u00a0W' : '\u2013';
 
-  // ── Per-phase live cards
-  const c = s.control;
+  // Per-phase live cards
+  const c   = s.control;
   const ffp = c?.ff_per_phase || {};
   const configTarget = c?.target_power_w ?? null;
   (['A','B','C']).forEach(ph => {
     const isFF = (ffp[ph] !== undefined);
-    // Role badge
     const roleBadge = document.getElementById('ph-role-' + ph);
     if (roleBadge) {
       roleBadge.textContent = isFF ? 'FF' : 'Bat';
       roleBadge.className = 'badge ' + (isFF ? 'badge-blue' : 'badge-green');
     }
-    // Grid value (raw from Shelly)
     const gridVal = sm ? sm['phase_'+ph.toLowerCase()+'_w'] : null;
     document.getElementById('ph-grid-' + ph).innerHTML = w(gridVal);
-    // For battery phase: show estimated real consumption = grid + estimated_battery
     const consEl = document.getElementById('ph-cons-' + ph);
     let consVal = null;
     if (consEl) {
       consVal = (gridVal != null && sm?.battery_output_w != null)
         ? gridVal + sm.battery_output_w : null;
-      consEl.innerHTML = consVal != null ? w(consVal) : '–';
+      consEl.innerHTML = consVal != null ? w(consVal) : '\u2013';
       push(phHist[ph].cons, consVal);
     }
-    // Setpoint demand for this phase:
-    //   FF phase  → individual FF demand (target = 0 W)
-    //   Bat phase → target for phase B on grid = target_power_w − ff_sum
-    //              (= the portion of the total target that falls on the battery phase)
     let spVal = null;
     if (c) spVal = isFF ? (ffp[ph] ?? null)
                        : ((c.target_power_w ?? 0) - (c.ff_output_w ?? 0));
-    document.getElementById('ph-sp-' + ph).innerHTML = spVal != null ? w(spVal) : '–';
-    // Oscillation
+    document.getElementById('ph-sp-' + ph).innerHTML = spVal != null ? w(spVal) : '\u2013';
     const oscData = c ? c['osc_'+ph.toLowerCase()] : null;
     renderOscInline('osc-badge-'+ph, 'osc-det-'+ph, 'osc-lim-'+ph, oscData);
-    // Push to history
     push(phHist[ph].grid, gridVal);
     push(phHist[ph].sp,   spVal);
-    // Phasen-Chart: Delta = Netz − Anforderung (Nulllinie = perfekte Regelung)
     const errVal = (gridVal != null && spVal != null) ? gridVal - spVal : null;
     push(phHist[ph].err, errVal);
     const phColor = ph==='A' ? '#4f8ef7' : ph==='B' ? '#fb923c' : '#eab308';
     drawChartWithZero('chart-'+ph, phHist[ph].err, phColor);
   });
 
-  // ── Global stats card
+  // Global stats card
   const sp = c?.setpoint_w ?? null;
-  document.getElementById('ctrl-name').textContent = c?.regulator_name ?? '–';
-  document.getElementById('ctrl-sp').textContent   = sp != null ? sp + ' W' : '–';
-  document.getElementById('ctrl-raw').innerHTML    = c?.raw_target_w != null ? Number(c.raw_target_w).toFixed(0)+' W' : '–';
-  document.getElementById('ctrl-ff').innerHTML     = c?.ff_output_w  != null ? Number(c.ff_output_w).toFixed(0)+' W' : '–';
-  document.getElementById('ctrl-fb').innerHTML     = c?.feedback_output_w != null ? Number(c.feedback_output_w).toFixed(0)+' W' : '–';
+  document.getElementById('ctrl-name').textContent = c?.regulator_name ?? '\u2013';
+  document.getElementById('ctrl-sp').textContent   = sp != null ? sp + '\u00a0W' : '\u2013';
+  document.getElementById('ctrl-raw').innerHTML    = c?.raw_target_w != null ? Number(c.raw_target_w).toFixed(0)+'\u00a0W' : '\u2013';
+  document.getElementById('ctrl-ff').innerHTML     = c?.ff_output_w  != null ? Number(c.ff_output_w).toFixed(0)+'\u00a0W' : '\u2013';
+  document.getElementById('ctrl-fb').innerHTML     = c?.feedback_output_w != null ? Number(c.feedback_output_w).toFixed(0)+'\u00a0W' : '\u2013';
   const wd = c?.watchdog_resets ?? 0;
   const wdEl = document.getElementById('ctrl-wdog');
   wdEl.textContent = wd; wdEl.style.color = wd > 0 ? 'var(--red)' : 'var(--muted)';
-  // Tracking error = measured total grid draw minus the configured target (e.g. 3 W)
   const trackErr = (total != null && configTarget != null) ? total - configTarget : null;
-  const deltaEl = document.getElementById('ctrl-delta');
-  deltaEl.innerHTML = trackErr != null ? w(trackErr, 1) : '–';
+  document.getElementById('ctrl-delta').innerHTML = trackErr != null ? w(trackErr, 1) : '\u2013';
   push(globalHist.err, trackErr);
-  // Draw tracking-error chart with zero-line emphasis
   drawChartWithZero('chart-global', globalHist.err, '#4f8ef7');
 
-  // ZFI state in global card (always visible)
-  const zfiRow = document.getElementById('zfi-status-row');
-  zfiRow.style.display = '';
-  const zfiEl = document.getElementById('auto-zfi-state');
+  // Status badge in overview card header
   const statusBadge = document.getElementById('ctrl-status-badge');
   if (s.zfi_paused_low_soc) {
-    zfiEl.textContent = 'Pausiert (SoC-Min)'; zfiEl.className = 'badge badge-yellow';
-    statusBadge.textContent = 'Pausiert'; statusBadge.className = 'badge badge-yellow';
+    statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
   } else if (s.zfi_paused_full_battery) {
-    zfiEl.textContent = 'Pausiert (Batt. voll)'; zfiEl.className = 'badge badge-yellow';
-    statusBadge.textContent = 'Pausiert'; statusBadge.className = 'badge badge-yellow';
+    statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
   } else if (s.mode === 'discharge_zero_feed' || (s.mode==='auto' && c)) {
-    zfiEl.textContent = 'Aktiv'; zfiEl.className = 'badge badge-green';
-    statusBadge.textContent = 'Aktiv'; statusBadge.className = 'badge badge-green';
+    statusBadge.textContent = T.active; statusBadge.className = 'badge badge-green';
   } else {
-    zfiEl.textContent = 'Inaktiv'; zfiEl.className = 'badge badge-gray';
-    statusBadge.textContent = s.mode ?? '–'; statusBadge.className = 'badge badge-gray';
+    statusBadge.textContent = s.mode ?? '\u2013'; statusBadge.className = 'badge badge-gray';
   }
 }
 
@@ -561,17 +576,17 @@ function renderOscInline(badgeId, detId, limId, osc) {
   const limRow = document.getElementById(limId.replace('osc-lim-', 'osc-lim-row-'));
   if (!b) return;
   if (!osc) {
-    b.textContent='–'; b.className='badge badge-gray';
+    b.textContent='\u2013'; b.className='badge badge-gray';
     if(d) d.textContent='';
     if(l) l.textContent='';
     if(limRow) limRow.style.display='none';
     return;
   }
-  b.textContent = osc.oscillating ? 'OSZ!' : 'OK';
+  b.textContent = osc.oscillating ? 'OSC!' : 'OK';
   b.className = 'badge ' + (osc.oscillating ? 'badge-red' : 'badge-green');
   if (l) {
     if (osc.limit_w != null) {
-      l.textContent = Number(osc.limit_w).toFixed(0)+' W';
+      l.textContent = Number(osc.limit_w).toFixed(0)+'\u00a0W';
       if (limRow) limRow.style.display = '';
     } else {
       l.textContent = '';
@@ -582,7 +597,7 @@ function renderOscInline(badgeId, detId, limId, osc) {
     const parts = [];
     if (osc.holder_active)    parts.push(osc.holder_oscillating    ? '<b style="color:var(--red)">H</b>' : '<span style="color:var(--muted)">H</span>');
     if (osc.predictor_active) parts.push(osc.predictor_oscillating ? '<b style="color:var(--red)">P</b>' : '<span style="color:var(--muted)">P</span>');
-    d.innerHTML = parts.length ? '['+parts.join('·')+']' : '';
+    d.innerHTML = parts.length ? '['+parts.join('\xb7')+']' : '';
   }
 }
 
@@ -591,8 +606,8 @@ async function fetchRegulators() {
   const res = await fetch('/api/regulators');
   regulators = await res.json();
   const sel = document.getElementById('reg-select');
-  sel.innerHTML = regulators.map(r =>
-    `<option value="${r.name}" ${r.is_active?'selected':''}>${r.name}${r.is_active?' ✓':''}</option>`
+  if (sel) sel.innerHTML = regulators.map(r =>
+    `<option value="${r.name}" ${r.is_active?'selected':''}>${r.name}</option>`
   ).join('');
   renderRegSettings();
 }
@@ -600,21 +615,19 @@ async function fetchRegulators() {
 function onRegSelectChange() { renderRegSettings(); }
 
 function renderRegSettings() {
-  const name = document.getElementById('reg-select').value;
-  const reg = regulators.find(r => r.name === name);
+  const sel  = document.getElementById('reg-select');
+  const name = sel?.value || regulators[0]?.name || '';
+  const reg  = regulators.find(r => r.name === name) || regulators[0];
   if (!reg) return;
-  document.getElementById('reg-desc').textContent = reg.description || '';
+  // reg-desc element removed – description no longer shown in UI
 
-  // Group fields
   const groups = {};
   for (const [key, def] of Object.entries(reg.settings_schema)) {
     const g = def.group || 'General';
     if (!groups[g]) groups[g] = [];
     groups[g].push([key, def]);
   }
-
   fillSettingsContainer('general-settings', groups['General'] || [], reg.current_settings);
-
   ['A','B','C'].forEach(ph => {
     const gKey = Object.keys(groups).find(g => g.startsWith('Phase '+ph));
     const card = document.getElementById('card-phase-'+ph);
@@ -648,8 +661,9 @@ function fillSettingsContainer(containerId, fields, cur) {
 }
 
 function collectGroupSettings(groupPrefix) {
-  const name = document.getElementById('reg-select').value;
-  const reg = regulators.find(r => r.name === name);
+  const sel  = document.getElementById('reg-select');
+  const name = sel?.value || regulators[0]?.name || '';
+  const reg  = regulators.find(r => r.name === name) || regulators[0];
   if (!reg) return null;
   const settings = {};
   for (const [key, def] of Object.entries(reg.settings_schema)) {
@@ -671,23 +685,7 @@ async function applyGroupSettings(groupPrefix) {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(r.settings)
   });
-  fetchRegulators(); showToast('Gespeichert');
-}
-
-async function applyGroupSettingsAndActivate(groupPrefix) {
-  const r = collectGroupSettings(groupPrefix);
-  if (!r) return;
-  // First activate (select) the regulator
-  await fetch('/api/regulators/select', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({name: r.name})
-  });
-  // Then apply settings
-  await fetch(`/api/regulators/${r.name}/settings`, {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(r.settings)
-  });
-  fetchRegulators(); showToast('Regler aktiviert & Einstellungen gespeichert');
+  fetchRegulators(); showToast(T.saved);
 }
 
 // ── Mode control ───────────────────────────────────────────────────────────
@@ -714,60 +712,68 @@ function setMode(mode) {
 }
 
 async function activateAuto() {
-  const broker = document.getElementById('auto-broker').value.trim();
+  const broker    = document.getElementById('auto-broker').value.trim();
   const device_id = document.getElementById('auto-device-id').value.trim();
-  if (!broker || !device_id) { showToast('Broker und Device ID erforderlich'); return; }
+  if (!broker || !device_id) { showToast(T.broker_required); return; }
   const res = await fetch('/api/auto/connect', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({mqtt_broker:broker, device_id, topic_prefix:'gridpythia', status_interval_s:60})
   });
-  if (res.ok) { document.getElementById('auto-panel').style.display='none'; showToast('Auto-Modus aktiviert'); }
-  else { const err = await res.json().catch(()=>({})); showToast('Fehler: '+(err.detail||res.status)); }
+  if (res.ok) { document.getElementById('auto-panel').style.display='none'; showToast(T.auto_activated); }
+  else { const err = await res.json().catch(()=>({})); showToast('Error: '+(err.detail||res.status)); }
 }
 async function deactivateAuto() {
   await fetch('/api/auto/disconnect', {method:'POST'});
   document.getElementById('auto-panel').style.display = 'none';
-  showToast('Auto-Modus deaktiviert');
+  showToast(T.auto_deactivated);
 }
 
 // ── Auto plan rendering ────────────────────────────────────────────────────
 function renderAutoStatus(as, fullState) {
-  const connEl = document.getElementById('auto-conn-badge');
-  connEl.textContent = as.connected ? (as.has_plan ? 'Verbunden ✓ Plan' : 'Verbunden (kein Plan)') : 'Getrennt';
-  connEl.className = 'badge ' + (as.connected ? (as.has_plan ? 'badge-green' : 'badge-yellow') : 'badge-red');
-  document.getElementById('auto-plan-ts').textContent = as.plan_published_at || '–';
+  const dot = document.getElementById('auto-conn-dot');
+  dot.className = 'dot ' + (as.connected ? (as.has_plan ? 'live' : '') : 'error');
+  dot.title = as.connected
+    ? (as.has_plan ? T.connected_plan : T.connected_no_plan)
+    : T.disconnected;
+
+  document.getElementById('auto-plan-ts').textContent = as.plan_published_at || '\u2013';
   const effEl = document.getElementById('auto-effective');
-  effEl.textContent = as.effective_mode || '–';
+  effEl.textContent = as.effective_mode || '\u2013';
   effEl.className = 'badge ' + effectiveBadgeClass(as.effective_mode);
+
   const list = document.getElementById('plan-list');
   if (!as.plan_summary?.length) {
-    list.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:4px 0">Kein Plan</div>'; return;
+    list.innerHTML = `<div style="color:var(--muted);font-size:11px;padding:4px 0">${T.no_plan}</div>`;
+    return;
   }
   list.innerHTML = as.plan_summary.map(e => {
-    const dateStr = e.date ? `<span style="color:var(--muted);font-size:10px">${e.date} </span>` : '';
-    const pwrStr = e.power_w != null ? e.power_w+' W' : (e.mode_label.includes('Zero-Feed')||e.mode_label.includes('Entladen') ? 'HW' : '');
+    const dayLabel      = e.date ? `<span class="plan-day">${e.date}</span>` : '';
+    const nextDaySuffix = e.end_next_day
+      ? `<span class="plan-next-day" title="${T.ends_next_day}">+1</span>` : '';
+    const pwr = e.power_w != null ? e.power_w + '\u00a0W' : '';
     return `<div class="plan-entry">
-      <span class="plan-time">${dateStr}${e.from_time}–${e.to_time}</span>
-      <span class="plan-mode">${planModeIcon(e.mode_label)} ${e.mode_label}</span>
-      <span class="plan-pwr">${pwrStr}</span></div>`;
+      <div class="plan-time">${dayLabel}${e.from_time}\u2013${e.to_time}${nextDaySuffix}</div>
+      <div class="plan-mode">${planModeIcon(e.mode_label)} ${e.mode_label}</div>
+      <div class="plan-pwr">${pwr}</div></div>`;
   }).join('');
 }
+
 function effectiveBadgeClass(l) {
-  if (!l||l==='–') return 'badge-gray';
-  if (l.includes('Lade')) return 'badge-yellow';
-  if (l.includes('Fallback')||l==='Idle') return 'badge-gray';
+  if (!l || l==='\u2013') return 'badge-gray';
+  if (l.includes('Charge') || l.includes('Laden')) return 'badge-yellow';
+  if (l === 'Idle') return 'badge-gray';
   return 'badge-green';
 }
 function planModeIcon(l) {
   if (!l) return '';
-  if (l.includes('Laden')) return '⬆';
-  if (l.includes('Zero-Feed')||l.includes('Entladen')) return '⬇';
-  return '⏸';
+  if (l.includes('Charge') || l.includes('Laden')) return '\u2b06';
+  if (l.includes('Zero-Feed') || l.includes('Discharge') || l.includes('Entladen')) return '\u2b07';
+  return '\u23f8';
 }
 
 function showToast(msg) {
   const t = document.getElementById('toast');
-  t.textContent = '✓ ' + msg; t.style.display = 'block';
+  t.textContent = '\u2713 ' + msg; t.style.display = 'block';
   setTimeout(() => t.style.display = 'none', 2500);
 }
 
@@ -777,18 +783,49 @@ connect();
 </html>"""
 
 
+def _build_html(t: dict[str, str], version: str, github_url: str) -> str:
+    """Render the HTML template with the given translation dict and metadata."""
+    if github_url:
+        safe_url = _html.escape(github_url, quote=True)
+        github_link = f'<a href="{safe_url}" target="_blank" rel="noopener">{t["t_github"]}</a>'
+    else:
+        github_link = ""
+
+    result = _HTML_TEMPLATE
+    # Static metadata
+    result = result.replace("<<<VERSION>>>", _html.escape(version))
+    result = result.replace("<<<GITHUB_LINK>>>", github_link)
+    result = result.replace("<<<T_JSON>>>", build_js_t(t))
+    result = result.replace("<<<lang>>>", t.get("lang", "en"))
+    # Translation keys
+    for key, val in t.items():
+        result = result.replace(f"<<<{key}>>>", val)
+    return result
+
+
 # ── FastAPI app factory ───────────────────────────────────────────────────────
 
 
-def create_app(runtime: ControlRuntime) -> FastAPI:
-    """Create and return the FastAPI application bound to a ControlRuntime."""
+def create_app(runtime: ControlRuntime, *, lang: str = "en") -> FastAPI:
+    """Create and return the FastAPI application bound to a ControlRuntime.
+
+    Parameters
+    ----------
+    runtime:
+        The ``ControlRuntime`` instance that drives sampling and control.
+    lang:
+        Dashboard UI language code (``"en"`` or ``"de"``).
+        Falls back to English for unknown codes.
+    """
+    t = TRANSLATIONS.get(lang, TRANSLATIONS["en"])
+    _html_page = _build_html(t, _PROJECT_VERSION, _GITHUB_URL)
     app = FastAPI(title="Zendure Dashboard", docs_url=None, redoc_url=None)
 
     # ── HTML ──────────────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def root() -> HTMLResponse:
-        return HTMLResponse(_HTML)
+        return HTMLResponse(_html_page)
 
     # ── REST API ──────────────────────────────────────────────────────────────
 

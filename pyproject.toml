@@ -1,9 +1,13 @@
 [project]
 name = "zero-feed-controller"
 version = "0.1.0"
-description = "Add your description here"
+description = "Three-phase zero-feed-in battery controller with feedforward + feedback regulation"
 readme = "README.md"
 requires-python = ">=3.11"
+
+[project.urls]
+Repository = "https://github.com/YOUR_USERNAME/zero-feed-controller"
+
 dependencies = [
     "aiohttp>=3.13.4",
     "fastapi[standard]>=0.100.0",

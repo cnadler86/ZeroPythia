@@ -163,6 +163,9 @@ class ZeroFeedV4Config(BaseModel):
     sampling_interval_s: float = 1.0
     """Sampling interval [s]."""
 
+    language: str = "en"
+    """Dashboard UI language.  Supported: 'en' (English), 'de' (German)."""
+
     phases: dict[str, PhaseConfig] = Field(default_factory=dict)
     """Per-phase controller configs keyed by phase letter ('A', 'B', 'C').
     Populated automatically with defaults for any missing phase."""

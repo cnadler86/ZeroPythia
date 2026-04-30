@@ -91,18 +91,18 @@ class ControlRuntime:
         max_discharge_w: int = 800,
         min_discharge_w: int = 20,
         # ── SoC thresholds for ZFI pause ──────────────────────────────────────
-        # min_soc_hysteresis_pct: ZFI läuft wieder wenn SoC >= device_min_soc + hysterese
+        # min_soc_hysteresis_pct: ZFI resumes when SoC >= device_min_soc + hysteresis
         min_soc_hysteresis_pct: int = 5,
         # ── Full-battery ZFI rest ─────────────────────────────────────────────
-        # full_soc_resume_delay_s: Gridbezug muss mind. diese Zeit anhalten, bevor ZFI wieder aktiv
+        # full_soc_resume_delay_s: grid draw must persist at least this long before ZFI resumes
         full_soc_resume_delay_s: float = 10.0,
-        # full_soc_resume_threshold_w: Mindest-Gridbezug [W] für den Weck-Zähler
-        # Bedingung: Hausverbrauch > PV-Erzeugung + 30 W → total_grid_w > 30 W
+        # full_soc_resume_threshold_w: minimum grid draw [W] for the wake-up timer
+        # Condition: household consumption > PV output + threshold → total_grid_w > threshold
         full_soc_resume_threshold_w: int = 30,
         # ── Upper SoC AC charge limit ─────────────────────────────────────────
-        # high_soc_charge_limit_pct: Oberhalb dieses SoC wird die AC-Ladeleistung gedrosselt
+        # high_soc_charge_limit_pct: above this SoC the AC charge power is throttled
         high_soc_charge_limit_pct: int = 90,
-        # high_soc_charge_limit_w: Gedrosselte AC-Ladeleistung [W]. None = halbe max_charge_w
+        # high_soc_charge_limit_w: throttled AC charge power [W]; None = half of max_charge_w
         high_soc_charge_limit_w: Optional[int] = None,
     ) -> None:
         self._grid_meter: GridMeterProtocol = grid_meter
@@ -120,8 +120,8 @@ class ControlRuntime:
         self._full_soc_resume_delay_s = full_soc_resume_delay_s
         self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
         self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
-        self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half
-        # Bypass state tracking (für Änderungs-Logging)
+        self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half of max_charge_w
+        # Bypass state tracking (for change logging)
         self._last_bypass_state: Optional[bool] = None
         # ZFI pause states
         self._zfi_paused_low_soc: bool = False
@@ -156,11 +156,11 @@ class ControlRuntime:
         self._watchdog_violation_since: Optional[float] = None
         self._watchdog_last_reset: float = float("-inf")
         self._watchdog_trigger_s: float = 10.0
-        """Anhaltende Einspeisung über diese Dauer (s) löst Watchdog aus."""
+        """Sustained feed-in beyond this duration [s] triggers the watchdog."""
         self._watchdog_cooldown_s: float = 30.0
-        """Mindestabstand (s) zwischen zwei aufeinanderfolgenden Watchdog-Resets."""
+        """Minimum interval [s] between two consecutive watchdog resets."""
         self._watchdog_threshold_w: float = -10.0
-        """Einspeisung unter diesem Wert (negativ = Einspeisung) zählt als Verletzung."""
+        """Grid values below this threshold (negative = feed-in) count as a violation."""
 
         # Runtime tasks
         self._running = False
@@ -458,7 +458,7 @@ class ControlRuntime:
             min_soc = await self._battery.get_min_soc()
             max_soc = await self._battery.get_max_soc()
         except Exception:
-            logger.warning("SoC-Limits konnten nicht von der HW gelesen werden", exc_info=True)
+            logger.warning("Could not read SoC limits from hardware", exc_info=True)
             min_soc = None
             max_soc = None
 
@@ -467,7 +467,7 @@ class ControlRuntime:
         self._min_soc_resume_pct = self._min_soc_pct + self._min_soc_hysteresis_pct
         if min_soc is None or max_soc is None:
             logger.warning(
-                "SoC-Limits nicht verfügbar (min=%d%% max=%d%%) – Fallback-Werte genutzt",
+                "SoC limits unavailable (min=%d%%  max=%d%%) – using fallback values",
                 self._min_soc_pct,
                 self._full_soc_pct,
             )
@@ -504,14 +504,14 @@ class ControlRuntime:
         # ── Low-SoC pause ────────────────────────────────────────────────────
         if soc is not None:
             if not self._zfi_paused_low_soc and soc <= self._min_soc_pct:
-                logger.info("ZFI pausiert: SoC %d%% <= Minimum %d%%", soc, self._min_soc_pct)
+                logger.info("ZFI paused: SoC %d%% <= minimum %d%%", soc, self._min_soc_pct)
                 self._zfi_paused_low_soc = True
                 if _discharge_mode:
                     await self._battery.stop()
 
             elif self._zfi_paused_low_soc and soc >= self._min_soc_resume_pct:
                 logger.info(
-                    "ZFI wieder aktiv: SoC %d%% >= Hysterese %d%%",
+                    "ZFI resumed: SoC %d%% >= hysteresis threshold %d%%",
                     soc,
                     self._min_soc_resume_pct,
                 )
@@ -530,7 +530,9 @@ class ControlRuntime:
 
         if soc is not None and not self._zfi_paused_full_battery and soc >= self._full_soc_pct:
             logger.info(
-                "ZFI Vollbatterie-Pause: SoC %d%% >= HW-Maximum %d%%", soc, self._full_soc_pct
+                "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%%",
+                soc,
+                self._full_soc_pct,
             )
             self._zfi_paused_full_battery = True
             self._full_battery_resume_since = None
@@ -543,11 +545,11 @@ class ControlRuntime:
                 if self._full_battery_resume_since is None:
                     self._full_battery_resume_since = now_mono
                     logger.debug(
-                        "ZFI Vollbatterie: Gridbezug %.0fW – Weck-Z\u00e4hler gestartet", grid_w
+                        "Full-battery pause: grid draw %.0fW – wake-up timer started", grid_w
                     )
                 elif now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s:
                     logger.info(
-                        "ZFI Vollbatterie-Pause beendet: Gridbezug %.0fW f\u00fcr >= %.0fs",
+                        "Full-battery pause ended: grid draw %.0fW sustained for >= %.0fs",
                         grid_w,
                         self._full_soc_resume_delay_s,
                     )
@@ -559,9 +561,7 @@ class ControlRuntime:
             else:
                 # Grid draw below threshold → reset the timer
                 if self._full_battery_resume_since is not None:
-                    logger.debug(
-                        "ZFI Vollbatterie: Gridbezug zu gering – Z\u00e4hler zur\u00fcckgesetzt"
-                    )
+                    logger.debug("Full-battery pause: grid draw too low – wake-up timer reset")
                 self._full_battery_resume_since = None
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
@@ -578,7 +578,7 @@ class ControlRuntime:
             )
             if current_pw > limit_w:
                 logger.info(
-                    "AC-Lade-Limit: SoC %d%% > %d%% \u2192 %dW statt %dW",
+                    "AC charge throttled: SoC %d%% > %d%% → %d W (was %d W)",
                     soc,
                     self._high_soc_charge_limit_pct,
                     limit_w,
@@ -588,19 +588,19 @@ class ControlRuntime:
                 await self._battery.start_charge(limit_w)
 
     async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
-        """Erkennt anhaltende Einspeisung und setzt fehlgeschlagenen Regler zurück.
+        """Detect sustained feed-in and reset the regulator if triggered.
 
-        Wird bei jedem Sampling-Tick aufgerufen, solange ZFI aktiv ist.
-        Beim Auslösen: Regulator-Reset + Setpoint auf min_discharge_w.
+        Called every sampling tick while ZFI is active.  On trigger: regulator
+        reset + setpoint reduced to min_discharge_w.
         """
         total_w = sample.total_grid_w
 
         if total_w >= self._watchdog_threshold_w:
-            # Kein Einspeise-Problem → Zähler zurücksetzen
+            # No feed-in problem – reset violation timer
             self._watchdog_violation_since = None
             return
 
-        # Einspeisung unterhalb des Schwellwerts
+        # Feed-in below threshold
         if self._watchdog_violation_since is None:
             self._watchdog_violation_since = now_mono
             return
@@ -610,13 +610,13 @@ class ControlRuntime:
             return
 
         if now_mono - self._watchdog_last_reset < self._watchdog_cooldown_s:
-            # Cooldown läuft noch – nicht zu häufig resetten
+            # Still in cooldown – avoid resetting too frequently
             return
 
-        # ── Watchdog ausgelöst ────────────────────────────────────────────────
+        # ── Watchdog triggered ────────────────────────────────────────────────
         logger.warning(
-            "Feed-in Watchdog: %.0fs anhaltende Einspeisung (total=%.0fW, "
-            "threshold=%.0fW) – Regler wird zurückgesetzt und Setpoint auf %dW reduziert.",
+            "Feed-in watchdog: %.0f s sustained feed-in (total=%.0f W, "
+            "threshold=%.0f W) – resetting regulator and reducing setpoint to %d W.",
             duration_s,
             total_w,
             self._watchdog_threshold_w,
@@ -629,7 +629,7 @@ class ControlRuntime:
         ok = await self._battery.set_ac_output_limit(self._min_discharge_w)
         if not ok:
             logger.error(
-                "Feed-in Watchdog: set_ac_output_limit(%d) schlug fehl.",
+                "Feed-in watchdog: set_ac_output_limit(%d) failed.",
                 self._min_discharge_w,
             )
 
@@ -640,7 +640,7 @@ class ControlRuntime:
         try:
             phases = await self._grid_meter.get_phase_powers()
             if phases is None:
-                logger.debug("_read_sample: Grid-Meter lieferte keine Phasen-Daten")
+                logger.debug("_read_sample: grid meter returned no phase data")
                 return None
 
             batt_output = await self._battery.get_ac_output_power()
@@ -654,24 +654,24 @@ class ControlRuntime:
                 charge_in = float(batt_state.grid_input_power or 0) or None
                 bypass_active = batt_state.bypass_mode
 
-                # Bypass-Zustandsänderung loggen
+                # Log bypass state changes
                 if bypass_active != self._last_bypass_state:
                     if bypass_active:
                         solar_w = batt_state.solar_input_power
                         logger.warning(
-                            "Inverter wechselt in BYPASS-Modus: PV (%dW) wird direkt ans Haus geleitet. "
-                            "battery_output_w (%sW) zeigt Solar-Bypass, nicht Batterie-Output. "
-                            "outputLimit-Befehle werden ignoriert!",
+                            "Inverter entered BYPASS mode: PV (%d W) routed directly to house. "
+                            "battery_output_w (%s W) reflects solar bypass, not battery output. "
+                            "outputLimit commands are ignored!",
                             solar_w,
                             batt_output,
                         )
                     elif self._last_bypass_state is not None:
-                        logger.info("Inverter verlässt Bypass-Modus – Battery-Control wieder aktiv")
+                        logger.info("Inverter left bypass mode – battery control active")
                     self._last_bypass_state = bypass_active
 
                 if bypass_active:
                     logger.debug(
-                        "Bypass aktiv: solar=%dW  home_output=%sW  soc=%s%%",
+                        "Bypass active: solar=%d W  home_output=%s W  soc=%s%%",
                         batt_state.solar_input_power,
                         batt_output,
                         soc,
@@ -686,6 +686,9 @@ class ControlRuntime:
                 soc_percent=soc,
                 charge_input_w=charge_in,
                 bypass_active=bypass_active,
+                solar_input_w=float(batt_state.solar_input_power)
+                if batt_state is not None
+                else None,
             )
         except Exception:
             logger.debug("Sample read failed", exc_info=True)
