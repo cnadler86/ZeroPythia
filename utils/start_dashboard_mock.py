@@ -80,12 +80,12 @@ class OscillatingLoad:
         self._state = _PhaseState.OSCILLATING if start_oscillating else _PhaseState.STATIC
         self._phase_start = time.monotonic()
         self._phase_duration = (
-            random.uniform(*osc_duration_range)
+            random.uniform(*osc_duration_range)  # noqa: S311
             if start_oscillating
-            else random.uniform(*static_duration_range)
+            else random.uniform(*static_duration_range)  # noqa: S311
         )
         self._static_level = base_w
-        self._osc_period = random.uniform(*osc_period_range)
+        self._osc_period = random.uniform(*osc_period_range)  # noqa: S311
 
     def sample(self) -> float:
         now = time.monotonic()
@@ -101,12 +101,12 @@ class OscillatingLoad:
     def _next_phase(self, now: float) -> None:
         if self._state is _PhaseState.OSCILLATING:
             self._state = _PhaseState.STATIC
-            self._phase_duration = random.uniform(*self._static_dur)
+            self._phase_duration = random.uniform(*self._static_dur)  # noqa: S311
             spread = self._base * 0.3
             self._static_level = max(10.0, self._base + random.uniform(-spread, spread))  # noqa: S311
         else:
             self._state = _PhaseState.OSCILLATING
-            self._phase_duration = random.uniform(*self._osc_dur)
+            self._phase_duration = random.uniform(*self._osc_dur)  # noqa: S311
             self._osc_period = random.uniform(*self._osc_period_range)  # noqa: S311
         self._phase_start = now
 

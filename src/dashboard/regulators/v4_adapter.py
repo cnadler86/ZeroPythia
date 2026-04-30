@@ -140,9 +140,8 @@ class _V4Core:
             if isinstance(ph_cfg, FeedforwardPhaseConfig):
                 self._ff[ph] = _build_ff(ph_cfg)
         fb_cfg = cfg.phases.get(cfg.control_phase)
-        assert isinstance(fb_cfg, FeedbackPhaseConfig), (
-            f"control_phase={cfg.control_phase!r} has no FeedbackPhaseConfig"
-        )
+        if not isinstance(fb_cfg, FeedbackPhaseConfig):
+            raise ValueError(f"control_phase={cfg.control_phase!r} has no FeedbackPhaseConfig")
         self._fb = _build_fb(fb_cfg, cfg.target_power_w)
 
     # ── Control calculation ───────────────────────────────────────────────────
@@ -162,7 +161,8 @@ class _V4Core:
             ``fb_correction`` is the feedback controller output, and
             ``ff_sum`` is the sum of all feedforward demands.
         """
-        assert self._fb is not None
+        if self._fb is None:
+            raise RuntimeError("Feedback controller not initialized")
 
         # 1) Feedforward for all non-battery phases
         ff_outputs: dict[str, float] = {}
@@ -264,7 +264,8 @@ class _V4Core:
     def osc_state(self, phase: str) -> OscState:
         """Return full oscillation state for one phase."""
         if phase == self._cfg.control_phase:
-            assert self._fb is not None
+            if self._fb is None:
+                raise RuntimeError("Feedback controller not initialized")
             ctrl = self._fb
             return OscState(
                 oscillating=ctrl.is_oscillating,

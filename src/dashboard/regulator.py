@@ -28,7 +28,7 @@ for the last completed control cycle.  Called after ``compute_setpoint()``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Protocol
+from typing import Any, Optional, Protocol, runtime_checkable
 
 from .models import ControlStatus, GridSample
 
@@ -42,11 +42,16 @@ class BatteryStateProtocol(Protocol):
     solar_input_power: int
 
 
+@runtime_checkable
 class BatteryInverterProtocol(Protocol):
-    """Structural protocol – matches ``ZeroFeedV3Controller.BatteryInverter``."""
+    """Structural protocol – matches ``ZeroFeedV3Controller.BatteryInverter``.
+
+    Marked @runtime_checkable so structural typing works:
+    Any class with these methods is considered compatible.
+    """
 
     async def get_ac_output_power(self) -> Optional[int]: ...
-    async def set_ac_output_limit(self, limit_w: int) -> bool: ...
+    async def set_ac_output_limit(self, power_w: int) -> bool: ...
     async def start_discharge(self, power_w: int) -> bool: ...
     async def start_charge(self, power_w: int) -> bool: ...
     async def stop(self) -> bool: ...

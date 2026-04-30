@@ -459,35 +459,41 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
             ac_mode = ACMode.OUTPUT
 
         # Properties Struct erstellen
-        properties = Properties(
-            solar_input_power=self._solar_input_power,
-            solar_power_1=self._solar_input_power,
-            solar_power_2=0,
-            grid_input_power=self._actual_input_power,
-            output_home_power=self._actual_output_power,
-            output_pack_power=0,
-            pack_input_power=0,
-            electric_level=int(self._soc),
-            pack_state=battery_state.value,
-            pack_num=1,
-            input_limit=available_input,
-            output_limit=available_output,
-            min_soc=self._min_soc_percent * 10,
-            soc_set=self._max_soc_percent * 10,
-            ac_mode=ac_mode.value,
-            smart_mode=1 if self._smart_mode else 0,
-            bypass=0,  # type: ignore[call-arg]  # Pylance doesn't recognize populate_by_name=True with alias="pass"
-            grid_state=1,
-            heat_state=0,
-            hyper_tmp=2981,
-            data_ready=1,
-            remain_out_time=0,
-            reverse_state=0,
-            soc_status=0,
-            dc_status=1 if self._actual_output_power > 0 or self._actual_input_power > 0 else 0,
-            pv_status=0,
-            ac_status=1 if self._actual_output_power > 0 or self._actual_input_power > 0 else 0,
-            soc_limit=0,
+        properties = Properties.model_validate(
+            {
+                "solar_input_power": self._solar_input_power,
+                "solar_power_1": self._solar_input_power,
+                "solar_power_2": 0,
+                "grid_input_power": self._actual_input_power,
+                "output_home_power": self._actual_output_power,
+                "output_pack_power": 0,
+                "pack_input_power": 0,
+                "electric_level": int(self._soc),
+                "pack_state": battery_state.value,
+                "pack_num": 1,
+                "input_limit": available_input,
+                "output_limit": available_output,
+                "min_soc": self._min_soc_percent * 10,
+                "soc_set": self._max_soc_percent * 10,
+                "ac_mode": ac_mode.value,
+                "smart_mode": 1 if self._smart_mode else 0,
+                "pass": 0,
+                "grid_state": 1,
+                "heat_state": 0,
+                "hyper_tmp": 2981,
+                "data_ready": 1,
+                "remain_out_time": 0,
+                "reverse_state": 0,
+                "soc_status": 0,
+                "dc_status": 1
+                if self._actual_output_power > 0 or self._actual_input_power > 0
+                else 0,
+                "pv_status": 0,
+                "ac_status": 1
+                if self._actual_output_power > 0 or self._actual_input_power > 0
+                else 0,
+                "soc_limit": 0,
+            }
         )
 
         # PackData mit BatteryPack (hat computed fields!)
