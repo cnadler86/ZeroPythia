@@ -56,15 +56,15 @@ _HTML = """<!DOCTYPE html>
   /* ── Header ─────────────────────────────────── */
   .header { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
             border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .header-metrics { display: flex; gap: 16px; flex-wrap: wrap; margin-left: auto; }
+  .header-metrics { display: flex; gap: 10px; flex-wrap: wrap; margin-left: auto; }
   .metric { display: flex; align-items: center; gap: 4px; font-size: 12px; }
   .metric-icon { font-size: 13px; }
   .metric-val { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 46px; font-size: 12px; }
   .metric-label { color: var(--muted); font-size: 10px; }
   /* ── Layout grid ────────────────────────────── */
-  .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 10px; padding: 12px 12px 0; max-width: 1500px; margin: 0 auto; }
-  .layout-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  .layout-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 10px; padding: 8px 12px 12px; max-width: 1500px; margin: 0 auto; }
   .card { background: var(--card); border: 1px solid var(--border);
           border-radius: 10px; padding: 12px; }
@@ -133,21 +133,21 @@ _HTML = """<!DOCTYPE html>
     <div class="metric">
       <span class="metric-icon">⚡</span>
       <div>
-        <div class="metric-label">Netz gesamt</div>
+        <div class="metric-label">Grid</div>
         <div class="metric-val" id="hm-total">–</div>
       </div>
     </div>
     <div class="metric">
       <span class="metric-icon">🏠</span>
       <div>
-        <div class="metric-label">Verbrauch</div>
+        <div class="metric-label">Load</div>
         <div class="metric-val" id="hm-cons">–</div>
       </div>
     </div>
     <div class="metric">
       <span class="metric-icon">🔋</span>
       <div>
-        <div class="metric-label">Batterie</div>
+        <div class="metric-label">Bat</div>
         <div class="metric-val" id="hm-batt">–</div>
       </div>
     </div>
