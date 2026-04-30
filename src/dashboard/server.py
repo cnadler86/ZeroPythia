@@ -62,8 +62,10 @@ _HTML = """<!DOCTYPE html>
   .metric-val { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 46px; font-size: 12px; }
   .metric-label { color: var(--muted); font-size: 10px; }
   /* ── Layout grid ────────────────────────────── */
-  .layout { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-            gap: 10px; padding: 12px; max-width: 1500px; margin: 0 auto; }
+  .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+            gap: 10px; padding: 12px 12px 0; max-width: 1500px; margin: 0 auto; }
+  .layout-settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+            gap: 10px; padding: 8px 12px 12px; max-width: 1500px; margin: 0 auto; }
   .card { background: var(--card); border: 1px solid var(--border);
           border-radius: 10px; padding: 12px; }
   /* ── Misc helpers ───────────────────────────── */
@@ -160,7 +162,7 @@ _HTML = """<!DOCTYPE html>
   <span id="ts" style="color:var(--muted);font-size:11px;white-space:nowrap"></span>
 </div>
 
-<div class="layout">
+<div class="layout-live">
 
   <!-- ── Betriebsmodus ─────────────────────────────────────────────────────── -->
   <div class="card" id="card-mode">
@@ -256,8 +258,9 @@ _HTML = """<!DOCTYPE html>
       <span class="value" id="ctrl-delta">–</span>
     </div>
     <div class="chart-wrap"><canvas id="chart-global"></canvas></div>
-  </div>
+  </div></div>
 
+<div class="layout-settings">
   <!-- ── Regler-Einstellungen (allgemein) ───────────────────────────────────── -->
   <div class="card" id="card-general">
     <h2>Regler-Einstellungen</h2>
@@ -493,10 +496,12 @@ function render(s) {
       push(phHist[ph].cons, consVal);
     }
     // Setpoint demand for this phase:
-    //   FF phase  → individual FF demand
-    //   Bat phase → only the feedback contribution (setpoint − ff_sum)
+    //   FF phase  → individual FF demand (target = 0 W)
+    //   Bat phase → target for phase B on grid = target_power_w − ff_sum
+    //              (= the portion of the total target that falls on the battery phase)
     let spVal = null;
-    if (c) spVal = isFF ? (ffp[ph] ?? null) : (c.feedback_output_w ?? null);
+    if (c) spVal = isFF ? (ffp[ph] ?? null)
+                       : ((c.target_power_w ?? 0) - (c.ff_output_w ?? 0));
     document.getElementById('ph-sp-' + ph).innerHTML = spVal != null ? w(spVal) : '–';
     // Oscillation
     const oscData = c ? c['osc_'+ph.toLowerCase()] : null;
@@ -504,15 +509,8 @@ function render(s) {
     // Push to history
     push(phHist[ph].grid, gridVal);
     push(phHist[ph].sp,   spVal);
-    // Übereinstimmungs-chart (Abweichung von Sollwert, Nulllinie = perfekte Regelung)
-    //   FF-Phase: Abweichung = grid (Ziel = 0 W)
-    //   Bat-Phase: Abweichung = geschätzter Verbrauch − Gesamtziel
-    let errVal = null;
-    if (isFF) {
-      errVal = gridVal;
-    } else {
-      errVal = (consVal != null && configTarget != null) ? consVal - configTarget : null;
-    }
+    // Phasen-Chart: Delta = Netz − Anforderung (Nulllinie = perfekte Regelung)
+    const errVal = (gridVal != null && spVal != null) ? gridVal - spVal : null;
     push(phHist[ph].err, errVal);
     const phColor = ph==='A' ? '#4f8ef7' : ph==='B' ? '#fb923c' : '#eab308';
     drawChartWithZero('chart-'+ph, phHist[ph].err, phColor);
