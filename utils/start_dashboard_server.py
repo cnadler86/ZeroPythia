@@ -28,7 +28,6 @@ from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
 from src.config.zerofeed_v4 import ZeroFeedV4Config
 from src.dashboard.models import DeviceMode
-from src.dashboard.regulators.v3_adapter import V3RegulatorSettings, ZeroFeedV3Regulator
 from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
@@ -68,8 +67,6 @@ async def run(
     port: int,
     max_output: int,
     min_discharge: int,
-    kp_draw: float,
-    kp_feed_in: float,
     control_interval: float,
     mqtt_broker: Optional[str],
     device_id: str,
@@ -95,14 +92,6 @@ async def run(
         )
 
         # ── Register regulators ───────────────────────────────────────────────
-        v3_settings = V3RegulatorSettings(
-            max_output_w=max_output,
-            min_output_w=min_discharge,
-            kp_draw=kp_draw,
-            kp_feed_in=kp_feed_in,
-            control_interval_s=control_interval,
-        )
-        runtime.register_regulator(ZeroFeedV3Regulator(v3_settings))
 
         # ── V4 Regulator ──────────────────────────────────────────────────────
         v4_settings = ZeroFeedV4Config(
@@ -176,8 +165,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--port", type=int, default=8765, metavar="PORT")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")
-    parser.add_argument("--kp-draw", type=float, default=0.9, metavar="KP")
-    parser.add_argument("--kp-feed-in", type=float, default=1.05, metavar="KP")
     parser.add_argument("--control-interval", type=float, default=3.0, metavar="S")
     parser.add_argument(
         "--initial-mode",
@@ -218,8 +205,6 @@ def main(argv: Optional[list[str]] = None) -> None:
                 port=args.port,
                 max_output=args.max_output,
                 min_discharge=args.min_discharge,
-                kp_draw=args.kp_draw,
-                kp_feed_in=args.kp_feed_in,
                 control_interval=args.control_interval,
                 mqtt_broker=args.mqtt_broker,
                 device_id=args.device_id,

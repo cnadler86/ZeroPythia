@@ -30,7 +30,6 @@ import uvicorn
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
 from src.config.zerofeed_v4 import ZeroFeedV4Config
 from src.dashboard.models import DeviceMode
-from src.dashboard.regulators.v3_adapter import V3RegulatorSettings, ZeroFeedV3Regulator
 from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
@@ -221,11 +220,6 @@ async def run(
     )
 
     # ── Register regulators ───────────────────────────────────────────────────
-    v3_settings = V3RegulatorSettings(
-        max_output_w=max_output,
-        min_output_w=min_discharge,
-    )
-    runtime.register_regulator(ZeroFeedV3Regulator(v3_settings))
 
     v4_yaml = _V4_CONFIG
     v4_settings = ZeroFeedV4Config(
