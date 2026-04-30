@@ -1,0 +1,108 @@
+# ZeroFeed V4 configuration
+# Exactly one phase has role: feedback (regulation phase = battery phase).
+# All other phases have role: feedforward (steering phase, no battery inverter).
+# This file is updated automatically by the dashboard; comments are preserved.
+control_phase: B  # Phase with battery inverter (A, B or C)
+target_power_w: 1.0 # Desired total grid draw [W].  3 W = slight import, prevents feed-in
+min_output_w: 20 # Minimum battery output [W] (hardware limit, e.g. 20 W)
+max_output_w: 800 # Maximum battery output [W] (hardware limit, e.g. 800 W)
+watchdog_cycles: 3 # Consecutive cycles with feed-in outside hysteresis → reset affected phases
+control_interval_s: 3.0 # Control cycle interval [s]
+sampling_interval_s: 1.0 # Sampling interval [s]
+battery_dead_time_s: 1.1
+battery_pt1_tau_s: 0.5
+
+# Per-phase controller settings
+phases:
+
+# Phase A (Steering – no battery inverter)
+  A:
+    role: feedforward  # feedback = regulation (battery phase)  |  feedforward = steering
+    kp: 1.0 # P-gain outside hysteresis band.  1.0 = full compensation
+    kp_hysteresis: 0.3 # Damped gain inside hysteresis band
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+#   Oscillation detectors
+    osc:
+#     Holder – fast short-cycle oscillations (period < ~10 s)
+      holder:
+        threshold: 15.0 # Minimum amplitude [W] to confirm oscillation
+        min_period: 1.0 # Shortest detectable period [s]
+        max_period: 10.0 # Longest detectable period [s]
+        period_variance: 1.2 # Allowed jitter factor for period matching
+        time_threshold: 0.6 # Minimum duty cycle (0..1) – fraction of cycle the load must be active
+        min_rising_count: 3 # Minimum rising edges required to confirm oscillation
+#     Predictor – periodic loads with known cycle time (e.g. washing machine)
+        merge_mode: first
+        base_load_window: 3
+      predictor:
+        threshold: 100.0  # Minimum amplitude [W] to confirm periodic load
+        min_period: 8.0 # Shortest detectable period [s]
+        max_period: 120.0 # Longest detectable period [s]
+        period_variance: 2.0 # Allowed jitter factor for period matching
+        time_threshold: 2.0 # Minimum duty cycle to confirm periodic load
+        min_rising_count: 3 # Minimum rising edges required to confirm periodic load
+        reaction_time: 4.0 # Lead time [s] before expected load peak – battery output reduced early
+
+# Phase B (Regulation – battery inverter)
+        merge_mode: first
+        base_load_window: 2
+  B:
+    role: feedback  # feedback = regulation (battery phase)  |  feedforward = steering
+    kp_draw: 0.95 # P-gain when drawing from grid
+    kp_feed_in: 1.05 # P-gain when feeding into grid (higher = more aggressive pull-back)
+    feedback_enabled: true # false = pure feedforward mode (for testing)
+    kp_hysteresis: 0.4 # Damped gain inside hysteresis band
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+#   Oscillation detectors
+    osc:
+#     Holder – fast short-cycle oscillations (period < ~10 s)
+      holder:  # null = disabled
+#     Predictor – periodic loads with known cycle time (e.g. washing machine)
+        threshold: 30.0
+        min_period: 1.0
+        max_period: 10.0
+        period_variance: 1.2
+        time_threshold: 0.6
+        merge_mode: first
+        min_rising_count: 3
+        base_load_window: 3
+      predictor:
+        threshold: 100.0  # Minimum amplitude [W] to confirm periodic load
+        min_period: 8.0 # Shortest detectable period [s]
+        max_period: 120.0 # Longest detectable period [s]
+        period_variance: 2.0 # Allowed jitter factor for period matching
+        time_threshold: 2.0 # Minimum duty cycle to confirm periodic load
+        min_rising_count: 3 # Minimum rising edges required to confirm periodic load
+        reaction_time: 4.0 # Lead time [s] before expected load peak – battery output reduced early
+
+# Phase C (Steering – no battery inverter)
+        merge_mode: first
+        base_load_window: 2
+  C:
+    role: feedforward  # feedback = regulation (battery phase)  |  feedforward = steering
+    kp: 1.0 # P-gain outside hysteresis band.  1.0 = full compensation
+    kp_hysteresis: 0.4 # Damped gain inside hysteresis band
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+#   Oscillation detectors
+    osc:
+#     Holder – fast short-cycle oscillations (period < ~10 s)
+      holder:  # null = disabled
+#     Predictor – periodic loads with known cycle time (e.g. washing machine)
+        threshold: 15.0
+        min_period: 1.0
+        max_period: 10.0
+        period_variance: 1.2
+        time_threshold: 0.6
+        merge_mode: first
+        min_rising_count: 3
+        base_load_window: 3
+      predictor:
+        threshold: 100.0  # Minimum amplitude [W] to confirm periodic load
+        min_period: 8.0 # Shortest detectable period [s]
+        max_period: 120.0 # Longest detectable period [s]
+        period_variance: 2.0 # Allowed jitter factor for period matching
+        time_threshold: 2.0 # Minimum duty cycle to confirm periodic load
+        min_rising_count: 3 # Minimum rising edges required to confirm periodic load
+        reaction_time: 4.0 # Lead time [s] before expected load peak – battery output reduced early
+        merge_mode: first
+        base_load_window: 2

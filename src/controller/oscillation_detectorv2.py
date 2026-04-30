@@ -41,6 +41,7 @@ class EdgeDetector:
 
     def add_sample(self, value: float, timestamp: float) -> Literal["rising", "falling", None]:
         """Add a new sample to the detector and check for edges.
+
         if a new edge is detected, it is added to the respective edge list.
         Returns 'rising' if a rising edge was detected, 'falling' if a falling edge was detected,
         None if no edge was detected.
@@ -56,10 +57,24 @@ class EdgeDetector:
         if diff > self.threshold:
             self._rising_edges.append(timestamp)
             self._rising_cache = None  # Invalidate cache
+            logger.debug(
+                "EdgeDetector RISING  val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                value,
+                prev_value,
+                diff,
+                self.threshold,
+            )
             return "rising"
         elif diff < -self.threshold:
             self._falling_edges.append(timestamp)
             self._falling_cache = None  # Invalidate cache
+            logger.debug(
+                "EdgeDetector FALLING val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                value,
+                prev_value,
+                diff,
+                self.threshold,
+            )
             return "falling"
 
         # Pop all values on history that are older than timestamp - self.time_threshold
@@ -229,6 +244,7 @@ class OscillationDetector:
 
     def _detect_timeout(self, current_time: float) -> None:
         """Detect if oscillation has timed out based on the last rising edge time and expected period.
+
         Reset if timeout detected.
 
         Args:
@@ -326,6 +342,7 @@ class OscillationDetector:
 
     def get_min_rising_falling_time(self) -> float | None:
         """Get the minimum time between rising and falling edges since oscillation started.
+
         Uses optimized algorithm: O(n log n) instead of O(n²).
 
         Returns:

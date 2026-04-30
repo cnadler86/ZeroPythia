@@ -1,4 +1,5 @@
 """SolarFlow Base Classes - Interface und gemeinsame Implementierung.
+
 ==================================================================
 
 Dieses Modul definiert:
@@ -14,7 +15,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from time import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, computed_field
 
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 # ==================== Energy Counters ====================
 
+
 @dataclass
 class InverterEnergyCounters:
     """Monoton steigende Energiezähler (Dead-Reckoning aus Setpoints).
@@ -50,12 +52,14 @@ class InverterEnergyCounters:
         delta_charge    = counters.charge_wh    - prev_charge_wh
         real_load_delta = grid_delta + delta_discharge - delta_charge
     """
+
     discharge_wh: float  # kumulierte Energie die der Inverter ins Haus geliefert hat [Wh]
-    charge_wh: float     # kumulierte Energie die der Inverter aus dem Netz bezogen hat [Wh]
+    charge_wh: float  # kumulierte Energie die der Inverter aus dem Netz bezogen hat [Wh]
 
 
 # ==================== Processed Pydantic Models ====================
 # Diese Models enthalten verarbeitete/konvertierte Daten mit computed fields.
+
 
 class ProcessedBatteryPack(BaseModel):
     """Verarbeitete Battery Pack Daten mit konvertierten Werten.
@@ -206,10 +210,7 @@ class DeviceState(BaseModel):
         max_soc_percent = props.soc_set // 10
 
         # Battery Packs verarbeiten
-        processed_packs = [
-            ProcessedBatteryPack.from_protocol(pack)
-            for pack in response.pack_data
-        ]
+        processed_packs = [ProcessedBatteryPack.from_protocol(pack) for pack in response.pack_data]
 
         return cls(
             serial_number=response.sn,
@@ -224,7 +225,9 @@ class DeviceState(BaseModel):
             output_pack_power=props.output_pack_power,
             pack_input_power=props.pack_input_power,
             battery_soc=props.electric_level,
-            battery_state=BatteryState(props.pack_state) if props.pack_state in [0, 1, 2] else BatteryState.STANDBY,
+            battery_state=BatteryState(props.pack_state)
+            if props.pack_state in [0, 1, 2]
+            else BatteryState.STANDBY,
             pack_count=props.pack_num or len(processed_packs),
             battery_packs=processed_packs,
             min_soc=min_soc_percent,
@@ -245,6 +248,7 @@ class DeviceState(BaseModel):
 
 
 # ==================== Abstract Interface ====================
+
 
 class ISolarFlowClient(ABC):
     """Abstract Base Class - Minimal Interface für SolarFlow Clients (HAL).
@@ -285,6 +289,7 @@ class ISolarFlowClient(ABC):
 
 # ==================== Base Implementation ====================
 
+
 class SolarFlowBase(ISolarFlowClient):
     """Basis-Klasse mit gemeinsamer Implementierung für alle SolarFlow Clients.
 
@@ -321,13 +326,15 @@ class SolarFlowBase(ISolarFlowClient):
         # Serial Number (wird bei erstem Request gelesen)
         self.model: Optional[BatteryModel] = None
         self._sn: Optional[str] = None
-        self._limits: BatteryLimits = BatteryLimits(charge_limit=0, discharge_limit=0, solar_limit=0)
+        self._limits: BatteryLimits = BatteryLimits(
+            charge_limit=0, discharge_limit=0, solar_limit=0
+        )
 
         # Dead-Reckoning Energiezähler
         # Ein einziges vorzeichenbehaftetes Setpoint: +W = Entladen, -W = Laden.
         # Batterie kann physikalisch nur eine Richtung gleichzeitig — kein paralleles
         # Laden+Entladen möglich.
-        self._setpoint_w: int = 0          # aktueller effektiver Leistungssetpoint [W]
+        self._setpoint_w: int = 0  # aktueller effektiver Leistungssetpoint [W]
         self._setpoint_timestamp: float = time()
         self._accumulated_discharge_wh: float = 0.0
         self._accumulated_charge_wh: float = 0.0
@@ -345,15 +352,22 @@ class SolarFlowBase(ISolarFlowClient):
         if self._sn is None:
             self._sn = data.sn
         if self.model is None and data.product:
-            self.model = data.product  # type: ignore[assignment]
-            limits = MODEL_LIMITS.get(self.model)  # type: ignore[arg-type]
-            if limits:
+            if data.product in MODEL_LIMITS:
+                self.model = cast(BatteryModel, data.product)
+                limits = MODEL_LIMITS[self.model]
                 self._limits = BatteryLimits(
-                    charge_limit=min(limits.charge_limit, data.properties.charge_max_limit or limits.charge_limit),
-                    discharge_limit=min(limits.discharge_limit, data.properties.inverse_max_power or limits.discharge_limit),
+                    charge_limit=min(
+                        limits.charge_limit, data.properties.charge_max_limit or limits.charge_limit
+                    ),
+                    discharge_limit=min(
+                        limits.discharge_limit,
+                        data.properties.inverse_max_power or limits.discharge_limit,
+                    ),
                     solar_limit=limits.solar_limit,
                     min_power=limits.min_power,
                 )
+            else:
+                logger.warning("Unbekanntes SolarFlow-Modell aus API: %s", data.product)
 
     def _invalidate_cache(self) -> None:
         """Invalidiert Cache."""
@@ -621,23 +635,90 @@ class SolarFlowBase(ISolarFlowClient):
         validated = self.validate_max_soc(soc_percent)
         return await self._set_properties({"socSet": validated}, smart_mode)
 
+    # ==================== Bypass / Convenience ====================
+
+    async def get_bypass_state(self, *, use_cache: bool = True) -> Optional[bool]:
+        """Bypass-Status abrufen.
+
+        Wenn Bypass aktiv ist, leitet der SF800Pro PV-Energie direkt ans Haus weiter
+        und ignoriert outputLimit-Befehle.  output_home_power zeigt dann den
+        Solar-Bypass-Wert, nicht die Batterie-Ausgabe.
+
+        Returns:
+            True = Bypass aktiv, False = kein Bypass, None = Fehler
+        """
+        response = await self._get_full_response(use_cache)
+        if response is None:
+            return None
+        return bool(response.properties.bypass)
+
+    async def disable_bypass(self, *, smart_mode: bool = True) -> bool:
+        """Bypass deaktivieren (passMode=1 = always off).
+
+        Nützlich wenn der Inverter im Bypass-Modus ist und dadurch
+        Entladebefehle ignoriert werden.
+
+        Args:
+            smart_mode: True = nur RAM, False = Flash schreiben
+
+        Returns:
+            True bei Erfolg
+        """
+        logger.info("disable_bypass: Setze passMode=1 (always off)...")
+        success = await self._set_properties({"passMode": 1}, smart_mode)
+        if success:
+            self._invalidate_cache()
+            logger.info("disable_bypass: Befehl gesendet")
+        else:
+            logger.warning("disable_bypass: Befehl nicht bestätigt (HTTP-Fehler?)")
+        return success
+
+    async def get_battery_discharge_power(self, *, use_cache: bool = True) -> Optional[int]:
+        """Tatsächliche Batterie-Entladeleistung abrufen (W).
+
+        Gibt packInputPower zurück – die Leistung die die Batterie-Packs
+        tatsächlich liefern, unabhängig vom Bypass-Status.
+        In Bypass-Modus ist dieser Wert 0 während output_home_power
+        die Solar-Bypass-Leistung anzeigt.
+        """
+        response = await self._get_full_response(use_cache)
+        return response.properties.pack_input_power if response else None
+
     # ==================== Convenience Methods ====================
 
     async def is_settled(self, *, use_cache: bool = True) -> Optional[bool]:
         """Prüft ob Inverter im aktuellen Setpoint "settled" ist (Leistung nahe Setpoint).
 
+        In Bypass-Modus gibt output_home_power die Solar-Bypass-Leistung wider,
+        nicht den Battery-Output – daher wird None zurückgegeben wenn Bypass aktiv.
+
         Args:
             use_cache: True = Cache verwenden
 
         Returns:
-            True wenn settled, False wenn nicht, None bei Fehler
+            True wenn settled, False wenn nicht, None bei Fehler oder Bypass aktiv
         """
         state = await self.get_state(use_cache=use_cache)
         if not state:
             return None
 
+        if state.bypass_mode:
+            logger.debug(
+                "is_settled: Bypass aktiv (solar=%dW) – Setpoint-Vergleich nicht aussagekräftig",
+                state.solar_input_power,
+            )
+            return None
+
         current_output = state.output_home_power
-        return abs(abs(current_output) - abs(self._setpoint_w)) < 2
+        settled = abs(abs(current_output) - abs(self._setpoint_w)) < 2
+        logger.debug(
+            "is_settled: output=%dW setpoint=%dW diff=%dW → %s",
+            current_output,
+            self._setpoint_w,
+            abs(current_output - self._setpoint_w),
+            settled,
+        )
+        return settled
 
     async def start_discharge(self, power_w: int, *, smart_mode: bool = True) -> bool:
         """Entladung starten.
@@ -647,18 +728,37 @@ class SolarFlowBase(ISolarFlowClient):
             smart_mode: True = nur RAM, False = Flash schreiben
         """
         if self._limits.discharge_limit == 0:
+            logger.debug("start_discharge: Limits noch unbekannt – lese Device-State...")
             await self.get_state(use_cache=False)  # Force cache update to get limits
-        clamped = min(power_w, self._limits.discharge_limit)
+        clamped = (
+            min(power_w, self._limits.discharge_limit)
+            if self._limits.discharge_limit > 0
+            else power_w
+        )
+        if clamped != power_w:
+            logger.info(
+                "start_discharge: %dW → geclippt auf %dW (Discharge-Limit: %dW)",
+                power_w,
+                clamped,
+                self._limits.discharge_limit,
+            )
+        else:
+            logger.info("start_discharge: %dW (acMode=OUTPUT, inputLimit=0)", clamped)
         self._flush_energy_to_now()
         self._setpoint_w = clamped  # positiv = Entladen
-        return await self._set_properties(
+        success = await self._set_properties(
             {
                 "acMode": ACMode.OUTPUT.value,
                 "outputLimit": clamped,
                 "inputLimit": 0,
             },
-            smart_mode
+            smart_mode,
         )
+        if not success:
+            logger.warning(
+                "start_discharge: Setpoint-Befehl nicht bestätigt (HTTP-Fehler?)",
+            )
+        return success
 
     async def start_charge(self, power_w: int, *, smart_mode: bool = True) -> bool:
         """AC-Ladung starten.
@@ -667,17 +767,31 @@ class SolarFlowBase(ISolarFlowClient):
             power_w: Ladeleistung in Watt
             smart_mode: True = nur RAM, False = Flash schreiben
         """
-        clamped = min(power_w, self._limits.charge_limit)
+        clamped = (
+            min(power_w, self._limits.charge_limit) if self._limits.charge_limit > 0 else power_w
+        )
+        if clamped != power_w:
+            logger.info(
+                "start_charge: %dW → geclippt auf %dW (Charge-Limit: %dW)",
+                power_w,
+                clamped,
+                self._limits.charge_limit,
+            )
+        else:
+            logger.info("start_charge: %dW (acMode=INPUT, outputLimit=0)", clamped)
         self._flush_energy_to_now()
         self._setpoint_w = -clamped  # negativ = Laden
-        return await self._set_properties(
+        success = await self._set_properties(
             {
                 "acMode": ACMode.INPUT.value,
                 "inputLimit": clamped,
                 "outputLimit": 0,
             },
-            smart_mode
+            smart_mode,
         )
+        if not success:
+            logger.warning("start_charge: Setpoint-Befehl nicht bestätigt")
+        return success
 
     async def stop(self, *, smart_mode: bool = True) -> bool:
         """Alle Aktivitäten stoppen.
@@ -685,18 +799,24 @@ class SolarFlowBase(ISolarFlowClient):
         Args:
             smart_mode: True = nur RAM, False = Flash schreiben
         """
+        logger.info("stop: acMode=OUTPUT outputLimit=0 inputLimit=0")
         self._flush_energy_to_now()
         self._setpoint_w = 0
-        return await self._set_properties(
+        success = await self._set_properties(
             {
                 "acMode": ACMode.OUTPUT.value,
                 "outputLimit": 0,
                 "inputLimit": 0,
             },
-            smart_mode
+            smart_mode,
         )
+        if not success:
+            logger.warning("stop: Befehl nicht bestätigt")
+        return success
 
-    async def get_usable_energy_wh(self, battery_capacity_wh: int, *, use_cache: bool = True) -> Optional[float]:
+    async def get_usable_energy_wh(
+        self, battery_capacity_wh: int, *, use_cache: bool = True
+    ) -> Optional[float]:
         """Berechnet nutzbare Energie in der Batterie.
 
         Die nutzbare Energie berücksichtigt den min_soc, der nicht

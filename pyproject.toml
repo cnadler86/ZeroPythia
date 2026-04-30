@@ -3,18 +3,23 @@ name = "zero-feed-controller"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.13.4",
+    "fastapi[standard]>=0.100.0",
+    "paho-mqtt>=2.1.0",
     "pydantic>=2.12.5",
+    "ruamel.yaml>=0.18",
+    "uvicorn>=0.20.0",
+    "websockets>=11.0",
 ]
 
 [dependency-groups]
 dev = [
-    "matplotlib>=3.10.8",
-    "ruff>=0.15.8",
-    "tqdm>=4.67.3",
-    "ty>=0.0.26",
+    "matplotlib",
+    "ruff",
+    "tqdm",
+    "ty",
 ]
 
 [build-system]

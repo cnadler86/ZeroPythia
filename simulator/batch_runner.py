@@ -1,370 +1,344 @@
-"""Batch Runner – Simulation über alle CSV-Dateien.
-=================================================
+"""Batch Runner – V4 Simulation über CSV-Dateien.
 
-Führt den ZeroFeed V3 Controller mit Grid Simulator durch und
-sammelt Statistiken für Parameter-Optimierung.
+Treibt ``_V4Core`` direkt mit simulierten CSV-Zeitstempeln.
+Das PT1-Batteriemodell verwendet die CSV-Timestamps, nicht die echte Systemuhr –
+die Simulation läuft daher in beliebiger Geschwindigkeit.
+
+Kein asyncio nötig: ``_V4Core.calculate()`` ist synchron.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List
 
-from tqdm import tqdm
+from src.config.zerofeed_v4 import ZeroFeedV4Config
+from src.controller.phase_controller import PhaseSample
+from src.dashboard.regulators.v4_adapter import _V4Core
 
-from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
-from src.controller.zerofeed_v3 import PhaseSample, ZeroFeedV3Controller, ZeroFeedV3Settings
-
-from .grid_simulator import GridSimulator, PhaseRecord, clean_csv_data, load_csv
+from .grid_simulator import PhaseRecord, clean_csv_data, load_csv
 
 logger = logging.getLogger(__name__)
 
 
+# ── PT1 Hilfe ─────────────────────────────────────────────────────────────────
+
+
+def _pt1(
+    sp_sent_at: float,
+    sp_target_w: float,
+    sp_prev_w: float,
+    dead_time: float,
+    tau: float,
+    t: float,
+) -> float:
+    """PT1-Schätzung der Batterie-AC-Leistung zum simulierten Zeitpunkt t."""
+    if sp_sent_at == 0.0:
+        return 0.0
+    elapsed = t - (sp_sent_at + dead_time)
+    if elapsed <= 0.0:
+        return sp_prev_w
+    factor = 1.0 - math.exp(-elapsed / tau) if tau > 0 else 1.0
+    return sp_prev_w + (sp_target_w - sp_prev_w) * factor
+
+
+# ── Ergebnismodelle ───────────────────────────────────────────────────────────
+
+
 @dataclass
 class SimulationResult:
-    """Ergebnis einer einzelnen Simulation."""
+    """Zeitreihen-Daten einer V4 Simulation."""
 
     csv_file: str
     duration_s: float
     num_samples: int
+    control_phase: str = "B"
 
-    # Zeitreihen
+    # Zeitstempel
     timestamps: List[float] = field(default_factory=list)
-    grid_total: List[float] = field(default_factory=list)
+
+    # Netz-Messwerte (control_phase hat Batterie-Output bereits abgezogen)
     phase_a: List[float] = field(default_factory=list)
     phase_b: List[float] = field(default_factory=list)
     phase_c: List[float] = field(default_factory=list)
-    battery_output: List[float] = field(default_factory=list)
+    grid_total: List[float] = field(default_factory=list)
+
+    # Batterie
+    battery_output: List[float] = field(default_factory=list)  # PT1-Schätzung
     setpoints: List[float] = field(default_factory=list)
-    osc_limits: List[float] = field(default_factory=list)
+
+    # Controller-Ausgaben (gehalten zwischen Control-Zyklen)
+    # ff_per_phase[X] = FF-Anfrage für Phase X (0 wenn X = control_phase)
+    ff_a: List[float] = field(default_factory=list)
+    ff_b: List[float] = field(default_factory=list)
+    ff_c: List[float] = field(default_factory=list)
+    fb_correction: List[float] = field(default_factory=list)
+    ff_sum: List[float] = field(default_factory=list)
+
+    # Oszillationszustand pro Phase
+    osc_active_a: List[bool] = field(default_factory=list)
+    osc_active_b: List[bool] = field(default_factory=list)
+    osc_active_c: List[bool] = field(default_factory=list)
+
+    def correction(self, phase: str) -> List[float]:
+        """Gibt die Regler-Ausgabe für eine Phase zurück.
+
+        FF-Phase  → FF-Anfrage (positiv = Batterie fordert mehr)
+        FB-Phase  → FB-Korrektur
+        """
+        if phase == "A":
+            return self.ff_a if phase != self.control_phase else self.fb_correction
+        if phase == "B":
+            return self.ff_b if phase != self.control_phase else self.fb_correction
+        return self.ff_c if phase != self.control_phase else self.fb_correction
+
+    def phase_values(self, phase: str) -> List[float]:
+        if phase == "A":
+            return self.phase_a
+        if phase == "B":
+            return self.phase_b
+        return self.phase_c
+
+    def osc_active(self, phase: str) -> List[bool]:
+        if phase == "A":
+            return self.osc_active_a
+        if phase == "B":
+            return self.osc_active_b
+        return self.osc_active_c
 
 
 @dataclass
 class Statistics:
-    """Statistiken einer Simulation."""
+    """Zusammenfassung einer Simulation."""
 
     csv_file: str
     duration_h: float
     num_samples: int
-
-    # Energie
-    total_grid_import_wh: float = 0.0  # Netzbezug
-    total_grid_export_wh: float = 0.0  # Einspeisung
-    total_battery_wh: float = 0.0  # Batterie-Entladung
-    efficiency_pct: float = 0.0  # Batterie-zu-Bezugsreduktion
-
-    # Regelgüte
-    mean_grid_w: float = 0.0
-    std_grid_w: float = 0.0
-    max_grid_w: float = 0.0
-    min_grid_w: float = 0.0
-    time_in_band_pct: float = 0.0  # % der Zeit im Zielband
-
-    # Oszillation
-    oscillation_time_pct: float = 0.0
+    mean_grid_w: float
+    std_grid_w: float
+    min_grid_w: float
+    max_grid_w: float
+    time_in_band_pct: float
+    total_grid_import_wh: float
+    total_grid_export_wh: float
+    total_battery_wh: float
+    efficiency_pct: float
+    oscillation_time_pct: float
 
 
-def compute_statistics(
-    result: SimulationResult, target_w: float = 5.0, band_w: float = 20.0
-) -> Statistics:
-    """Berechnet Statistiken aus Simulationsergebnis."""
-    if not result.timestamps or len(result.timestamps) < 2:
-        return Statistics(csv_file=result.csv_file, duration_h=0, num_samples=0)
+# ── Statistik ─────────────────────────────────────────────────────────────────
 
-    duration_h = result.duration_s / 3600.0
-    n = len(result.grid_total)
 
-    # Zeitschritte für Energieberechnung
-    dt_h_list = []
-    for i in range(1, len(result.timestamps)):
-        dt_h_list.append((result.timestamps[i] - result.timestamps[i - 1]) / 3600.0)
+def compute_statistics(result: SimulationResult, target_power_w: float = 3.0) -> Statistics:
+    """Berechnet Zusammenfassungs-Statistik aus einem SimulationResult."""
+    if not result.timestamps:
+        return Statistics(
+            csv_file=result.csv_file,
+            duration_h=0.0,
+            num_samples=0,
+            mean_grid_w=0.0,
+            std_grid_w=0.0,
+            min_grid_w=0.0,
+            max_grid_w=0.0,
+            time_in_band_pct=0.0,
+            total_grid_import_wh=0.0,
+            total_grid_export_wh=0.0,
+            total_battery_wh=0.0,
+            efficiency_pct=0.0,
+            oscillation_time_pct=0.0,
+        )
 
-    # Energie
-    grid_import = 0.0
-    grid_export = 0.0
-    battery_total = 0.0
+    grid = result.grid_total
+    n = len(grid)
+    mean_w = sum(grid) / n
+    std_w = math.sqrt(sum((g - mean_w) ** 2 for g in grid) / n)
 
-    for i, dt_h in enumerate(dt_h_list):
-        idx = i + 1
-        if idx < len(result.grid_total):
-            p = result.grid_total[idx]
-            if p > 0:
-                grid_import += p * dt_h
-            else:
-                grid_export += abs(p) * dt_h
+    band_w = 20.0
+    in_band = sum(1 for g in grid if abs(g - target_power_w) <= band_w)
+    time_in_band_pct = 100.0 * in_band / n
 
-        if idx < len(result.battery_output):
-            battery_total += result.battery_output[idx] * dt_h
+    cum_import = cum_export = cum_battery = 0.0
+    for i in range(1, n):
+        dt_h = (result.timestamps[i] - result.timestamps[i - 1]) / 3600.0
+        p = grid[i]
+        if p > 0:
+            cum_import += p * dt_h
+        else:
+            cum_export += abs(p) * dt_h
+        cum_battery += result.battery_output[i] * dt_h
 
-    # Effizienz: wie viel Batterie-Energie den Bezug reduziert hat
-    efficiency = (battery_total / max(battery_total + grid_import, 1)) * 100
+    efficiency_pct = (
+        100.0 * cum_battery / (cum_import + cum_battery) if (cum_import + cum_battery) > 0 else 0.0
+    )
 
-    # Statistiken
-    import statistics as stat_mod
-
-    grid_vals = result.grid_total
-    mean_grid = stat_mod.mean(grid_vals) if grid_vals else 0
-    std_grid = stat_mod.stdev(grid_vals) if len(grid_vals) > 1 else 0
-    max_grid = max(grid_vals) if grid_vals else 0
-    min_grid = min(grid_vals) if grid_vals else 0
-
-    # Zeit im Zielband
-    in_band = sum(1 for v in grid_vals if abs(v - target_w) <= band_w)
-    time_in_band = (in_band / max(n, 1)) * 100
-
-    # Oszillationszeit
-    osc_count = sum(1 for v in result.osc_limits if v < 800)
-    osc_pct = (osc_count / max(n, 1)) * 100
+    # Jede Phase getrennt zählen → durchschnittliche Oszillationszeit
+    osc_count = sum(
+        (1 if a else 0) + (1 if b else 0) + (1 if c else 0)
+        for a, b, c in zip(
+            result.osc_active_a, result.osc_active_b, result.osc_active_c, strict=True
+        )
+    )
+    oscillation_time_pct = 100.0 * osc_count / max(1, 3 * n)
 
     return Statistics(
         csv_file=result.csv_file,
-        duration_h=duration_h,
+        duration_h=(result.timestamps[-1] - result.timestamps[0]) / 3600.0,
         num_samples=n,
-        total_grid_import_wh=grid_import,
-        total_grid_export_wh=grid_export,
-        total_battery_wh=battery_total,
-        efficiency_pct=efficiency,
-        mean_grid_w=mean_grid,
-        std_grid_w=std_grid,
-        max_grid_w=max_grid,
-        min_grid_w=min_grid,
-        time_in_band_pct=time_in_band,
-        oscillation_time_pct=osc_pct,
+        mean_grid_w=mean_w,
+        std_grid_w=std_w,
+        min_grid_w=min(grid),
+        max_grid_w=max(grid),
+        time_in_band_pct=time_in_band_pct,
+        total_grid_import_wh=cum_import,
+        total_grid_export_wh=cum_export,
+        total_battery_wh=cum_battery,
+        efficiency_pct=efficiency_pct,
+        oscillation_time_pct=oscillation_time_pct,
     )
 
 
-async def run_simulation(
+# ── Simulation ────────────────────────────────────────────────────────────────
+
+
+def run_simulation(
     records: List[PhaseRecord],
-    settings: ZeroFeedV3Settings,
+    config: ZeroFeedV4Config,
     csv_name: str = "",
-    initial_soc: int = 100,
-    battery_capacity_wh: int = 100_000,  # Sehr groß für unbegrenzte Energie
-    show_progress: bool = True,
+    show_progress: bool = False,
 ) -> SimulationResult:
-    """Führt eine Simulation mit dem ZeroFeed V3 Controller durch.
+    """Führt eine V4 Simulation über CSV-Records durch.
 
-    Args:
-        records: Bereinigte CSV-Daten
-        settings: Controller-Einstellungen
-        csv_name: Name der CSV-Datei (für Logs)
-        initial_soc: Start-SOC (100 = voll)
-        battery_capacity_wh: Batteriekapazität (sehr groß = unbegrenzt)
-        show_progress: tqdm Fortschrittsanzeige
-
-    Returns:
-        SimulationResult mit Zeitreihen
+    Verwendet simulierte Zeitstempel (CSV-Timestamps) für das PT1-Modell –
+    keine echte Systemuhr, läuft in beliebiger Geschwindigkeit.
     """
     if not records:
-        return SimulationResult(csv_file=csv_name, duration_s=0, num_samples=0)
-
-    # Mock-Batterie erstellen
-    battery = SolarFlowAsyncMockClient(
-        initial_soc=initial_soc,
-        battery_capacity_wh=battery_capacity_wh,
-    )
-
-    # Grid Simulator erstellen
-    grid_sim = GridSimulator(records=records, battery_mock=battery)
-
-    # Controller erstellen
-    controller = ZeroFeedV3Controller(
-        settings=settings,
-        grid_meter=grid_sim,
-        battery=battery,
-    )
-
-    # Ergebnis-Listen
-    result = SimulationResult(
-        csv_file=csv_name,
-        duration_s=grid_sim.duration_s,
-        num_samples=len(records),
-    )
-
-    # Simulation: Batterie starten
-    sim_time = grid_sim.start_time
-    battery.set_simulation_time(sim_time)
-    grid_sim.set_simulation_time(sim_time)
-
-    min_output = settings.manager.min_output_w
-    await battery.start_discharge(min_output)
-
-    # Warte bis Batterie bereit (simuliert)
-    for _ in range(20):
-        sim_time += 0.5
-        battery.set_simulation_time(sim_time)
-        power = await battery.get_ac_output_power()
-        if power is not None and power >= min_output:
-            break
-
-    controller._current_output_limit = min_output
-
-    # Hauptschleife: Sample für Sample durchgehen
-    control_interval = settings.control_interval_s
-    last_control_time = sim_time
-
-    iterator = tqdm(records, desc=csv_name, disable=not show_progress, leave=False)
-
-    for rec in iterator:
-        sim_time = rec.timestamp
-        battery.set_simulation_time(sim_time)
-        grid_sim.set_simulation_time(sim_time)
-
-        # Phasen lesen (mit Batterie-Kopplung auf Phase B)
-        phases = await grid_sim.get_phase_powers()
-        if phases is None:
-            continue
-
-        phase_a, phase_b, phase_c = phases
-        output_power = await battery.get_ac_output_power() or 0
-
-        sample = PhaseSample(
-            timestamp=sim_time,
-            phase_a=phase_a,
-            phase_b=phase_b,
-            phase_c=phase_c,
-            battery_output=float(output_power),
+        return SimulationResult(
+            csv_file=csv_name, duration_s=0.0, num_samples=0, control_phase=config.control_phase
         )
 
-        # Oszillationserkennung (mit Sampling-Rate)
-        await controller.add_sample(sample)
+    core = _V4Core(config)
+    ctrl_ph = config.control_phase
+    dead_time = config.battery_dead_time_s
+    tau = config.battery_pt1_tau_s
 
-        # Regelung (mit Control-Rate)
-        if sim_time - last_control_time >= control_interval:
-            await controller.perform_control()
-            last_control_time = sim_time
+    # PT1-Zustand
+    sp_sent_at: float = 0.0
+    sp_target_w: float = 0.0
+    sp_prev_w: float = 0.0
+    current_setpoint: int = 0
+    last_control_ts: float = 0.0
 
-        # Daten aufzeichnen
-        result.timestamps.append(sim_time)
-        result.grid_total.append(phase_a + phase_b + phase_c)
-        result.phase_a.append(phase_a)
-        result.phase_b.append(phase_b)
-        result.phase_c.append(phase_c)
-        result.battery_output.append(float(output_power))
-        result.setpoints.append(float(controller.current_output_limit))
+    # Sample-Buffer (wird nach jedem Control-Zyklus geleert)
+    phase_buf: Dict[str, List[PhaseSample]] = {"A": [], "B": [], "C": []}
+    batt_buf: List[float] = []
 
-        # Oszillations-Limit
-        osc_lim = float(settings.manager.max_output_w)
-        for det in controller._phase_detectors.values():
-            if det.is_oscillating:
-                osc_lim = min(osc_lim, det.get_limit())
-        if controller._total_detectors.is_oscillating:
-            osc_lim = min(osc_lim, controller._total_detectors.get_limit())
-        result.osc_limits.append(osc_lim)
+    # Zuletzt berechnete Werte (gehalten zwischen Control-Zyklen)
+    last_ff: Dict[str, float] = {"A": 0.0, "B": 0.0, "C": 0.0}
+    last_fb: float = 0.0
+    last_ff_sum: float = 0.0
+    last_osc: Dict[str, bool] = {"A": False, "B": False, "C": False}
+
+    result = SimulationResult(
+        csv_file=csv_name,
+        duration_s=records[-1].timestamp - records[0].timestamp,
+        num_samples=len(records),
+        control_phase=ctrl_ph,
+    )
+
+    for i, rec in enumerate(records):
+        if show_progress and i % 500 == 0:
+            logger.info("Simulation %s: %d/%d", csv_name, i, len(records))
+
+        t = rec.timestamp
+        batt_est = _pt1(sp_sent_at, sp_target_w, sp_prev_w, dead_time, tau, t)
+
+        # Batterie-Output von der control_phase abziehen (entspricht realer Hardware)
+        pa = rec.phase_a - (batt_est if ctrl_ph == "A" else 0.0)
+        pb = rec.phase_b - (batt_est if ctrl_ph == "B" else 0.0)
+        pc = rec.phase_c - (batt_est if ctrl_ph == "C" else 0.0)
+
+        phase_buf["A"].append(PhaseSample(timestamp=t, value=pa))
+        phase_buf["B"].append(PhaseSample(timestamp=t, value=pb))
+        phase_buf["C"].append(PhaseSample(timestamp=t, value=pc))
+        batt_buf.append(batt_est)
+
+        # Control-Zyklus
+        if last_control_ts == 0.0 or (t - last_control_ts) >= config.control_interval_s:
+            ff_outputs, fb_correction, ff_sum = core.calculate(
+                phase_samples=phase_buf,
+                batt_hist=batt_buf,
+                current_battery_output_w=batt_est,
+                battery_settled=True,
+            )
+            raw_target = ff_sum + fb_correction
+
+            # Watchdog
+            last_values = {ph: phase_buf[ph][-1].value for ph in ("A", "B", "C")}
+            reset_phases = core.check_watchdog(last_values, ff_sum)
+            if reset_phases:
+                raw_target = float(config.min_output_w)
+                logger.debug("Watchdog reset: %s", reset_phases)
+
+            new_sp = int(
+                round(max(float(config.min_output_w), min(float(config.max_output_w), raw_target)))
+            )
+            if new_sp != current_setpoint:
+                sp_prev_w = batt_est
+                sp_sent_at = t
+                sp_target_w = float(new_sp)
+                current_setpoint = new_sp
+
+            last_ff = ff_outputs
+            last_fb = fb_correction
+            last_ff_sum = ff_sum
+            last_osc = {ph: core.osc_state(ph).oscillating for ph in ("A", "B", "C")}
+
+            last_control_ts = t
+            phase_buf = {"A": [], "B": [], "C": []}
+            batt_buf = []
+
+        # Aufzeichnen
+        result.timestamps.append(t)
+        result.phase_a.append(pa)
+        result.phase_b.append(pb)
+        result.phase_c.append(pc)
+        result.grid_total.append(pa + pb + pc)
+        result.battery_output.append(batt_est)
+        result.setpoints.append(float(current_setpoint))
+        result.ff_a.append(last_ff.get("A", 0.0))
+        result.ff_b.append(last_ff.get("B", 0.0))
+        result.ff_c.append(last_ff.get("C", 0.0))
+        result.fb_correction.append(last_fb)
+        result.ff_sum.append(last_ff_sum)
+        result.osc_active_a.append(last_osc.get("A", False))
+        result.osc_active_b.append(last_osc.get("B", False))
+        result.osc_active_c.append(last_osc.get("C", False))
 
     return result
 
 
-class BatchRunner:
-    """Führt Simulationen über alle CSV-Dateien in einem Verzeichnis durch."""
-
-    def __init__(
-        self,
-        csv_dir: Path,
-        settings: ZeroFeedV3Settings,
-        three_phase_only: bool = True,
-        initial_soc: int = 100,
-        battery_capacity_wh: int = 100_000,
-    ):
-        self.csv_dir = csv_dir
-        self.settings = settings
-        self.three_phase_only = three_phase_only
-        self.initial_soc = initial_soc
-        self.battery_capacity_wh = battery_capacity_wh
-
-    def find_csv_files(self) -> List[Path]:
-        """Findet alle CSV-Dateien im Verzeichnis."""
-        files = sorted(self.csv_dir.glob("shelly3em_power_*.csv"))
-
-        if self.three_phase_only:
-            # Nur 3-Phasen-Dateien (ab 2026-02-22)
-            filtered = []
-            for f in files:
-                with open(f, "r", encoding="utf-8") as fh:
-                    header = fh.readline()
-                    if "Phase A" in header:
-                        filtered.append(f)
-            files = filtered
-
-        return files
-
-    async def run_all(
-        self, show_progress: bool = True
-    ) -> List[Tuple[SimulationResult, Statistics]]:
-        """Führt alle Simulationen durch."""
-        files = self.find_csv_files()
-        logger.info("Gefunden: %d CSV-Dateien", len(files))
-
-        results: List[Tuple[SimulationResult, Statistics]] = []
-
-        for csv_file in tqdm(files, desc="CSV-Dateien", disable=not show_progress):
-            records = load_csv(csv_file)
-            records = clean_csv_data(records)
-
-            if not records:
-                logger.warning("Keine Daten in %s", csv_file.name)
-                continue
-
-            result = await run_simulation(
-                records=records,
-                settings=self.settings,
-                csv_name=csv_file.name,
-                initial_soc=self.initial_soc,
-                battery_capacity_wh=self.battery_capacity_wh,
-                show_progress=show_progress,
+def run_batch(
+    csv_files: List[Path],
+    config: ZeroFeedV4Config,
+    show_progress: bool = False,
+) -> List["tuple[SimulationResult, Statistics]"]:
+    """Simuliert mehrere CSV-Dateien mit derselben Konfiguration."""
+    results = []
+    for path in csv_files:
+        records = load_csv(path)
+        records = clean_csv_data(records)
+        if not records:
+            continue
+        result = run_simulation(records, config, csv_name=path.name, show_progress=show_progress)
+        stats = compute_statistics(result, target_power_w=config.target_power_w)
+        results.append((result, stats))
+        if show_progress:
+            logger.info(
+                "%s: mean=%.1fW  band=%.0f%%  eff=%.0f%%",
+                path.name,
+                stats.mean_grid_w,
+                stats.time_in_band_pct,
+                stats.efficiency_pct,
             )
-
-            stats = compute_statistics(result)
-            results.append((result, stats))
-
-            if show_progress:
-                tqdm.write(
-                    f"  {csv_file.name}: "
-                    f"mean={stats.mean_grid_w:+.1f}W  "
-                    f"std={stats.std_grid_w:.1f}W  "
-                    f"band={stats.time_in_band_pct:.0f}%  "
-                    f"eff={stats.efficiency_pct:.0f}%  "
-                    f"osc={stats.oscillation_time_pct:.0f}%"
-                )
-
-        return results
-
-    @staticmethod
-    def print_summary(results: List[Tuple[SimulationResult, Statistics]]) -> None:
-        """Druckt Zusammenfassung aller Simulationen."""
-        if not results:
-            print("Keine Ergebnisse.")
-            return
-
-        print("\n" + "=" * 90)
-        print(f"{'Datei':<35} {'Mean':>8} {'Std':>8} {'Band%':>6} {'Eff%':>6} {'Osc%':>6} {'Import':>10} {'Export':>10}")
-        print("-" * 90)
-
-        total_import = 0.0
-        total_export = 0.0
-        total_battery = 0.0
-
-        for _result, stats in results:
-            print(
-                f"{stats.csv_file:<35} "
-                f"{stats.mean_grid_w:>+7.1f} "
-                f"{stats.std_grid_w:>7.1f} "
-                f"{stats.time_in_band_pct:>5.0f}% "
-                f"{stats.efficiency_pct:>5.0f}% "
-                f"{stats.oscillation_time_pct:>5.0f}% "
-                f"{stats.total_grid_import_wh:>9.0f} "
-                f"{stats.total_grid_export_wh:>9.0f}"
-            )
-            total_import += stats.total_grid_import_wh
-            total_export += stats.total_grid_export_wh
-            total_battery += stats.total_battery_wh
-
-        print("-" * 90)
-        total_eff = (
-            (total_battery / max(total_battery + total_import, 1)) * 100
-        )
-        print(
-            f"{'GESAMT':<35} {'':>8} {'':>8} {'':>6} {total_eff:>5.0f}% {'':>6} "
-            f"{total_import:>9.0f} {total_export:>9.0f}"
-        )
-        print(f"  Batterie-Entladung: {total_battery:.0f} Wh")
-        print("=" * 90)
+    return results

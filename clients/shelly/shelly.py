@@ -1,5 +1,4 @@
-"""Async Shelly Client - Shelly 3EM Stromzähler.
-============================================
+"""Async Shelly Client für Shelly 3EM Stromzähler.
 
 Vollständig asynchroner Client für Shelly 3EM (Pro).
 
@@ -55,6 +54,7 @@ class GridConsumption:
 # Statische Parser (Layer 2 – reine Daten-Transformation, kein I/O)
 # ---------------------------------------------------------------------------
 
+
 def _parse_gen1_state(data: dict) -> GridState:
     return GridState(
         total_power_w=data["total_power"],
@@ -63,12 +63,14 @@ def _parse_gen1_state(data: dict) -> GridState:
         phase_c_power_w=data["emeters"][2]["power"],
     )
 
+
 def _parse_gen1_consumption(data: dict) -> GridConsumption:
     return GridConsumption(
         phase_a_power_wh=data["emeters"][0]["total"],
         phase_b_power_wh=data["emeters"][1]["total"],
         phase_c_power_wh=data["emeters"][2]["total"],
     )
+
 
 def _parse_gen2_state(data: dict) -> GridState:
     return GridState(
@@ -78,9 +80,11 @@ def _parse_gen2_state(data: dict) -> GridState:
         phase_c_power_w=data["c_act_power"],
     )
 
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
+
 
 class ShellyClient:
     """Asynchroner Client für Shelly 3EM (Pro) Stromzähler.
@@ -142,17 +146,15 @@ class ShellyClient:
 
         # Versuche Gen2 API (Shelly Pro 3EM)
         try:
-            async with session.get(
-                f"{self._base_url}/rpc/Shelly.GetDeviceInfo"
-            ) as response:
+            async with session.get(f"{self._base_url}/rpc/Shelly.GetDeviceInfo") as response:
                 if response.status == 200:
                     data = await response.json()
                     if "gen" in data:
                         self._gen = data.get("gen", 1)
                         logger.info("Shelly Gen%d erkannt", self._gen)
-                        return self._gen # type: ignore[return-value]
+                        return self._gen  # type: ignore[return-value]
         except Exception:
-            pass
+            logger.debug("Shelly Gen2 Detection fehlgeschlagen", exc_info=True)
 
         # Fallback: Gen1 (Shelly 3EM)
         try:
@@ -162,7 +164,7 @@ class ShellyClient:
                     logger.info("Shelly Gen1 erkannt")
                     return self._gen
         except Exception:
-            pass
+            logger.debug("Shelly Gen1 Detection fehlgeschlagen", exc_info=True)
 
         # Default
         self._gen = 1
@@ -183,9 +185,7 @@ class ShellyClient:
         """GET /rpc/EM.GetStatus?id=0  →  rohe JSON-Antwort (Gen2)."""
         try:
             session = await self._ensure_session()
-            async with session.get(
-                f"{self._base_url}/rpc/EM.GetStatus?id=0"
-            ) as response:
+            async with session.get(f"{self._base_url}/rpc/EM.GetStatus?id=0") as response:
                 response.raise_for_status()
                 return await response.json()
         except Exception as e:
@@ -224,7 +224,9 @@ class ShellyClient:
 
         # Fehler beim Abruf – Stale-Daten verwenden, falls noch gültig
         if self._raw_cache is not None and (now - self._cache_timestamp) < self._stale_timeout:
-            logger.warning("Shelly: verwende veraltete Daten (%.1fs alt)", now - self._cache_timestamp)
+            logger.warning(
+                "Shelly: verwende veraltete Daten (%.1fs alt)", now - self._cache_timestamp
+            )
             return gen, self._raw_cache
 
         return None

@@ -1,0 +1,727 @@
+"""ControlRuntime – central sampling and control loop.
+
+Single source of truth for hardware data and operating state.
+
+Architecture
+------------
+One asyncio task runs the main loop (~1 s):
+  1. Read Shelly 3EM → phase powers
+  2. Read Zendure → output, SoC
+  3. Build GridSample (shared data, single poll per tick)
+  4. Forward sample to the active regulator
+  5. Every ``control_interval_s``: call regulator.compute_setpoint()
+  6. Broadcast DashboardState to all registered callbacks (WebSocket clients)
+
+Device modes
+------------
+AC_CHARGE            → stop regulator, call battery.start_charge(power_w)
+IDLE                 → stop regulator, call battery.stop()
+DISCHARGE_ZERO_FEED  → run active regulator loop
+
+Regulator registry
+------------------
+Any number of ``RegulatorBase`` implementations can be registered.
+Only one is active at a time.  Switching resets the incoming regulator's
+internal state.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any, Awaitable, Callable, Optional, Protocol
+
+from .models import (
+    AutoStatus,
+    DashboardState,
+    DeviceMode,
+    GridSample,
+    RegulatorInfo,
+)
+from .regulator import BatteryInverterProtocol, RegulatorBase
+
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+# ── Protocols (mirrors clients) ───────────────────────────────────────────────
+
+
+class GridMeterProtocol(Protocol):
+    """Structural protocol for Shelly 3EM (or simulator)."""
+
+    async def get_phase_powers(self) -> Optional[tuple[float, float, float]]: ...
+    async def get_total_power(self) -> Optional[float]: ...
+
+
+# ── Type alias ────────────────────────────────────────────────────────────────
+
+StateCallback = Callable[[DashboardState], Awaitable[None]]
+
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+
+
+class ControlRuntime:
+    """Central sampling + control runtime for the dashboard server.
+
+    Parameters
+    ----------
+    grid_meter:
+        Shelly 3EM client (or compatible simulator).
+    battery:
+        Zendure SolarFlow client (or compatible mock).
+    sampling_interval_s:
+        How often Shelly + Zendure are polled [s].
+    control_interval_s:
+        How often the active regulator's ``compute_setpoint()`` is called [s].
+    max_discharge_w:
+        Initial discharge cap [W].
+    min_discharge_w:
+        Minimum allowed battery output [W].
+    """
+
+    def __init__(
+        self,
+        grid_meter: GridMeterProtocol,
+        battery: BatteryInverterProtocol,
+        *,
+        sampling_interval_s: float = 1.0,
+        control_interval_s: float = 3.0,
+        max_discharge_w: int = 800,
+        min_discharge_w: int = 20,
+        # ── SoC thresholds for ZFI pause ──────────────────────────────────────
+        # min_soc_hysteresis_pct: ZFI läuft wieder wenn SoC >= device_min_soc + hysterese
+        min_soc_hysteresis_pct: int = 5,
+        # ── Full-battery ZFI rest ─────────────────────────────────────────────
+        # full_soc_resume_delay_s: Gridbezug muss mind. diese Zeit anhalten, bevor ZFI wieder aktiv
+        full_soc_resume_delay_s: float = 10.0,
+        # full_soc_resume_threshold_w: Mindest-Gridbezug [W] für den Weck-Zähler
+        # Bedingung: Hausverbrauch > PV-Erzeugung + 30 W → total_grid_w > 30 W
+        full_soc_resume_threshold_w: int = 30,
+        # ── Upper SoC AC charge limit ─────────────────────────────────────────
+        # high_soc_charge_limit_pct: Oberhalb dieses SoC wird die AC-Ladeleistung gedrosselt
+        high_soc_charge_limit_pct: int = 90,
+        # high_soc_charge_limit_w: Gedrosselte AC-Ladeleistung [W]. None = halbe max_charge_w
+        high_soc_charge_limit_w: Optional[int] = None,
+    ) -> None:
+        self._grid_meter: GridMeterProtocol = grid_meter
+        self._battery: BatteryInverterProtocol = battery
+        self._sampling_interval = sampling_interval_s
+        self._control_interval = control_interval_s
+        self._max_discharge_w = max_discharge_w
+        self._min_discharge_w = min_discharge_w
+
+        # SoC thresholds (min/max read from hardware in start())
+        self._min_soc_pct: Optional[int] = None
+        self._min_soc_hysteresis_pct = min_soc_hysteresis_pct
+        self._min_soc_resume_pct: Optional[int] = None
+        self._full_soc_pct: Optional[int] = None
+        self._full_soc_resume_delay_s = full_soc_resume_delay_s
+        self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
+        self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
+        self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half
+        # Bypass state tracking (für Änderungs-Logging)
+        self._last_bypass_state: Optional[bool] = None
+        # ZFI pause states
+        self._zfi_paused_low_soc: bool = False
+        self._zfi_paused_full_battery: bool = False
+        self._full_battery_resume_since: Optional[float] = (
+            None  # monotonic ts when threshold first met
+        )
+
+        # Regulator registry
+        self._regulators: dict[str, RegulatorBase] = {}
+        self._active_regulator: Optional[RegulatorBase] = None
+
+        # Operating mode
+        self._mode: DeviceMode = DeviceMode.IDLE
+        self._charge_power_w: Optional[int] = None
+
+        # AUTO mode: effective mode used for sample routing and control
+        self._auto_effective_mode: DeviceMode = DeviceMode.IDLE
+        self._auto_manager: Optional[Any] = None  # AutoModeManager (avoid circular import)
+
+        # State snapshot (updated every sample tick)
+        self._state: DashboardState = DashboardState(
+            timestamp=time.time(),
+            mode=self._mode,
+            max_discharge_w=self._max_discharge_w,
+        )
+
+        # WebSocket broadcast callbacks
+        self._callbacks: list[StateCallback] = []
+
+        # Feed-in watchdog (only active during ZFI regulation)
+        self._watchdog_violation_since: Optional[float] = None
+        self._watchdog_last_reset: float = float("-inf")
+        self._watchdog_trigger_s: float = 10.0
+        """Anhaltende Einspeisung über diese Dauer (s) löst Watchdog aus."""
+        self._watchdog_cooldown_s: float = 30.0
+        """Mindestabstand (s) zwischen zwei aufeinanderfolgenden Watchdog-Resets."""
+        self._watchdog_threshold_w: float = -10.0
+        """Einspeisung unter diesem Wert (negativ = Einspeisung) zählt als Verletzung."""
+
+        # Runtime tasks
+        self._running = False
+        self._main_task: Optional[asyncio.Task] = None
+
+    def attach_auto_mode_manager(self, manager: Any) -> None:
+        """Register the AutoModeManager used when mode==AUTO."""
+        self._auto_manager = manager
+
+    async def enable_auto_mode(
+        self,
+        mqtt_broker: str,
+        device_id: str,
+        topic_prefix: str = "gridpythia",
+        status_interval_s: float = 60.0,
+    ) -> None:
+        """Create an AutoModeManager, attach it, and switch to AUTO mode."""
+        from .auto_mode import AutoModeManager  # late import – avoids circular dep
+
+        # Stop any existing manager first
+        if self._auto_manager is not None:
+            await self._auto_manager.stop_reporter_task()
+            self._auto_manager.stop()
+
+        manager = AutoModeManager(
+            mqtt_broker=mqtt_broker,
+            device_id=device_id,
+            battery=self._battery,
+            config_max_w=self._max_discharge_w,
+            config_min_w=self._min_discharge_w,
+            topic_prefix=topic_prefix,
+            status_interval_s=status_interval_s,
+        )
+        manager.start()
+        await manager.start_reporter_task()
+        self.attach_auto_mode_manager(manager)
+        await self.set_mode(DeviceMode.AUTO)
+
+    async def disable_auto_mode(self) -> None:
+        """Stop the AutoModeManager and switch back to IDLE."""
+        if self._auto_manager is not None:
+            await self._auto_manager.stop_reporter_task()
+            self._auto_manager.stop()
+            self._auto_manager = None
+        await self.set_mode(DeviceMode.IDLE)
+
+    # ── Regulator registry ────────────────────────────────────────────────────
+
+    def register_regulator(self, regulator: RegulatorBase) -> None:
+        """Register a regulator. First registered is set as default active."""
+        self._regulators[regulator.name] = regulator
+        if self._active_regulator is None:
+            self._active_regulator = regulator
+            logger.info("Default regulator: %s", regulator.name)
+
+    def list_regulators(self) -> list[RegulatorInfo]:
+        """Return metadata for all registered regulators."""
+        result = []
+        for reg in self._regulators.values():
+            result.append(
+                RegulatorInfo(
+                    name=reg.name,
+                    description=reg.description,
+                    is_active=(reg is self._active_regulator),
+                    settings_schema=reg.settings_schema(),
+                    current_settings=reg.get_current_settings(),
+                )
+            )
+        return result
+
+    # ── Mode / regulator control ──────────────────────────────────────────────
+
+    async def set_mode(
+        self,
+        mode: DeviceMode,
+        *,
+        charge_power_w: Optional[int] = None,
+        max_discharge_w: Optional[int] = None,
+    ) -> None:
+        """Switch operating mode.  Applies battery command immediately."""
+        logger.info(
+            "Mode change: %s → %s (charge_w=%s  max_dis_w=%s)",
+            self._mode.value,
+            mode.value,
+            charge_power_w,
+            max_discharge_w,
+        )
+
+        if max_discharge_w is not None:
+            self._max_discharge_w = max_discharge_w
+
+        if mode == DeviceMode.AC_CHARGE:
+            pw = charge_power_w or self._charge_power_w or 400
+            self._charge_power_w = pw
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.start_charge(pw)
+
+        elif mode == DeviceMode.IDLE:
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.stop()
+
+        elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
+            self._charge_power_w = None
+            if self._active_regulator:
+                self._active_regulator.reset()
+            # The regulator loop will start the battery on its first compute_setpoint call.
+            await self._battery.start_discharge(self._min_discharge_w)
+
+        elif mode == DeviceMode.AUTO:
+            # AUTO: don't touch the battery yet – the AutoModeManager drives it
+            if self._active_regulator:
+                self._active_regulator.reset()
+            self._auto_effective_mode = DeviceMode.IDLE
+
+        self._mode = mode
+        self._update_state()
+
+    async def apply_effective_mode(
+        self,
+        mode: DeviceMode,
+        charge_power_w: Optional[int] = None,
+        max_discharge_w: Optional[int] = None,
+    ) -> None:
+        """Apply an effective device mode while staying in AUTO. Called by AutoModeManager."""
+        if max_discharge_w is not None:
+            self._max_discharge_w = max_discharge_w
+
+        if mode == DeviceMode.AC_CHARGE:
+            pw = charge_power_w or 400
+            self._charge_power_w = pw
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.start_charge(pw)
+
+        elif mode == DeviceMode.IDLE:
+            if self._active_regulator:
+                self._active_regulator.reset()
+            await self._battery.stop()
+
+        elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
+            self._charge_power_w = None
+            if self._auto_effective_mode != DeviceMode.DISCHARGE_ZERO_FEED:
+                # Only reset/restart when actually switching into this mode
+                if self._active_regulator:
+                    self._active_regulator.reset()
+                await self._battery.start_discharge(self._min_discharge_w)
+
+        self._auto_effective_mode = mode
+
+    async def set_active_regulator(self, name: str) -> None:
+        """Switch the active regulator by name (resets its state)."""
+        if name not in self._regulators:
+            raise ValueError(f"Unknown regulator: {name!r}")
+        reg = self._regulators[name]
+        reg.reset()
+        self._active_regulator = reg
+        logger.info("Active regulator → %s", name)
+        self._update_state()
+
+    async def update_regulator_settings(self, name: str, data: dict[str, Any]) -> None:
+        """Apply settings to a (possibly non-active) regulator."""
+        if name not in self._regulators:
+            raise ValueError(f"Unknown regulator: {name!r}")
+        self._regulators[name].apply_settings(data)
+        logger.info("Settings updated for regulator %s", name)
+
+    # ── State access ──────────────────────────────────────────────────────────
+
+    def get_state(self) -> DashboardState:
+        return self._state
+
+    def add_state_callback(self, callback: StateCallback) -> None:
+        """Register a coroutine to be called after every state update."""
+        self._callbacks.append(callback)
+
+    def remove_state_callback(self, callback: StateCallback) -> None:
+        self._callbacks.remove(callback)
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        # Read hardware SoC limits (min_soc / max_soc configured on the device)
+        await self._init_soc_limits()
+        self._running = True
+        self._main_task = asyncio.create_task(self._main_loop(), name="control-runtime")
+        logger.info(
+            "ControlRuntime started (sample=%.1fs  control=%.1fs  min_soc=%s%%  max_soc=%s%%)",
+            self._sampling_interval,
+            self._control_interval,
+            self._min_soc_pct,
+            self._full_soc_pct,
+        )
+
+    async def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        if self._main_task:
+            self._main_task.cancel()
+            try:
+                await self._main_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("ControlRuntime stopped")
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+
+    async def _main_loop(self) -> None:
+        last_control = 0.0
+        try:
+            while self._running:
+                tick_start = time.monotonic()
+
+                # 1. Sample hardware
+                sample = await self._read_sample()
+
+                # 2. SoC-based guard logic (updates _zfi_paused_low_soc / _zfi_paused_full_battery)
+                if sample is not None:
+                    await self._update_soc_guards(sample, time.monotonic())
+
+                # 3. Derive whether ZFI regulation is actually active (mode + not paused)
+                _discharge_mode = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
+                    self._mode == DeviceMode.AUTO
+                    and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
+                )
+                _zfi_suppressed = self._zfi_paused_low_soc or self._zfi_paused_full_battery
+                _discharge_active = _discharge_mode and not _zfi_suppressed
+
+                # 4. Forward sample to regulator (only when actively regulating)
+                if sample is not None and _discharge_active and self._active_regulator is not None:
+                    await self._active_regulator.add_sample(sample)
+
+                # 4b. Feed-in watchdog – resets stuck regulator on sustained export
+                if sample is not None and _discharge_active:
+                    await self._check_feed_in_watchdog(sample, time.monotonic())
+
+                # 5. Control tick – fires every control_interval_s
+                now = time.monotonic()
+                _due = (now - last_control) >= self._control_interval
+
+                if _due:
+                    # 5a. Regulator setpoint (only when discharge active + regulator present)
+                    if _discharge_active and self._active_regulator is not None:
+                        try:
+                            await self._active_regulator.compute_setpoint(
+                                self._battery,
+                                self._max_discharge_w,
+                                self._min_discharge_w,
+                            )
+                        except Exception:
+                            logger.exception("Regulator compute_setpoint failed")
+
+                    # 5b. AUTO plan tick – always fires when AUTO mode is active
+                    if self._mode == DeviceMode.AUTO and self._auto_manager is not None:
+                        try:
+                            await self._auto_manager.tick(self.apply_effective_mode)
+                        except Exception:
+                            logger.exception("AutoModeManager tick failed")
+
+                    # 5c. AC charge SoC limit – check while in charge mode
+                    if sample is not None and self._mode in (DeviceMode.AC_CHARGE,):
+                        await self._apply_high_soc_charge_limit(sample)
+
+                    last_control = time.monotonic()
+
+                # 6. Update state snapshot
+                ctrl_status = (
+                    self._active_regulator.get_control_status()
+                    if (self._active_regulator is not None and _discharge_active)
+                    else None
+                )
+                self._update_state(sample=sample, control=ctrl_status)
+
+                # 7. Broadcast to WebSocket clients
+                await self._broadcast()
+
+                # 8. Sleep for remaining interval
+                elapsed = time.monotonic() - tick_start
+                sleep_time = max(0.0, self._sampling_interval - elapsed)
+                await asyncio.sleep(sleep_time)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("ControlRuntime main loop crashed")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    async def _init_soc_limits(self) -> None:
+        """Read min_soc / max_soc from the device and store as instance state."""
+        try:
+            min_soc = await self._battery.get_min_soc()
+            max_soc = await self._battery.get_max_soc()
+        except Exception:
+            logger.warning("SoC-Limits konnten nicht von der HW gelesen werden", exc_info=True)
+            min_soc = None
+            max_soc = None
+
+        self._min_soc_pct = min_soc if min_soc is not None else 15
+        self._full_soc_pct = max_soc if max_soc is not None else 100
+        self._min_soc_resume_pct = self._min_soc_pct + self._min_soc_hysteresis_pct
+        if min_soc is None or max_soc is None:
+            logger.warning(
+                "SoC-Limits nicht verfügbar (min=%d%% max=%d%%) – Fallback-Werte genutzt",
+                self._min_soc_pct,
+                self._full_soc_pct,
+            )
+
+    async def _update_soc_guards(self, sample: "GridSample", now_mono: float) -> None:
+        """Update ZFI pause flags based on current SoC and grid power.
+
+        Low-SoC hysteresis
+        ------------------
+        * Pause  when SoC <= device min_soc  (read from hardware at startup)
+        * Resume when SoC >= device min_soc + min_soc_hysteresis_pct
+
+        Full-battery rest
+        -----------------
+        * Enter rest when SoC >= device max_soc  (read from hardware at startup)
+        * Resume when total_grid_w >= full_soc_resume_threshold_w (default 50W)
+          has been sustained for full_soc_resume_delay_s seconds.
+        * Leaving ZFI mode (AC charge / IDLE) also clears the rest flag.
+        """
+        soc = sample.soc_percent
+        _discharge_mode = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
+            self._mode == DeviceMode.AUTO
+            and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
+        )
+
+        # Guard: limits must be initialised (start() calls _init_soc_limits)
+        if (
+            self._min_soc_pct is None
+            or self._full_soc_pct is None
+            or self._min_soc_resume_pct is None
+        ):
+            return
+
+        # ── Low-SoC pause ────────────────────────────────────────────────────
+        if soc is not None:
+            if not self._zfi_paused_low_soc and soc <= self._min_soc_pct:
+                logger.info("ZFI pausiert: SoC %d%% <= Minimum %d%%", soc, self._min_soc_pct)
+                self._zfi_paused_low_soc = True
+                if _discharge_mode:
+                    await self._battery.stop()
+
+            elif self._zfi_paused_low_soc and soc >= self._min_soc_resume_pct:
+                logger.info(
+                    "ZFI wieder aktiv: SoC %d%% >= Hysterese %d%%",
+                    soc,
+                    self._min_soc_resume_pct,
+                )
+                self._zfi_paused_low_soc = False
+                if _discharge_mode and self._active_regulator is not None:
+                    self._active_regulator.reset()
+                    await self._battery.start_discharge(self._min_discharge_w)
+
+        # ── Full-battery rest (only relevant in ZFI modes) ───────────────────
+        if not _discharge_mode:
+            # Not in a ZFI mode → clear rest state entirely
+            if self._zfi_paused_full_battery:
+                self._zfi_paused_full_battery = False
+                self._full_battery_resume_since = None
+            return
+
+        if soc is not None and not self._zfi_paused_full_battery and soc >= self._full_soc_pct:
+            logger.info(
+                "ZFI Vollbatterie-Pause: SoC %d%% >= HW-Maximum %d%%", soc, self._full_soc_pct
+            )
+            self._zfi_paused_full_battery = True
+            self._full_battery_resume_since = None
+            await self._battery.stop()
+
+        elif self._zfi_paused_full_battery:
+            # Check wake-up condition: sustained grid draw
+            grid_w = sample.total_grid_w
+            if grid_w >= self._full_soc_resume_threshold_w:
+                if self._full_battery_resume_since is None:
+                    self._full_battery_resume_since = now_mono
+                    logger.debug(
+                        "ZFI Vollbatterie: Gridbezug %.0fW – Weck-Z\u00e4hler gestartet", grid_w
+                    )
+                elif now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s:
+                    logger.info(
+                        "ZFI Vollbatterie-Pause beendet: Gridbezug %.0fW f\u00fcr >= %.0fs",
+                        grid_w,
+                        self._full_soc_resume_delay_s,
+                    )
+                    self._zfi_paused_full_battery = False
+                    self._full_battery_resume_since = None
+                    if self._active_regulator is not None:
+                        self._active_regulator.reset()
+                    await self._battery.start_discharge(self._min_discharge_w)
+            else:
+                # Grid draw below threshold → reset the timer
+                if self._full_battery_resume_since is not None:
+                    logger.debug(
+                        "ZFI Vollbatterie: Gridbezug zu gering – Z\u00e4hler zur\u00fcckgesetzt"
+                    )
+                self._full_battery_resume_since = None
+
+    async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
+        """Reduce AC charge power when SoC exceeds the configured upper threshold."""
+        soc = sample.soc_percent
+        if soc is None:
+            return
+        current_pw = self._charge_power_w or 400
+        if soc > self._high_soc_charge_limit_pct:
+            limit_w = (
+                self._high_soc_charge_limit_w
+                if self._high_soc_charge_limit_w is not None
+                else max(50, current_pw // 2)
+            )
+            if current_pw > limit_w:
+                logger.info(
+                    "AC-Lade-Limit: SoC %d%% > %d%% \u2192 %dW statt %dW",
+                    soc,
+                    self._high_soc_charge_limit_pct,
+                    limit_w,
+                    current_pw,
+                )
+                self._charge_power_w = limit_w
+                await self._battery.start_charge(limit_w)
+
+    async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
+        """Erkennt anhaltende Einspeisung und setzt fehlgeschlagenen Regler zurück.
+
+        Wird bei jedem Sampling-Tick aufgerufen, solange ZFI aktiv ist.
+        Beim Auslösen: Regulator-Reset + Setpoint auf min_discharge_w.
+        """
+        total_w = sample.total_grid_w
+
+        if total_w >= self._watchdog_threshold_w:
+            # Kein Einspeise-Problem → Zähler zurücksetzen
+            self._watchdog_violation_since = None
+            return
+
+        # Einspeisung unterhalb des Schwellwerts
+        if self._watchdog_violation_since is None:
+            self._watchdog_violation_since = now_mono
+            return
+
+        duration_s = now_mono - self._watchdog_violation_since
+        if duration_s < self._watchdog_trigger_s:
+            return
+
+        if now_mono - self._watchdog_last_reset < self._watchdog_cooldown_s:
+            # Cooldown läuft noch – nicht zu häufig resetten
+            return
+
+        # ── Watchdog ausgelöst ────────────────────────────────────────────────
+        logger.warning(
+            "Feed-in Watchdog: %.0fs anhaltende Einspeisung (total=%.0fW, "
+            "threshold=%.0fW) – Regler wird zurückgesetzt und Setpoint auf %dW reduziert.",
+            duration_s,
+            total_w,
+            self._watchdog_threshold_w,
+            self._min_discharge_w,
+        )
+
+        if self._active_regulator is not None:
+            self._active_regulator.reset()
+
+        ok = await self._battery.set_ac_output_limit(self._min_discharge_w)
+        if not ok:
+            logger.error(
+                "Feed-in Watchdog: set_ac_output_limit(%d) schlug fehl.",
+                self._min_discharge_w,
+            )
+
+        self._watchdog_violation_since = None
+        self._watchdog_last_reset = now_mono
+
+    async def _read_sample(self) -> Optional[GridSample]:
+        try:
+            phases = await self._grid_meter.get_phase_powers()
+            if phases is None:
+                logger.debug("_read_sample: Grid-Meter lieferte keine Phasen-Daten")
+                return None
+
+            batt_output = await self._battery.get_ac_output_power()
+            batt_state = await self._battery.get_state()
+
+            soc: int | None = None
+            charge_in: float | None = None
+            bypass_active: bool | None = None
+            if batt_state is not None:
+                soc = batt_state.battery_soc
+                charge_in = float(batt_state.grid_input_power or 0) or None
+                bypass_active = batt_state.bypass_mode
+
+                # Bypass-Zustandsänderung loggen
+                if bypass_active != self._last_bypass_state:
+                    if bypass_active:
+                        solar_w = batt_state.solar_input_power
+                        logger.warning(
+                            "Inverter wechselt in BYPASS-Modus: PV (%dW) wird direkt ans Haus geleitet. "
+                            "battery_output_w (%sW) zeigt Solar-Bypass, nicht Batterie-Output. "
+                            "outputLimit-Befehle werden ignoriert!",
+                            solar_w,
+                            batt_output,
+                        )
+                    elif self._last_bypass_state is not None:
+                        logger.info("Inverter verlässt Bypass-Modus – Battery-Control wieder aktiv")
+                    self._last_bypass_state = bypass_active
+
+                if bypass_active:
+                    logger.debug(
+                        "Bypass aktiv: solar=%dW  home_output=%sW  soc=%s%%",
+                        batt_state.solar_input_power,
+                        batt_output,
+                        soc,
+                    )
+
+            return GridSample(
+                timestamp=time.time(),
+                phase_a_w=phases[0],
+                phase_b_w=phases[1],
+                phase_c_w=phases[2],
+                battery_output_w=float(batt_output) if batt_output is not None else 0.0,
+                soc_percent=soc,
+                charge_input_w=charge_in,
+                bypass_active=bypass_active,
+            )
+        except Exception:
+            logger.debug("Sample read failed", exc_info=True)
+            return None
+
+    def _update_state(
+        self,
+        sample: Optional[GridSample] = None,
+        control=None,
+    ) -> None:
+        auto_status: Optional[AutoStatus] = None
+        if self._auto_manager is not None:
+            auto_status = self._auto_manager.get_auto_status()
+        self._state = DashboardState(
+            timestamp=time.time(),
+            mode=self._mode,
+            charge_power_w=self._charge_power_w,
+            max_discharge_w=self._max_discharge_w,
+            active_regulator=(self._active_regulator.name if self._active_regulator else None),
+            sample=sample,
+            control=control,
+            auto_status=auto_status,
+            zfi_paused_low_soc=self._zfi_paused_low_soc,
+            zfi_paused_full_battery=self._zfi_paused_full_battery,
+        )
+
+    async def _broadcast(self) -> None:
+        if not self._callbacks:
+            return
+        state = self._state
+        dead: list[StateCallback] = []
+        for cb in self._callbacks:
+            try:
+                await cb(state)
+            except Exception:
+                logger.debug("Broadcast callback failed – removing", exc_info=True)
+                dead.append(cb)
+        for cb in dead:
+            self._callbacks.remove(cb)

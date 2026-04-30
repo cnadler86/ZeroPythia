@@ -1,4 +1,5 @@
 """Grid Simulator – Virtueller Shelly aus CSV + Zendure-Mock-Kopplung.
+
 ===================================================================
 
 Lädt Shelly-CSV-Daten und stellt sie als virtuellen Shelly bereit.
@@ -113,7 +114,8 @@ def load_csv(path: Path) -> List[PhaseRecord]:
 
 
 def clean_csv_data(records: List[PhaseRecord]) -> List[PhaseRecord]:
-    """Bereinigt CSV-Daten:
+    """Bereinigt CSV-Daten.
+
     - Entfernt Duplikate (gleicher Timestamp)
     - Sortiert nach Timestamp
     - Füllt Lücken > 2s mit Hold-Werten auf (~1s Raster).
@@ -162,7 +164,8 @@ class GridSimulator:
         records: List[PhaseRecord],
         battery_mock=None,
     ):
-        """Args:
+        """Initialisiert den GridSimulator.
+
         records: Bereinigte CSV-Daten
         battery_mock: Optional SolarFlowAsyncMockClient
                        (get_grid_output_power() wird von Phase B abgezogen).
@@ -209,8 +212,7 @@ class GridSimulator:
 
         # Schneller Forward-Scan ab letztem Index
         while (
-            self._index < len(self._records) - 1
-            and self._records[self._index + 1].timestamp <= t
+            self._index < len(self._records) - 1 and self._records[self._index + 1].timestamp <= t
         ):
             self._index += 1
 
@@ -222,6 +224,7 @@ class GridSimulator:
 
     async def get_phase_powers(self) -> Optional[Tuple[float, float, float]]:
         """Liefert (phase_a, phase_b, phase_c) in Watt.
+
         Phase B wird um die Batterie-Einspeisung reduziert.
         """
         t = self._get_time()
@@ -247,9 +250,7 @@ class GridSimulator:
             return None
         return sum(phases)
 
-    def get_records_in_range(
-        self, start: float, end: float
-    ) -> List[PhaseRecord]:
+    def get_records_in_range(self, start: float, end: float) -> List[PhaseRecord]:
         """Gibt Records im Zeitbereich [start, end] zurück."""
         result = []
         for rec in self._records:
