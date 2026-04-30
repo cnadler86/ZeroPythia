@@ -147,6 +147,12 @@ class ZeroFeedV4Config(BaseModel):
     max_output_w: int = 800
     """Maximum battery output [W] (hardware limit)."""
 
+    battery_dead_time_s: float = 1.1
+    """Dead time [s] from setpoint command to first battery response at the grid meter."""
+
+    battery_pt1_tau_s: float = 0.5
+    """PT1 time constant [s] for battery output ramp-up/ramp-down model."""
+
     watchdog_cycles: int = 3
     """Consecutive control cycles with feed-in outside hysteresis before the
     watchdog resets only the affected phase controller(s)."""
@@ -210,10 +216,10 @@ def config_to_flat(cfg: ZeroFeedV4Config) -> dict[str, Any]:
     result: dict[str, Any] = {
         "control_phase": cfg.control_phase,
         "target_power_w": cfg.target_power_w,
-        "min_output_w": cfg.min_output_w,
-        "max_output_w": cfg.max_output_w,
         "watchdog_cycles": cfg.watchdog_cycles,
         "control_interval_s": cfg.control_interval_s,
+        "battery_dead_time_s": cfg.battery_dead_time_s,
+        "battery_pt1_tau_s": cfg.battery_pt1_tau_s,
     }
     for ph in _ALL_PHASES:
         ph_cfg = cfg.phases.get(ph)
@@ -221,15 +227,21 @@ def config_to_flat(cfg: ZeroFeedV4Config) -> dict[str, Any]:
             continue
         p = ph.lower() + "_"
         if isinstance(ph_cfg, FeedbackPhaseConfig):
+            result[p + "feedback_enabled"] = ph_cfg.feedback_enabled
             result[p + "kp_draw"] = ph_cfg.kp_draw
             result[p + "kp_feed_in"] = ph_cfg.kp_feed_in
-            result[p + "feedback_enabled"] = ph_cfg.feedback_enabled
         else:
             result[p + "kp"] = ph_cfg.kp
         result[p + "kp_hysteresis"] = ph_cfg.kp_hysteresis
         result[p + "hysteresis_w"] = ph_cfg.hysteresis_w
         result[p + "holder_enabled"] = ph_cfg.osc.holder is not None
+        result[p + "holder_min_amplitude"] = (
+            ph_cfg.osc.holder.threshold if ph_cfg.osc.holder is not None else 30.0
+        )
         result[p + "predictor_enabled"] = ph_cfg.osc.predictor is not None
+        result[p + "predictor_min_amplitude"] = (
+            ph_cfg.osc.predictor.threshold if ph_cfg.osc.predictor is not None else 100.0
+        )
     return result
 
 
@@ -244,11 +256,11 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedV4Config) -> ZeroFeedV4Co
     # ── Global fields ──────────────────────────────────────────────────────────
     for key in (
         "target_power_w",
-        "min_output_w",
-        "max_output_w",
         "watchdog_cycles",
         "control_interval_s",
         "sampling_interval_s",
+        "battery_dead_time_s",
+        "battery_pt1_tau_s",
     ):
         if key in data:
             raw[key] = data[key]
@@ -305,12 +317,20 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedV4Config) -> ZeroFeedV4Co
                     osc["holder"] = {}  # triggers BaseloadHolderSettings defaults
             else:
                 osc["holder"] = None
+        # Holder min amplitude (threshold)
+        if p + "holder_min_amplitude" in data and osc.get("holder") is not None:
+            osc["holder"] = dict(osc["holder"]) if isinstance(osc["holder"], dict) else {}
+            osc["holder"]["threshold"] = data[p + "holder_min_amplitude"]
         if p + "predictor_enabled" in data:
             if data[p + "predictor_enabled"]:
                 if osc.get("predictor") is None:
                     osc["predictor"] = {}  # triggers BaseloadPredictorSettings defaults
             else:
                 osc["predictor"] = None
+        # Predictor min amplitude (threshold)
+        if p + "predictor_min_amplitude" in data and osc.get("predictor") is not None:
+            osc["predictor"] = dict(osc["predictor"]) if isinstance(osc["predictor"], dict) else {}
+            osc["predictor"]["threshold"] = data[p + "predictor_min_amplitude"]
 
     return ZeroFeedV4Config.model_validate(raw)
 

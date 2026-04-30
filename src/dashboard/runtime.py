@@ -97,7 +97,8 @@ class ControlRuntime:
         # full_soc_resume_delay_s: Gridbezug muss mind. diese Zeit anhalten, bevor ZFI wieder aktiv
         full_soc_resume_delay_s: float = 10.0,
         # full_soc_resume_threshold_w: Mindest-Gridbezug [W] für den Weck-Zähler
-        full_soc_resume_threshold_w: int = 50,
+        # Bedingung: Hausverbrauch > PV-Erzeugung + 30 W → total_grid_w > 30 W
+        full_soc_resume_threshold_w: int = 30,
         # ── Upper SoC AC charge limit ─────────────────────────────────────────
         # high_soc_charge_limit_pct: Oberhalb dieses SoC wird die AC-Ladeleistung gedrosselt
         high_soc_charge_limit_pct: int = 90,

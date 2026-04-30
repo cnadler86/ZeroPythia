@@ -9,6 +9,8 @@ max_output_w: 800 # Maximum battery output [W] (hardware limit, e.g. 800 W)
 watchdog_cycles: 3 # Consecutive cycles with feed-in outside hysteresis → reset affected phases
 control_interval_s: 3.0 # Control cycle interval [s]
 sampling_interval_s: 1.0 # Sampling interval [s]
+battery_dead_time_s: 1.1
+battery_pt1_tau_s: 0.5
 
 # Per-phase controller settings
 phases:
@@ -18,12 +20,12 @@ phases:
     role: feedforward  # feedback = regulation (battery phase)  |  feedforward = steering
     kp: 1.0 # P-gain outside hysteresis band.  1.0 = full compensation
     kp_hysteresis: 0.3 # Damped gain inside hysteresis band
-    hysteresis_w: 10.0 # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
 #   Oscillation detectors
     osc:
 #     Holder – fast short-cycle oscillations (period < ~10 s)
       holder:
-        threshold: 30.0 # Minimum amplitude [W] to confirm oscillation
+        threshold: 15.0 # Minimum amplitude [W] to confirm oscillation
         min_period: 1.0 # Shortest detectable period [s]
         max_period: 10.0 # Longest detectable period [s]
         period_variance: 1.2 # Allowed jitter factor for period matching
@@ -49,8 +51,8 @@ phases:
     kp_draw: 0.95 # P-gain when drawing from grid
     kp_feed_in: 1.05 # P-gain when feeding into grid (higher = more aggressive pull-back)
     feedback_enabled: true # false = pure feedforward mode (for testing)
-    kp_hysteresis: 0.3 # Damped gain inside hysteresis band
-    hysteresis_w: 10.0 # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+    kp_hysteresis: 0.4 # Damped gain inside hysteresis band
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
 #   Oscillation detectors
     osc:
 #     Holder – fast short-cycle oscillations (period < ~10 s)
@@ -79,14 +81,14 @@ phases:
   C:
     role: feedforward  # feedback = regulation (battery phase)  |  feedforward = steering
     kp: 1.0 # P-gain outside hysteresis band.  1.0 = full compensation
-    kp_hysteresis: 0.3 # Damped gain inside hysteresis band
-    hysteresis_w: 10.0 # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
+    kp_hysteresis: 0.4 # Damped gain inside hysteresis band
+    hysteresis_w: 5.0  # Hysteresis band [W].  Inside: kp_hysteresis active  Outside: kp / kp_draw
 #   Oscillation detectors
     osc:
 #     Holder – fast short-cycle oscillations (period < ~10 s)
       holder:  # null = disabled
 #     Predictor – periodic loads with known cycle time (e.g. washing machine)
-        threshold: 30.0
+        threshold: 15.0
         min_period: 1.0
         max_period: 10.0
         period_variance: 1.2

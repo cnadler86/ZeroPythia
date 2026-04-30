@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -296,6 +298,12 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
     entries: dict[str, Any] = {}
 
     if is_fb:
+        entries[p + "feedback_enabled"] = {
+            "type": "boolean",
+            "title": "Feedback enabled",
+            "default": True,
+            "group": group,
+        }
         entries[p + "kp_draw"] = {
             "type": "number",
             "title": "Kp draw",
@@ -314,12 +322,6 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
             "step": 0.05,
             "group": group,
         }
-        entries[p + "feedback_enabled"] = {
-            "type": "boolean",
-            "title": "Feedback enabled",
-            "default": True,
-            "group": group,
-        }
     else:
         entries[p + "kp"] = {
             "type": "number",
@@ -334,7 +336,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
     entries[p + "kp_hysteresis"] = {
         "type": "number",
         "title": "Kp hysteresis",
-        "default": 0.3,
+        "default": 0.4,
         "minimum": 0.0,
         "maximum": 2.0,
         "step": 0.05,
@@ -343,7 +345,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
     entries[p + "hysteresis_w"] = {
         "type": "number",
         "title": "Hysteresis band [W]",
-        "default": 10.0,
+        "default": 5.0,
         "minimum": 0.0,
         "maximum": 100.0,
         "step": 0.5,
@@ -355,10 +357,28 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "default": False,
         "group": group,
     }
+    entries[p + "holder_min_amplitude"] = {
+        "type": "number",
+        "title": "Holder min. amplitude [W]",
+        "default": 30.0,
+        "minimum": 5.0,
+        "maximum": 500.0,
+        "step": 5.0,
+        "group": group,
+    }
     entries[p + "predictor_enabled"] = {
         "type": "boolean",
         "title": "Predictor active (periodic loads)",
         "default": True,
+        "group": group,
+    }
+    entries[p + "predictor_min_amplitude"] = {
+        "type": "number",
+        "title": "Predictor min. amplitude [W]",
+        "default": 100.0,
+        "minimum": 10.0,
+        "maximum": 1000.0,
+        "step": 10.0,
         "group": group,
     }
     return entries
@@ -401,6 +421,14 @@ class ZeroFeedV4Regulator(RegulatorBase):
         self._watchdog_total: int = 0
         self._last_status: ControlStatus = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
 
+        # ── PT1 battery output model ───────────────────────────────────────────
+        # Instead of reading the (delayed) battery API, we model the response as:
+        #   dead time  (battery_dead_time_s)  → then PT1 ramp  (battery_pt1_tau_s)
+        # Timestamps are wall-clock (time.time()) to match GridSample.timestamp.
+        self._sp_sent_at: float = 0.0  # wall time when last setpoint was sent
+        self._sp_target_w: float = 0.0  # setpoint sent
+        self._sp_prev_output_w: float = 0.0  # estimated output just before the change
+
         if loaded is None and yaml_path is not None and not yaml_path.exists():
             # Write initial YAML with comments when no file exists yet
             save_config(yaml_path, cfg)
@@ -414,6 +442,26 @@ class ZeroFeedV4Regulator(RegulatorBase):
     @property
     def description(self) -> str:
         return self._DESC
+
+    # ── PT1 battery model ────────────────────────────────────────────────────
+
+    def _estimate_batt_at(self, ts: float) -> float:
+        """Estimate battery AC output [W] at wall-clock timestamp *ts*.
+
+        Models the battery as dead-time + PT1:
+          – During dead time:       output stays at previous level.
+          – After dead time:        PT1 ramp toward the new setpoint.
+          – If no setpoint was ever sent: returns 0.
+        """
+        if self._sp_sent_at == 0.0:
+            return 0.0
+        dead = self._cfg.battery_dead_time_s
+        tau = self._cfg.battery_pt1_tau_s
+        elapsed = ts - (self._sp_sent_at + dead)
+        if elapsed <= 0:
+            return self._sp_prev_output_w
+        factor = 1.0 - math.exp(-elapsed / tau) if tau > 0 else 1.0
+        return self._sp_prev_output_w + (self._sp_target_w - self._sp_prev_output_w) * factor
 
     # ── Sampling ──────────────────────────────────────────────────────────────
 
@@ -445,10 +493,9 @@ class ZeroFeedV4Regulator(RegulatorBase):
         if self._queue.empty():
             return None
 
-        # Drain queue
+        # Drain queue – build PT1-estimated battery history per sample timestamp
         phase_samples: dict[str, list[PhaseSample]] = {"A": [], "B": [], "C": []}
         batt_hist: list[float] = []
-        last_batt: float = 0.0
 
         while not self._queue.empty():
             try:
@@ -456,20 +503,19 @@ class ZeroFeedV4Regulator(RegulatorBase):
                 ts = s.timestamp
                 for ph in ("A", "B", "C"):
                     phase_samples[ph].append(PhaseSample(timestamp=ts, value=s.phases[ph]))
-                batt_hist.append(s.battery_output)
-                if s.battery_output >= 0:
-                    last_batt = s.battery_output
+                # Use PT1 model instead of API-reported value (API has ~1.5 s delay)
+                batt_hist.append(self._estimate_batt_at(ts))
             except asyncio.QueueEmpty:
                 break
 
         if not phase_samples["A"]:
             return None
 
-        # Settlement + fresh battery output
+        # Settlement check – only API call we still need
         settled = await battery.is_settled(use_cache=False)
         battery_settled = settled is not False
-        fresh = await battery.get_ac_output_power()
-        batt_now = float(fresh) if fresh is not None else last_batt
+        # Estimate current battery output from PT1 model at current wall time
+        batt_now = self._estimate_batt_at(time.time())
 
         # Core V4 calculation
         ff_outputs, fb_correction, ff_sum = self._core.calculate(
@@ -495,6 +541,12 @@ class ZeroFeedV4Regulator(RegulatorBase):
         if new_sp != self._current_setpoint:
             ok = await battery.set_ac_output_limit(new_sp)
             if ok:
+                # Record timing for PT1 model BEFORE updating current_setpoint
+                now = time.time()
+                self._sp_prev_output_w = self._estimate_batt_at(now)
+                self._sp_sent_at = now
+                self._sp_target_w = float(new_sp)
+
                 self._current_setpoint = new_sp
                 changed = True
                 logger.debug(
@@ -511,6 +563,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
             setpoint_w=self._current_setpoint,
             setpoint_changed=changed,
             raw_target_w=raw_target,
+            target_power_w=self._cfg.target_power_w,
             ff_output_w=ff_sum,
             feedback_output_w=fb_correction,
             ff_per_phase=ff_outputs,
@@ -535,6 +588,9 @@ class ZeroFeedV4Regulator(RegulatorBase):
         self._current_setpoint = 0
         self._watchdog_total = 0
         self._last_status = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
+        self._sp_sent_at = 0.0
+        self._sp_target_w = 0.0
+        self._sp_prev_output_w = 0.0
 
     # ── Status ────────────────────────────────────────────────────────────────
 
@@ -563,22 +619,6 @@ class ZeroFeedV4Regulator(RegulatorBase):
                 "step": 1.0,
                 "group": "General",
             },
-            "min_output_w": {
-                "type": "integer",
-                "title": "Min battery output [W]",
-                "default": 20,
-                "minimum": 0,
-                "maximum": 200,
-                "group": "General",
-            },
-            "max_output_w": {
-                "type": "integer",
-                "title": "Max battery output [W]",
-                "default": 800,
-                "minimum": 100,
-                "maximum": 3000,
-                "group": "General",
-            },
             "watchdog_cycles": {
                 "type": "integer",
                 "title": "Watchdog cycles",
@@ -594,6 +634,24 @@ class ZeroFeedV4Regulator(RegulatorBase):
                 "minimum": 1.0,
                 "maximum": 30.0,
                 "step": 0.5,
+                "group": "General",
+            },
+            "battery_dead_time_s": {
+                "type": "number",
+                "title": "Battery dead time [s]",
+                "default": 1.1,
+                "minimum": 0.0,
+                "maximum": 5.0,
+                "step": 0.1,
+                "group": "General",
+            },
+            "battery_pt1_tau_s": {
+                "type": "number",
+                "title": "Battery PT1 time constant [s]",
+                "default": 0.5,
+                "minimum": 0.0,
+                "maximum": 5.0,
+                "step": 0.1,
                 "group": "General",
             },
         }
@@ -612,6 +670,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
         self._cfg = new_cfg
         self._core = _V4Core(new_cfg)
         self._queue = asyncio.Queue(maxsize=new_cfg.queue_size())
+        # PT1 state is kept (setpoint timing remains valid after param change)
 
         if self._yaml_path is not None:
             save_config(

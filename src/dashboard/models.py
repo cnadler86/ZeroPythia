@@ -99,6 +99,7 @@ class ControlStatus(BaseModel):
     setpoint_w: int = Field(description="Final setpoint sent to battery [W].")
     setpoint_changed: bool = False
     raw_target_w: Optional[float] = None
+    target_power_w: float = 0.0
     ff_output_w: Optional[float] = None
     feedback_output_w: Optional[float] = None
     ff_per_phase: dict[str, float] = Field(default_factory=dict)
