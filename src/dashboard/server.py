@@ -229,7 +229,7 @@ _HTML_TEMPLATE = """\
       </div>
     </div>
     <div class="metric">
-      <span class="metric-icon">&#8597;</span>
+      <span class="metric-icon">&#128267;</span>
       <div>
         <div class="metric-label"><<<t_bat>>></div>
         <div class="metric-val" id="hm-batt">&#8211;</div>
