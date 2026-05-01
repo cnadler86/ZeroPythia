@@ -15,9 +15,6 @@ dependencies = [
     "websockets>=11.0",
 ]
 
-[project.urls]
-Repository = "https://github.com/YOUR_USERNAME/zero-feed-controller"
-
 [dependency-groups]
 dev = [
     "matplotlib",
