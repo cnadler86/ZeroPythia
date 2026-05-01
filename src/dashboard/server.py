@@ -72,6 +72,13 @@ _HTML_TEMPLATE = """\
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title><<<t_title>>></title>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#0f1117"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="ZeroFeed"/>
+<link rel="apple-touch-icon" href="/icon.svg"/>
 <style>
   :root {
     --bg: #0f1117; --card: #1c1f2e; --border: #2a2d3e;
@@ -191,7 +198,7 @@ _HTML_TEMPLATE = """\
     <span id="zfi-pause-badge" class="badge badge-yellow" style="display:none">&#8987;</span>
   </div>
   <div class="header-zendure">
-    <div class="metric">
+    <div class="metric" id="hm-pv-metric" style="display:none">
       <span class="metric-icon">&#9728;&#65039;</span>
       <div>
         <div class="metric-label"><<<t_pv>>></div>
@@ -199,7 +206,7 @@ _HTML_TEMPLATE = """\
       </div>
     </div>
     <div class="metric">
-      <span class="metric-icon">&#128202;</span>
+      <span class="metric-icon">&#128267;</span>
       <div>
         <div class="metric-label"><<<t_soc>>></div>
         <div class="metric-val" id="hm-soc">&#8211;</div>
@@ -222,7 +229,7 @@ _HTML_TEMPLATE = """\
       </div>
     </div>
     <div class="metric">
-      <span class="metric-icon">&#128267;</span>
+      <span class="metric-icon">&#8597;</span>
       <div>
         <div class="metric-label"><<<t_bat>>></div>
         <div class="metric-val" id="hm-batt">&#8211;</div>
@@ -504,7 +511,13 @@ function render(s) {
   else if (battIn > 0) document.getElementById('hm-batt').innerHTML = `<span style="color:var(--yellow)">\u2191${battIn.toFixed(0)}\u00a0W</span>`;
   else                 document.getElementById('hm-batt').textContent = '\u2014';
   document.getElementById('hm-soc').textContent = sm?.soc_percent != null ? sm.soc_percent + '\u00a0%' : '\u2013';
-  document.getElementById('hm-pv').textContent  = pvW != null ? pvW.toFixed(0) + '\u00a0W' : '\u2013';
+  const pvMetric = document.getElementById('hm-pv-metric');
+  if (pvW != null) {
+    pvMetric.style.display = '';
+    document.getElementById('hm-pv').textContent = pvW.toFixed(0) + '\u00a0W';
+  } else {
+    pvMetric.style.display = 'none';
+  }
 
   // Per-phase live cards
   const c   = s.control;
@@ -778,6 +791,11 @@ function showToast(msg) {
 }
 
 connect();
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .catch(e => console.warn('SW registration failed:', e));
+}
 </script>
 </body>
 </html>"""
@@ -826,6 +844,83 @@ def create_app(runtime: ControlRuntime, *, lang: str = "en") -> FastAPI:
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def root() -> HTMLResponse:
         return HTMLResponse(_html_page)
+
+    # ── PWA assets ────────────────────────────────────────────────────────────
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    async def manifest():
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            {
+                "name": "Zero-Feed Controller",
+                "short_name": "ZeroFeed",
+                "description": "Three-phase zero-feed-in battery controller dashboard",
+                "start_url": "/",
+                "display": "standalone",
+                "background_color": "#0f1117",
+                "theme_color": "#0f1117",
+                "icons": [
+                    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+                ],
+            },
+            headers={"Content-Type": "application/manifest+json"},
+        )
+
+    @app.get("/icon.svg", include_in_schema=False)
+    async def app_icon():
+        from fastapi.responses import Response
+
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+            '<rect width="512" height="512" rx="80" fill="#0f1117"/>'
+            '<rect x="80" y="155" width="300" height="190" rx="24"'
+            ' fill="none" stroke="#4f8ef7" stroke-width="20"/>'
+            '<rect x="380" y="200" width="52" height="100" rx="16" fill="#4f8ef7"/>'
+            '<rect x="100" y="175" width="220" height="150" rx="14"'
+            ' fill="#22c55e" opacity="0.85"/>'
+            '<path d="M236 185 L200 268 H244 L220 345 L292 258 H248 Z" fill="#0f1117"/>'
+            "</svg>"
+        )
+        return Response(content=svg, media_type="image/svg+xml")
+
+    @app.get("/sw.js", include_in_schema=False)
+    async def service_worker():
+        from fastapi.responses import Response
+
+        sw = """
+// Zero-Feed Controller – minimal service worker for PWA installability.
+// Strategy: network-first for navigation, fallback to cache on offline.
+const CACHE = 'zfc-v1';
+
+self.addEventListener('install', evt => {
+  evt.waitUntil(caches.open(CACHE).then(c => c.add('/')));
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', evt => {
+  evt.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
+    )
+  );
+  self.clients.claim();
+});
+
+self.addEventListener('fetch', evt => {
+  if (evt.request.mode === 'navigate') {
+    evt.respondWith(
+      fetch(evt.request).catch(() => caches.match('/'))
+    );
+  }
+  // API calls and WebSocket connections pass through without caching.
+});
+"""
+        return Response(
+            content=sw,
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/"},
+        )
 
     # ── REST API ──────────────────────────────────────────────────────────────
 
