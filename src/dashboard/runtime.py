@@ -291,6 +291,13 @@ class ControlRuntime:
             self._max_discharge_w = max_discharge_w
 
         if mode == DeviceMode.AC_CHARGE:
+            # AC charging is always permitted – it fills the battery, so the
+            # low-SoC ZFI pause is no longer relevant.  Clear both pause flags
+            # so the dashboard reflects the actual state and the guard does not
+            # re-interfere on the next tick.
+            self._zfi_paused_low_soc = False
+            self._zfi_paused_full_battery = False
+            self._full_battery_resume_since = None
             pw = charge_power_w or 400
             self._charge_power_w = pw
             if self._active_regulator:
@@ -305,10 +312,15 @@ class ControlRuntime:
         elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
             self._charge_power_w = None
             if self._auto_effective_mode != DeviceMode.DISCHARGE_ZERO_FEED:
-                # Only reset/restart when actually switching into this mode
+                # Only reset/restart when actually switching into this mode.
+                # Respect the low-SoC guard: if the pause is active, keep the
+                # battery stopped instead of starting a (suppressed) discharge.
                 if self._active_regulator:
                     self._active_regulator.reset()
-                await self._battery.start_discharge(self._min_discharge_w)
+                if self._zfi_paused_low_soc:
+                    await self._battery.stop()
+                else:
+                    await self._battery.start_discharge(self._min_discharge_w)
 
         self._auto_effective_mode = mode
 
