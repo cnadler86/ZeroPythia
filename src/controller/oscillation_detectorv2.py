@@ -255,7 +255,7 @@ class OscillationDetector:
             last_rising = self._rising_times[-1]
             expected_next = last_rising + self.rising_period * (1 + self.period_variance)
             if current_time > expected_next:
-                logger.info(f"Oscillation timeout detected at {current_time}. Resetting.")
+                logger.info("Oscillation timeout detected. Resetting.")
                 self._reset()
 
     def _update_oscillation(self) -> None:
@@ -274,8 +274,7 @@ class OscillationDetector:
                     # Edge doesn't fit the current oscillation pattern - reset
                     self._reset()
                     logger.info(
-                        "Oscillation terminated at %s - timing mismatch (expected ~%s).",
-                        last_rising,
+                        "Oscillation terminated - timing mismatch (expected ~%s).",
                         expected_time,
                     )
                     return
@@ -326,8 +325,7 @@ class OscillationDetector:
         self._rising_times = rising_edges[-self.min_rising_count :]
         self._rising_times_set = set(self._rising_times)
         logger.info(
-            "Oscillation started at %s with period %s",
-            self.oscillation_start_time,
+            "Oscillation started with period %s",
             self.rising_period,
         )
 
