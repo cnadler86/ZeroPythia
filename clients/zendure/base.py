@@ -332,10 +332,10 @@ class SolarFlowBase(ISolarFlowClient):
         )
 
         # Dead-reckoning energy counters.
-        # A single signed setpoint: +W = discharging, -W = charging.
-        # The battery can only go in one direction at a time – no simultaneous
-        # charge + discharge.
-        self._setpoint_w: int = 0  # current effective power setpoint [W]
+        # _setpoint_w is always ≥0; _current_mode tracks direction (INPUT=charge, OUTPUT=discharge).
+        self._setpoint_w: int = 0  # current effective power setpoint [W], always ≥0
+        self._current_mode: ACMode = ACMode.OUTPUT  # current AC direction
+        self.bypass_overhead_w: int = 30  # W added above solar during bypass kick
         self._setpoint_timestamp: float = time()
         self._accumulated_discharge_wh: float = 0.0
         self._accumulated_charge_wh: float = 0.0
@@ -473,14 +473,15 @@ class SolarFlowBase(ISolarFlowClient):
 
         Must be called synchronously BEFORE every setpoint change so that
         the time elapsed under the old setpoint is correctly accounted for.
-        Positive setpoint → discharge; negative → charge.
+        Direction is determined by _current_mode (OUTPUT=discharge, INPUT=charge).
         """
         now = time()
         dt_h = (now - self._setpoint_timestamp) / 3600.0
         if self._setpoint_w > 0:
-            self._accumulated_discharge_wh += self._setpoint_w * dt_h
-        elif self._setpoint_w < 0:
-            self._accumulated_charge_wh += (-self._setpoint_w) * dt_h
+            if self._current_mode == ACMode.OUTPUT:
+                self._accumulated_discharge_wh += self._setpoint_w * dt_h
+            else:
+                self._accumulated_charge_wh += self._setpoint_w * dt_h
         self._setpoint_timestamp = now
 
     def get_energy_counters(self) -> InverterEnergyCounters:
@@ -591,8 +592,11 @@ class SolarFlowBase(ISolarFlowClient):
         """
         power_w = self.validate_output_limit(power_w)
         self._flush_energy_to_now()
-        self._setpoint_w = power_w  # positive = discharging
-        return await self._set_properties({"outputLimit": power_w}, smart_mode)
+        ok = await self._set_properties({"outputLimit": power_w}, smart_mode)
+        if ok:
+            self._current_mode = ACMode.OUTPUT
+            self._setpoint_w = power_w
+        return ok
 
     async def set_ac_input_limit(self, power_w: int, *, smart_mode: bool = True) -> bool:
         """Set the AC input power limit.
@@ -603,8 +607,11 @@ class SolarFlowBase(ISolarFlowClient):
         """
         power_w = self.validate_input_limit(power_w)
         self._flush_energy_to_now()
-        self._setpoint_w = -power_w  # negative = charging
-        return await self._set_properties({"inputLimit": power_w}, smart_mode)
+        ok = await self._set_properties({"inputLimit": power_w}, smart_mode)
+        if ok:
+            self._current_mode = ACMode.INPUT
+            self._setpoint_w = power_w
+        return ok
 
     async def set_ac_mode(self, mode: ACMode, *, smart_mode: bool = True) -> bool:
         """Set the AC mode (low-level).
@@ -772,12 +779,12 @@ class SolarFlowBase(ISolarFlowClient):
     async def is_settled(self, *, use_cache: bool = True) -> Optional[bool]:
         """Check whether the inverter is settled at the current setpoint.
 
-        Discharge mode  (setpoint_w > 0): ``output_home_power`` ≈ setpoint_w
-        Charge mode     (setpoint_w < 0): ``grid_input_power``  ≈ abs(setpoint_w)
-        Idle / passive  (setpoint_w == 0): output ≈ 0
+        Discharge mode (_current_mode == OUTPUT): ``output_home_power`` ≈ setpoint_w
+        Charge mode    (_current_mode == INPUT):  ``grid_input_power``  ≈ setpoint_w
+        Idle           (setpoint_w == 0):         output ≈ 0
 
-        In bypass mode during *discharge* or idle, ``output_home_power`` reflects
-        the solar bypass power rather than battery output – returns None.
+        In bypass mode during discharge, ``output_home_power`` reflects solar
+        bypass power – returns None in that case.
 
         Args:
             use_cache: True = use cache
@@ -789,15 +796,15 @@ class SolarFlowBase(ISolarFlowClient):
         if not state:
             return None
 
-        if self._setpoint_w < 0:
-            # Charge mode: check actual grid draw (bypass does not affect charging)
+        if self._current_mode == ACMode.INPUT:
+            # Charge mode: check actual grid draw
             current_power = state.grid_input_power
-            target = abs(self._setpoint_w)
+            target = self._setpoint_w
         else:
             # Discharge / idle mode
-            if state.bypass_mode:
+            if state.bypass_mode and self._setpoint_w > 0:
                 logger.debug(
-                    "is_settled: bypass active (solar=%d W) – setpoint comparison not meaningful",
+                    "is_settled: bypass active (solar=%d W) – not meaningful",
                     state.solar_input_power,
                 )
                 return None
@@ -807,7 +814,7 @@ class SolarFlowBase(ISolarFlowClient):
         settled = abs(current_power - target) < 2
         logger.debug(
             "is_settled: %s=%dW target=%dW diff=%dW → %s",
-            "grid_in" if self._setpoint_w < 0 else "output",
+            "grid_in" if self._current_mode == ACMode.INPUT else "output",
             current_power,
             target,
             abs(current_power - target),
@@ -815,186 +822,162 @@ class SolarFlowBase(ISolarFlowClient):
         )
         return settled
 
-    async def start_discharge(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """Start discharging.
+    async def start_discharge(self) -> int:
+        """Start discharging.  Returns the initial setpoint set (W), 0 on hardware error.
 
-        A *power_w* of 0 enters **passive discharge mode**: the relays stay
-        open (fast response later) but no actual power flows.  The device
-        receives ``outputLimit=1`` in this case.
+        The start setpoint is determined automatically:
 
-        **Two-step startup** – when transitioning from a non-discharge state
-        (idle or charge) and the target exceeds ``min_power``:
+        * **Already discharging** (``_current_mode == OUTPUT`` and ``_setpoint_w > 0``): re-send
+          current setpoint, no two-step needed.
+        * **Bypass active**: target = ``solar_input_power + bypass_overhead_w``, sent directly
+          (phase-1 at min_power would always time-out in bypass).  Forces bypass off.
+        * **Cold start**: target = ``min_power`` (at least 1 W).  Two-step when
+          ``target > min_power`` would never apply here, but the path handles it for
+          completeness.
 
-        1. First request ``min_power`` and wait until the inverter physically
-           reaches that power level (``_await_power_settled``).
-        2. Then request *power_w* and wait until the API setpoint is confirmed
-           (``_await_setpoint_confirmed``).
-
-        For targets ≤ ``min_power`` (or passive 0 → 1 W) only the API setpoint
-        is confirmed (no power-flow check, since the inverter may produce no
-        measurable current at 1 W).
-
-        Args:
-            power_w: discharge power in watts (0 = passive standby)
-            smart_mode: True = RAM only, False = write to flash
+        After this method returns the caller may use :meth:`set_ac_output_limit` to
+        fine-tune the setpoint without another startup sequence.
         """
         if self._limits.discharge_limit == 0:
             logger.debug("start_discharge: limits not yet known – reading device state…")
             await self.get_state(use_cache=False)
 
-        if power_w == 0:
-            clamped = 1
-            logger.info("start_discharge: 0 W → 1 W (passive discharge, relays open)")
+        state = await self.get_state(use_cache=False)
+        if state is None:
+            logger.error("start_discharge: cannot read device state")
+            return 0
+
+        solar_w = state.solar_input_power
+        already_discharging = self._current_mode == ACMode.OUTPUT and self._setpoint_w > 0
+        in_bypass = state.bypass_mode
+
+        target: int
+        if already_discharging:
+            target = self._setpoint_w
+            logger.info("start_discharge: already at %dW – re-confirming setpoint", target)
+        elif in_bypass:
+            raw = solar_w + self.bypass_overhead_w
+            lo = self._limits.min_power or 1
+            hi = self._limits.discharge_limit or 800
+            target = min(max(lo, raw), hi)
+            logger.info(
+                "start_discharge: bypass active (solar=%dW) → %dW to force bypass off",
+                solar_w,
+                target,
+            )
         else:
-            clamped = (
-                min(power_w, self._limits.discharge_limit)
-                if self._limits.discharge_limit > 0
-                else power_w
-            )
-            if clamped != power_w:
-                logger.info(
-                    "start_discharge: %d W → clipped to %d W (discharge limit: %d W)",
-                    power_w,
-                    clamped,
-                    self._limits.discharge_limit,
-                )
-            else:
-                logger.info("start_discharge: %d W (acMode=OUTPUT, inputLimit=0)", clamped)
+            target = max(1, self._limits.min_power)
+            logger.info("start_discharge: cold start at %dW (min_power)", target)
 
-        # Capture before mutating – True when not currently discharging
-        _starting_from_cold = self._setpoint_w <= 0
         self._flush_energy_to_now()
-        self._setpoint_w = clamped  # positive = discharging
+        props = {"acMode": ACMode.OUTPUT.value, "outputLimit": target, "inputLimit": 0}
+        min_pw = self._limits.min_power or 1
+        ok: bool
 
-        props = {"acMode": ACMode.OUTPUT.value, "outputLimit": clamped, "inputLimit": 0}
-        min_pw = self._limits.min_power or 0
-        success: bool
-
-        if _starting_from_cold and min_pw > 0 and clamped > min_pw:
-            # ── Two-step: cold start above minimum ──────────────────────────────
-            # Phase 1: request minimum power and wait for physical settling
-            logger.info("start_discharge: phase 1 – %d W (min), waiting to settle…", min_pw)
-            await self._set_properties(
+        if already_discharging or in_bypass:
+            # Re-confirm or bypass kick: direct send
+            ok = await self._set_properties(props, smart_mode=True)
+            if ok and in_bypass:
+                if not await self._await_setpoint_confirmed(target, is_charge=False):
+                    logger.warning(
+                        "start_discharge: bypass-kick setpoint %dW not confirmed", target
+                    )
+        elif target > min_pw:
+            # Cold start above minimum: two-step
+            logger.info("start_discharge: phase 1 – %dW (min), waiting to settle…", min_pw)
+            ok = await self._set_properties(
                 {"acMode": ACMode.OUTPUT.value, "outputLimit": min_pw, "inputLimit": 0},
-                smart_mode,
+                smart_mode=True,
             )
+            if not ok:
+                logger.error("start_discharge: phase 1 failed")
+                return 0
             if not await self._await_power_settled(min_pw, is_charge=False):
                 logger.warning(
-                    "start_discharge: inverter did not settle at %d W within timeout – proceeding",
-                    min_pw,
+                    "start_discharge: inverter did not settle at %dW – proceeding", min_pw
                 )
-            # Phase 2: set target, wait for API setpoint confirmation
-            logger.info("start_discharge: phase 2 – %d W (target setpoint)", clamped)
-            success = await self._set_properties(props, smart_mode)
-            if not await self._await_setpoint_confirmed(clamped, is_charge=False):
-                logger.warning(
-                    "start_discharge: setpoint %d W not confirmed in API within timeout", clamped
-                )
-        elif _starting_from_cold:
-            # Cold start at/below min_power (e.g. passive 1 W or exact min):
-            # send directly and confirm API setpoint (power-flow check would be unreliable)
-            success = await self._set_properties(props, smart_mode)
-            if not await self._await_setpoint_confirmed(clamped, is_charge=False):
-                logger.warning("start_discharge: setpoint %d W not confirmed in API", clamped)
+            logger.info("start_discharge: phase 2 – %dW (target)", target)
+            ok = await self._set_properties(props, smart_mode=True)
+            if ok and not await self._await_setpoint_confirmed(target, is_charge=False):
+                logger.warning("start_discharge: setpoint %dW not confirmed in API", target)
         else:
-            # Already discharging (e.g. watchdog or regulator setpoint tweak): direct set
-            success = await self._set_properties(props, smart_mode)
+            # Cold start at or below min_power: direct send + API confirmation
+            ok = await self._set_properties(props, smart_mode=True)
+            if ok and not await self._await_setpoint_confirmed(target, is_charge=False):
+                logger.warning("start_discharge: setpoint %dW not confirmed", target)
 
-        if not success:
-            logger.warning("start_discharge: command not confirmed (HTTP error?)")
-        return success
+        if not ok:
+            logger.error("start_discharge: hardware error – command failed")
+            return 0
 
-    async def start_charge(self, power_w: int, *, smart_mode: bool = True) -> bool:
-        """Start AC charging.
+        self._current_mode = ACMode.OUTPUT
+        self._setpoint_w = target
+        logger.info("start_discharge: started at %dW", target)
+        return target
 
-        A *power_w* of 0 enters **passive charge mode**: the relays stay open
-        (fast response later) but no real power flows.  The device receives
-        ``inputLimit=1`` in this case.
+    async def start_charge(self) -> int:
+        """Start AC charging.  Returns the initial setpoint set (W), 0 on hardware error.
 
-        Direct mode transitions (e.g. discharge → charge) are supported: all
-        three properties (acMode, inputLimit, outputLimit) are sent atomically.
+        The start setpoint is determined automatically:
 
-        **Two-step startup** – when transitioning from a non-charge state (idle
-        or discharge) and the target exceeds ``min_power``:
+        * **Already charging** (``_current_mode == INPUT`` and ``_setpoint_w > 0``): re-send
+          current setpoint, no two-step needed.
+        * **Cold start**: target = ``min_power`` (at least 1 W).  Two-step is applied when
+          the target exceeds ``min_power`` (not the case for a plain cold start, but the
+          path handles it symmetrically with :meth:`start_discharge`).
 
-        1. First request ``min_power`` and wait until the grid draw reaches that
-           level (``_await_power_settled``).
-        2. Then request *power_w* and wait until the API setpoint is confirmed
-           (``_await_setpoint_confirmed``).
-
-        For targets ≤ ``min_power`` (or passive 0 → 1 W) only the API setpoint
-        is confirmed.
-
-        Args:
-            power_w: charge power in watts (0 = passive standby)
-            smart_mode: True = RAM only, False = write to flash
+        After this method returns the caller may use :meth:`set_ac_input_limit` to
+        raise the charge power without another startup sequence.
         """
-        # Fetch limits on first use (same guard as start_discharge)
         if self._limits.charge_limit == 0:
             logger.debug("start_charge: limits not yet known – reading device state…")
             await self.get_state(use_cache=False)
 
-        if power_w == 0:
-            clamped = 1
-            logger.info("start_charge: 0 W → 1 W (passive AC charge, relays open)")
+        already_charging = self._current_mode == ACMode.INPUT and self._setpoint_w > 0
+        target: int
+        if already_charging:
+            target = self._setpoint_w
+            logger.info("start_charge: already at %dW – re-confirming setpoint", target)
         else:
-            clamped = (
-                min(power_w, self._limits.charge_limit)
-                if self._limits.charge_limit > 0
-                else power_w
-            )
-            if clamped != power_w:
-                logger.info(
-                    "start_charge: %d W → clipped to %d W (charge limit: %d W)",
-                    power_w,
-                    clamped,
-                    self._limits.charge_limit,
-                )
-            else:
-                logger.info("start_charge: %d W (acMode=INPUT, outputLimit=0)", clamped)
+            target = max(1, self._limits.min_power)
+            logger.info("start_charge: cold start at %dW (min_power)", target)
 
-        # Capture before mutating – True when not currently charging
-        _starting_from_cold = self._setpoint_w >= 0
         self._flush_energy_to_now()
-        self._setpoint_w = -clamped  # negative = charging
+        props = {"acMode": ACMode.INPUT.value, "inputLimit": target, "outputLimit": 0}
+        min_pw = self._limits.min_power or 1
+        ok: bool
 
-        props = {"acMode": ACMode.INPUT.value, "inputLimit": clamped, "outputLimit": 0}
-        min_pw = self._limits.min_power or 0
-        success: bool
-
-        if _starting_from_cold and min_pw > 0 and clamped > min_pw:
-            # ── Two-step: cold start above minimum ──────────────────────────────
-            # Phase 1: request minimum power and wait for physical settling
-            logger.info("start_charge: phase 1 – %d W (min), waiting to settle…", min_pw)
-            await self._set_properties(
+        if already_charging:
+            ok = await self._set_properties(props, smart_mode=True)
+        elif target > min_pw:
+            # Cold start above minimum: two-step (symmetry with start_discharge)
+            logger.info("start_charge: phase 1 – %dW (min), waiting to settle…", min_pw)
+            ok = await self._set_properties(
                 {"acMode": ACMode.INPUT.value, "inputLimit": min_pw, "outputLimit": 0},
-                smart_mode,
+                smart_mode=True,
             )
+            if not ok:
+                logger.error("start_charge: phase 1 failed")
+                return 0
             if not await self._await_power_settled(min_pw, is_charge=True):
-                logger.warning(
-                    "start_charge: inverter did not settle at %d W within timeout – proceeding",
-                    min_pw,
-                )
-            # Phase 2: set target, wait for API setpoint confirmation
-            logger.info("start_charge: phase 2 – %d W (target setpoint)", clamped)
-            success = await self._set_properties(props, smart_mode)
-            if not await self._await_setpoint_confirmed(clamped, is_charge=True):
-                logger.warning(
-                    "start_charge: setpoint %d W not confirmed in API within timeout", clamped
-                )
-        elif _starting_from_cold:
-            # Cold start at/below min_power (e.g. passive 1 W or exact min):
-            # send directly and confirm API setpoint only
-            success = await self._set_properties(props, smart_mode)
-            if not await self._await_setpoint_confirmed(clamped, is_charge=True):
-                logger.warning("start_charge: setpoint %d W not confirmed in API", clamped)
+                logger.warning("start_charge: inverter did not settle at %dW – proceeding", min_pw)
+            logger.info("start_charge: phase 2 – %dW (target)", target)
+            ok = await self._set_properties(props, smart_mode=True)
+            if ok and not await self._await_setpoint_confirmed(target, is_charge=True):
+                logger.warning("start_charge: setpoint %dW not confirmed in API", target)
         else:
-            # Already charging (e.g. SoC throttle or high-SoC limit adjustment): direct set
-            success = await self._set_properties(props, smart_mode)
+            ok = await self._set_properties(props, smart_mode=True)
+            if ok and not await self._await_setpoint_confirmed(target, is_charge=True):
+                logger.warning("start_charge: setpoint %dW not confirmed", target)
 
-        if not success:
-            logger.warning("start_charge: command not confirmed")
-        return success
+        if not ok:
+            logger.error("start_charge: hardware error – command failed")
+            return 0
+
+        self._current_mode = ACMode.INPUT
+        self._setpoint_w = target
+        logger.info("start_charge: started at %dW", target)
+        return target
 
     async def stop(self, *, smart_mode: bool = True) -> bool:
         """Stop all activity.
@@ -1004,7 +987,6 @@ class SolarFlowBase(ISolarFlowClient):
         """
         logger.info("stop: acMode=OUTPUT outputLimit=0 inputLimit=0")
         self._flush_energy_to_now()
-        self._setpoint_w = 0
         success = await self._set_properties(
             {
                 "acMode": ACMode.OUTPUT.value,
@@ -1013,6 +995,9 @@ class SolarFlowBase(ISolarFlowClient):
             },
             smart_mode,
         )
+        if success:
+            self._current_mode = ACMode.OUTPUT
+            self._setpoint_w = 0
         if not success:
             logger.warning("stop: command not confirmed")
         return success

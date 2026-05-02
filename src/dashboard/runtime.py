@@ -14,7 +14,7 @@ One asyncio task runs the main loop (~1 s):
 
 Device modes
 ------------
-AC_CHARGE            → stop regulator, call battery.start_charge(power_w)
+AC_CHARGE            → stop regulator, call battery.start_charge() then set_ac_input_limit(power_w)
 IDLE                 → stop regulator, call battery.stop()
 DISCHARGE_ZERO_FEED  → run active regulator loop
 
@@ -275,7 +275,9 @@ class ControlRuntime:
             self._charge_power_w = pw
             if self._active_regulator:
                 self._active_regulator.reset()
-            await self._battery.start_charge(pw)
+            setpoint = await self._battery.start_charge()
+            if setpoint > 0 and pw > setpoint:
+                await self._battery.set_ac_input_limit(pw)
 
         elif mode == DeviceMode.IDLE:
             if self._active_regulator:
@@ -287,7 +289,7 @@ class ControlRuntime:
             if self._active_regulator:
                 self._active_regulator.reset()
             # The regulator loop will start the battery on its first compute_setpoint call.
-            await self._battery.start_discharge(self._min_discharge_w)
+            await self._battery.start_discharge()
 
         elif mode == DeviceMode.AUTO:
             # AUTO: don't touch the battery yet – the AutoModeManager drives it
@@ -325,7 +327,9 @@ class ControlRuntime:
             self._charge_power_w = pw
             if self._active_regulator:
                 self._active_regulator.reset()
-            await self._battery.start_charge(pw)
+            setpoint = await self._battery.start_charge()
+            if setpoint > 0 and pw > setpoint:
+                await self._battery.set_ac_input_limit(pw)
 
         elif mode == DeviceMode.IDLE:
             if self._active_regulator:
@@ -343,7 +347,7 @@ class ControlRuntime:
                 if self._zfi_paused_low_soc:
                     await self._battery.stop()
                 else:
-                    await self._battery.start_discharge(self._min_discharge_w)
+                    await self._battery.start_discharge()
 
         self._auto_effective_mode = mode
 
@@ -443,14 +447,14 @@ class ControlRuntime:
                         self._zfi_paused_no_grid = True
                         if self._active_regulator:
                             self._active_regulator.reset()
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
                         _discharge_active = False  # regulator suspended
                     elif sample is not None and self._zfi_paused_no_grid:
                         logger.info("ZFI: Shelly data restored – resuming zero-feed regulation")
                         self._zfi_paused_no_grid = False
                         if self._active_regulator:
                             self._active_regulator.reset()
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
                         # Recalculate; now data is available so no longer suppressed
                         _zfi_suppressed = self._zfi_paused_low_soc or self._zfi_paused_full_battery
                         _discharge_active = _discharge_mode and not _zfi_suppressed
@@ -605,7 +609,7 @@ class ControlRuntime:
                     if _discharge_mode:
                         if self._active_regulator:
                             self._active_regulator.reset()
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
 
                 elif soc > self._min_soc_pct or solar_w > 0:
                     # SoC rose above min_soc OR PV appeared → enter soft-limit
@@ -622,7 +626,7 @@ class ControlRuntime:
                     if _discharge_mode:
                         if self._active_regulator:
                             self._active_regulator.reset()
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
 
             elif self._zfi_soc_limited:
                 # Currently in soft-limit – check for transitions
@@ -638,7 +642,7 @@ class ControlRuntime:
                     if _discharge_mode and self._active_regulator:
                         self._active_regulator.reset()
                     if _discharge_mode:
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
 
                 elif soc <= self._min_soc_pct and solar_w <= 0:
                     # Dropped to min_soc without PV → escalate to full pause
@@ -698,8 +702,8 @@ class ControlRuntime:
         _solar_w = float(sample.solar_input_w or 0.0)
         _batt_out = abs(sample.battery_output_w)
         _in_cooldown = (
-            (now_mono - self._full_battery_resumed_at) < self._full_battery_resume_cooldown_s
-        )
+            now_mono - self._full_battery_resumed_at
+        ) < self._full_battery_resume_cooldown_s
 
         # "Battery not delivering" – reliable bypass proxy without using the unreliable
         # bypass_active flag.  Condition: battery output near 0 while PV covers our minimum
@@ -743,7 +747,7 @@ class ControlRuntime:
                 self._full_battery_resumed_at = now_mono
                 if self._active_regulator is not None:
                     self._active_regulator.reset()
-                await self._battery.start_discharge(self._min_discharge_w)
+                await self._battery.start_discharge()
             else:
                 # PV still available or SOC still high: use sustained grid-draw timer
                 grid_w = sample.total_grid_w
@@ -751,7 +755,8 @@ class ControlRuntime:
                     if self._full_battery_resume_since is None:
                         self._full_battery_resume_since = now_mono
                         logger.debug(
-                            "Full-battery pause: grid draw %.0fW \u2013 wake-up timer started", grid_w
+                            "Full-battery pause: grid draw %.0fW \u2013 wake-up timer started",
+                            grid_w,
                         )
                     elif (
                         now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s
@@ -766,11 +771,13 @@ class ControlRuntime:
                         self._full_battery_resumed_at = now_mono
                         if self._active_regulator is not None:
                             self._active_regulator.reset()
-                        await self._battery.start_discharge(self._min_discharge_w)
+                        await self._battery.start_discharge()
                 else:
                     # Grid draw below threshold \u2192 reset the timer
                     if self._full_battery_resume_since is not None:
-                        logger.debug("Full-battery pause: grid draw too low \u2013 wake-up timer reset")
+                        logger.debug(
+                            "Full-battery pause: grid draw too low \u2013 wake-up timer reset"
+                        )
                     self._full_battery_resume_since = None
                     self._full_battery_resume_since = None
 
@@ -779,7 +786,9 @@ class ControlRuntime:
         soc = sample.soc_percent
         if soc is None:
             return
-        current_pw = self._charge_power_w or 400
+        current_pw = (
+            self._charge_power_w if self._charge_power_w is not None else self._min_discharge_w
+        )
         if soc > self._high_soc_charge_limit_pct:
             limit_w = (
                 self._high_soc_charge_limit_w
@@ -795,7 +804,7 @@ class ControlRuntime:
                     current_pw,
                 )
                 self._charge_power_w = limit_w
-                await self._battery.start_charge(limit_w)
+                await self._battery.set_ac_input_limit(limit_w)
 
     async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
         """Detect sustained feed-in and reset the regulator if triggered.

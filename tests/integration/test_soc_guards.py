@@ -60,12 +60,16 @@ class FakeBattery:
     async def get_max_soc(self, *, use_cache: bool = True) -> int:
         return self._max_soc
 
-    async def start_discharge(self, power_w: int) -> bool:
-        self.commands.append(("discharge", power_w))
-        return True
+    async def start_discharge(self) -> int:
+        self.commands.append(("discharge",))
+        return 20  # min_power
 
-    async def start_charge(self, power_w: int) -> bool:
-        self.commands.append(("charge", power_w))
+    async def start_charge(self) -> int:
+        self.commands.append(("charge",))
+        return 20  # min_power
+
+    async def set_ac_input_limit(self, power_w: int) -> bool:
+        self.commands.append(("input_limit", power_w))
         return True
 
     async def stop(self) -> bool:
@@ -181,16 +185,20 @@ async def test_zfi_pauses_at_min_soc() -> None:
 
 @pytest.mark.asyncio
 async def test_zfi_no_premature_resume() -> None:
-    """SoC between min and min+hysteresis must NOT resume ZFI."""
+    """SoC between min and min+hysteresis must enter soft-limit, not full resume."""
     batt = FakeBattery(soc=18)
     rt = _make_runtime(batt, min_soc_pct=15, min_soc_hysteresis_pct=5)
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
-    rt._zfi_paused_low_soc = True  # already paused
+    rt._zfi_paused_low_soc = True  # already in full pause
 
     sample = _make_sample(soc=18)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_low_soc is True
+    # SoC 18 > min 15 → transition to soft-limit (NOT staying in full pause,
+    # and NOT a full resume either – power is capped at min_discharge_w)
+    assert rt._zfi_paused_low_soc is False
+    assert rt._zfi_soc_limited is True
+    assert ("discharge",) in batt.commands  # soft-limit restarts at min_power
 
 
 @pytest.mark.asyncio
@@ -208,7 +216,7 @@ async def test_zfi_resumes_after_hysteresis() -> None:
 
     assert rt._zfi_paused_low_soc is False
     assert reg.reset_calls == 1
-    assert ("discharge", rt._min_discharge_w) in batt.commands
+    assert ("discharge",) in batt.commands
 
 
 # ── Tests: Vollbatterie-Pause ─────────────────────────────────────────────────
@@ -269,7 +277,7 @@ async def test_full_battery_resumes_after_30s() -> None:
     assert rt._zfi_paused_full_battery is False
     assert rt._full_battery_resume_since is None
     assert reg.reset_calls == 1
-    assert ("discharge", rt._min_discharge_w) in batt.commands
+    assert ("discharge",) in batt.commands
 
 
 @pytest.mark.asyncio
@@ -303,7 +311,7 @@ async def test_high_soc_charge_limit_halves_charge_power() -> None:
     await rt._apply_high_soc_charge_limit(sample)
 
     assert rt._charge_power_w == 400  # halved
-    assert ("charge", 400) in batt.commands
+    assert ("input_limit", 400) in batt.commands
 
 
 @pytest.mark.asyncio
@@ -318,7 +326,7 @@ async def test_high_soc_charge_limit_uses_explicit_value() -> None:
     await rt._apply_high_soc_charge_limit(sample)
 
     assert rt._charge_power_w == 200
-    assert ("charge", 200) in batt.commands
+    assert ("input_limit", 200) in batt.commands
 
 
 @pytest.mark.asyncio
