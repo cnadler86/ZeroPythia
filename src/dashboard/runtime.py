@@ -134,6 +134,10 @@ class ControlRuntime:
         # ZFI soft-limit: SOC in hysteresis, output capped at PV power
         self._zfi_soc_limited: bool = False
         self._zfi_soc_limit_cap_w: int = 0
+        # Cooldown after resuming from full-battery pause: prevents immediate re-entry
+        # when bypass clears slowly (1-2 ticks after resume command).
+        self._full_battery_resumed_at: float = float("-inf")  # monotonic ts
+        self._full_battery_resume_cooldown_s: float = 5.0
 
         # Regulator registry
         self._regulators: dict[str, RegulatorBase] = {}
@@ -692,10 +696,16 @@ class ControlRuntime:
             return
 
         bypass_active = bool(sample.bypass_active) if sample.bypass_active is not None else False
+        # Suppress bypass-based re-entry for a short cooldown after resuming.
+        # This prevents the race: resume→ next tick cache still shows bypass=True → re-pause.
+        _in_cooldown = (
+            now_mono - self._full_battery_resumed_at
+        ) < self._full_battery_resume_cooldown_s
+        _pause_trigger = (soc is not None and soc >= self._full_soc_pct) or (
+            bypass_active and not _in_cooldown
+        )
 
-        if not self._zfi_paused_full_battery and (
-            (soc is not None and soc >= self._full_soc_pct) or bypass_active
-        ):
+        if not self._zfi_paused_full_battery and _pause_trigger:
             reason = (
                 "bypass active (PV direct-to-house, battery full)"
                 if bypass_active
@@ -717,6 +727,7 @@ class ControlRuntime:
                 )
                 self._zfi_paused_full_battery = False
                 self._full_battery_resume_since = None
+                self._full_battery_resumed_at = now_mono
                 if self._active_regulator is not None:
                     self._active_regulator.reset()
                 await self._battery.start_discharge(self._min_discharge_w)
@@ -739,6 +750,7 @@ class ControlRuntime:
                         )
                         self._zfi_paused_full_battery = False
                         self._full_battery_resume_since = None
+                        self._full_battery_resumed_at = now_mono
                         if self._active_regulator is not None:
                             self._active_regulator.reset()
                         await self._battery.start_discharge(self._min_discharge_w)
