@@ -17,6 +17,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "httpx",
     "matplotlib",
     "ruff",
     "tqdm",

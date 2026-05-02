@@ -57,13 +57,18 @@ class FakeBattery:
     async def get_ac_output_power(self) -> int:
         return 200
 
-    async def start_charge(self, power_w: int) -> bool:
+    async def start_charge(self) -> int:
         self.last_command = "charge"
-        self.last_power = power_w
-        return True
+        self.last_power = 20
+        return 20
 
-    async def start_discharge(self, power_w: int) -> bool:
+    async def start_discharge(self) -> int:
         self.last_command = "discharge"
+        self.last_power = 20
+        return 20
+
+    async def set_ac_input_limit(self, power_w: int) -> bool:
+        self.last_command = "input_limit"
         self.last_power = power_w
         return True
 
@@ -239,7 +244,7 @@ class TestPlanPayloadParsing:
 
         # 3 merged groups: ZFI, IDLE, AC_CHARGE
         labels = [e.mode_label for e in summary]
-        assert labels == ["Zero-Feed", "Idle", "AC Laden"], f"Got: {labels}"
+        assert labels == ["Zero-Feed", "Idle", "AC Charge"], f"Got: {labels}"
         # ZFI/TFI discharge value is intentionally hidden in summary.
         zfi_entry = summary[0]
         assert zfi_entry.power_w is None

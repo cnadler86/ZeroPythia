@@ -41,10 +41,16 @@ class FakeBattery:
     async def get_ac_output_power(self):
         return 200
 
-    async def start_charge(self, w):
-        return True
+    async def start_charge(self):
+        self._setpoint_w = 20
+        return 20
 
-    async def start_discharge(self, w):
+    async def start_discharge(self):
+        self._setpoint_w = 20
+        return 20
+
+    async def set_ac_input_limit(self, power_w: int):
+        self._setpoint_w = power_w
         return True
 
     async def stop(self):
