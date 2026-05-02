@@ -691,41 +691,62 @@ class ControlRuntime:
                 self._zfi_soc_limit_cap_w = 0
             return
 
-        if soc is not None and not self._zfi_paused_full_battery and soc >= self._full_soc_pct:
-            logger.info(
-                "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%%",
-                soc,
-                self._full_soc_pct,
+        bypass_active = bool(sample.bypass_active) if sample.bypass_active is not None else False
+
+        if not self._zfi_paused_full_battery and (
+            (soc is not None and soc >= self._full_soc_pct) or bypass_active
+        ):
+            reason = (
+                "bypass active (PV direct-to-house, battery full)"
+                if bypass_active
+                else f"SoC {soc}% >= hardware maximum {self._full_soc_pct}%"
             )
+            logger.info("ZFI full-battery pause: %s", reason)
             self._zfi_paused_full_battery = True
             self._full_battery_resume_since = None
             await self._battery.stop()
 
         elif self._zfi_paused_full_battery:
-            # Check wake-up condition: sustained grid draw
-            grid_w = sample.total_grid_w
-            if grid_w >= self._full_soc_resume_threshold_w:
-                if self._full_battery_resume_since is None:
-                    self._full_battery_resume_since = now_mono
-                    logger.debug(
-                        "Full-battery pause: grid draw %.0fW – wake-up timer started", grid_w
-                    )
-                elif now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s:
-                    logger.info(
-                        "Full-battery pause ended: grid draw %.0fW sustained for >= %.0fs",
-                        grid_w,
-                        self._full_soc_resume_delay_s,
-                    )
-                    self._zfi_paused_full_battery = False
-                    self._full_battery_resume_since = None
-                    if self._active_regulator is not None:
-                        self._active_regulator.reset()
-                    await self._battery.start_discharge(self._min_discharge_w)
-            else:
-                # Grid draw below threshold → reset the timer
-                if self._full_battery_resume_since is not None:
-                    logger.debug("Full-battery pause: grid draw too low – wake-up timer reset")
+            # When bypass just ended and SoC is below max: exit immediately (no timer
+            # needed – the battery wasn't actually at SOC limit, just PV bypassing).
+            if not bypass_active and (soc is not None and soc < self._full_soc_pct):
+                logger.info(
+                    "ZFI full-battery pause ended: bypass cleared and SoC %d%% < %d%%",
+                    soc,
+                    self._full_soc_pct,
+                )
+                self._zfi_paused_full_battery = False
                 self._full_battery_resume_since = None
+                if self._active_regulator is not None:
+                    self._active_regulator.reset()
+                await self._battery.start_discharge(self._min_discharge_w)
+            else:
+                # SOC still at max (or unknown): use sustained grid-draw timer
+                grid_w = sample.total_grid_w
+                if grid_w >= self._full_soc_resume_threshold_w:
+                    if self._full_battery_resume_since is None:
+                        self._full_battery_resume_since = now_mono
+                        logger.debug(
+                            "Full-battery pause: grid draw %.0fW – wake-up timer started", grid_w
+                        )
+                    elif (
+                        now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s
+                    ):
+                        logger.info(
+                            "Full-battery pause ended: grid draw %.0fW sustained for >= %.0fs",
+                            grid_w,
+                            self._full_soc_resume_delay_s,
+                        )
+                        self._zfi_paused_full_battery = False
+                        self._full_battery_resume_since = None
+                        if self._active_regulator is not None:
+                            self._active_regulator.reset()
+                        await self._battery.start_discharge(self._min_discharge_w)
+                else:
+                    # Grid draw below threshold → reset the timer
+                    if self._full_battery_resume_since is not None:
+                        logger.debug("Full-battery pause: grid draw too low – wake-up timer reset")
+                    self._full_battery_resume_since = None
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
         """Reduce AC charge power when SoC exceeds the configured upper threshold."""
