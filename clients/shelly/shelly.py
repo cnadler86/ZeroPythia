@@ -223,9 +223,7 @@ class ShellyClient:
 
         # Fetch failed – use stale data if still within timeout
         if self._raw_cache is not None and (now - self._cache_timestamp) < self._stale_timeout:
-            logger.warning(
-                "Shelly: using stale data (%.1f s old)", now - self._cache_timestamp
-            )
+            logger.warning("Shelly: using stale data (%.1f s old)", now - self._cache_timestamp)
             return gen, self._raw_cache
 
         return None
@@ -280,3 +278,21 @@ class ShellyClient:
         """
         state = await self.get_state(use_cache)
         return state.total_power_w if state else None
+
+    async def get_phase_powers(
+        self, use_cache: bool = True
+    ) -> Optional[tuple[float, float, float]]:
+        """Current phase powers as (A, B, C) in watts.
+
+        Returns None when no valid data is available (connection failed and
+        stale-data timeout has expired).  The runtime should treat None as
+        a signal to enter the grid-meter fallback mode.
+        """
+        state = await self.get_state(use_cache)
+        if state is None:
+            return None
+        return (state.phase_a_power_w, state.phase_b_power_w, state.phase_c_power_w)
+
+    async def get_total_power(self, use_cache: bool = True) -> Optional[float]:
+        """Current total grid power in watts.  Delegates to get_power()."""
+        return await self.get_power(use_cache)

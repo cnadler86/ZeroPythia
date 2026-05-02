@@ -37,26 +37,6 @@ _V4_CONFIG = Path("config") / "zerofeed_v4.yaml"
 LOG = logging.getLogger("start_dashboard")
 
 
-# ── Shelly adapter ────────────────────────────────────────────────────────────
-
-
-class ShellyGridMeter:
-    """Adapter: ShellyClient → GridMeterProtocol."""
-
-    def __init__(self, client: ShellyClient) -> None:
-        self._client = client
-
-    async def get_phase_powers(self) -> Optional[tuple[float, float, float]]:
-        state = await self._client.get_state()
-        if state is None:
-            return None
-        return (state.phase_a_power_w, state.phase_b_power_w, state.phase_c_power_w)
-
-    async def get_total_power(self) -> Optional[float]:
-        state = await self._client.get_state(use_cache=True)
-        return state.total_power_w if state is not None else None
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 
@@ -79,11 +59,10 @@ async def run(
         ShellyClient(shelly_ip) as shelly_client,
         SolarFlowAsyncClient(zendure_ip) as solarflow,
     ):
-        grid_meter = ShellyGridMeter(shelly_client)
-
-        # ── Runtime ───────────────────────────────────────────────────────────
+        # ShellyClient directly implements GridMeterProtocol via get_phase_powers()
+        # and get_total_power() – no adapter needed.
         runtime = ControlRuntime(
-            grid_meter=grid_meter,
+            grid_meter=shelly_client,
             battery=solarflow,
             sampling_interval_s=1.0,
             control_interval_s=control_interval,

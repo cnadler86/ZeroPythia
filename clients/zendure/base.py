@@ -606,12 +606,22 @@ class SolarFlowBase(ISolarFlowClient):
         return await self._set_properties({"inputLimit": power_w}, smart_mode)
 
     async def set_ac_mode(self, mode: ACMode, *, smart_mode: bool = True) -> bool:
-        """Set the AC mode.
+        """Set the AC mode (low-level).
+
+        .. deprecated::
+            Prefer :meth:`start_charge`, :meth:`start_discharge`, or :meth:`stop`
+            which set *acMode*, *inputLimit*, and *outputLimit* atomically.
+            Calling this method alone leaves limits unchanged and may cause
+            unexpected behaviour on mode transitions.
 
         Args:
             mode: ACMode.INPUT (charge) or ACMode.OUTPUT (discharge)
             smart_mode: True = RAM only, False = write to flash
         """
+        logger.warning(
+            "set_ac_mode() called standalone – prefer start_charge/start_discharge/stop "
+            "for correct atomic mode transitions"
+        )
         mode = self.validate_ac_mode(mode)
         return await self._set_properties({"acMode": mode.value}, smart_mode)
 
@@ -723,27 +733,38 @@ class SolarFlowBase(ISolarFlowClient):
     async def start_discharge(self, power_w: int, *, smart_mode: bool = True) -> bool:
         """Start discharging.
 
+        A *power_w* of 0 enters **passive discharge mode**: the relays stay
+        open (fast response later) but no actual power flows.  The device
+        receives ``outputLimit=1`` in this case.
+
         Args:
-            power_w: discharge power in watts
+            power_w: discharge power in watts (0 = passive standby)
             smart_mode: True = RAM only, False = write to flash
         """
         if self._limits.discharge_limit == 0:
             logger.debug("start_discharge: limits not yet known – reading device state…")
             await self.get_state(use_cache=False)  # Force cache update to get limits
-        clamped = (
-            min(power_w, self._limits.discharge_limit)
-            if self._limits.discharge_limit > 0
-            else power_w
-        )
-        if clamped != power_w:
-            logger.info(
-                "start_discharge: %d W → clipped to %d W (discharge limit: %d W)",
-                power_w,
-                clamped,
-                self._limits.discharge_limit,
-            )
+
+        if power_w == 0:
+            # Passive mode: relays open and ready, no real power flow.
+            clamped = 1
+            logger.info("start_discharge: 0 W → 1 W (passive discharge, relays open)")
         else:
-            logger.info("start_discharge: %d W (acMode=OUTPUT, inputLimit=0)", clamped)
+            clamped = (
+                min(power_w, self._limits.discharge_limit)
+                if self._limits.discharge_limit > 0
+                else power_w
+            )
+            if clamped != power_w:
+                logger.info(
+                    "start_discharge: %d W → clipped to %d W (discharge limit: %d W)",
+                    power_w,
+                    clamped,
+                    self._limits.discharge_limit,
+                )
+            else:
+                logger.info("start_discharge: %d W (acMode=OUTPUT, inputLimit=0)", clamped)
+
         self._flush_energy_to_now()
         self._setpoint_w = clamped  # positive = discharging
         success = await self._set_properties(
@@ -761,22 +782,43 @@ class SolarFlowBase(ISolarFlowClient):
     async def start_charge(self, power_w: int, *, smart_mode: bool = True) -> bool:
         """Start AC charging.
 
+        A *power_w* of 0 enters **passive charge mode**: the relays stay open
+        (fast response later) but no real power flows.  The device receives
+        ``inputLimit=1`` in this case.
+
+        Direct mode transitions (e.g. discharge → charge) are supported: all
+        three properties (acMode, inputLimit, outputLimit) are sent atomically
+        so no intermediate IDLE step is needed.
+
         Args:
-            power_w: charge power in watts
+            power_w: charge power in watts (0 = passive standby)
             smart_mode: True = RAM only, False = write to flash
         """
-        clamped = (
-            min(power_w, self._limits.charge_limit) if self._limits.charge_limit > 0 else power_w
-        )
-        if clamped != power_w:
-            logger.info(
-                "start_charge: %d W → clipped to %d W (charge limit: %d W)",
-                power_w,
-                clamped,
-                self._limits.charge_limit,
-            )
+        # Fetch limits on first use (same guard as start_discharge)
+        if self._limits.charge_limit == 0:
+            logger.debug("start_charge: limits not yet known – reading device state…")
+            await self.get_state(use_cache=False)
+
+        if power_w == 0:
+            # Passive mode: relays open and ready, no real power flow.
+            clamped = 1
+            logger.info("start_charge: 0 W → 1 W (passive AC charge, relays open)")
         else:
-            logger.info("start_charge: %d W (acMode=INPUT, outputLimit=0)", clamped)
+            clamped = (
+                min(power_w, self._limits.charge_limit)
+                if self._limits.charge_limit > 0
+                else power_w
+            )
+            if clamped != power_w:
+                logger.info(
+                    "start_charge: %d W → clipped to %d W (charge limit: %d W)",
+                    power_w,
+                    clamped,
+                    self._limits.charge_limit,
+                )
+            else:
+                logger.info("start_charge: %d W (acMode=INPUT, outputLimit=0)", clamped)
+
         self._flush_energy_to_now()
         self._setpoint_w = -clamped  # negative = charging
         success = await self._set_properties(

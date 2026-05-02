@@ -184,6 +184,12 @@ class DashboardState(BaseModel):
     """ZFI regelung pausiert – SoC unter Mindestschwelle."""
     zfi_paused_full_battery: bool = False
     """ZFI regelung pausiert – Batterie voll, wartet auf Lastbedarf (30s)."""
+    zfi_paused_no_grid: bool = False
+    """ZFI regelung pausiert – Shelly Daten nicht verfügbar (Fallback-Modus, Min-Leistung)."""
+    zfi_soc_limited: bool = False
+    """ZFI regelung soft-limitiert – SOC in Hysterese, Ausgang auf PV-Leistung begrenzt."""
+    zfi_soc_limit_cap_w: Optional[int] = None
+    """Aktuelles Ausgangslimit während SOC-Limitierung [W]. None wenn nicht aktiv."""
     error: Optional[str] = None
 
 

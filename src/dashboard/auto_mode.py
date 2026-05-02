@@ -209,6 +209,9 @@ class AutoModeManager:
         # Internal state
         self._connected = False
         self._last_inv_mode: Optional[InverterMode] = None
+        self._last_charge_power_w: Optional[int] = (
+            None  # track AC charge power for change detection
+        )
         self._in_fallback: bool = False  # True when last dispatch was the no-plan fallback
         self._effective_mode_label: str = "–"
         self._plan_summary: list[PlanSummaryEntry] = []
@@ -302,17 +305,28 @@ class AutoModeManager:
         )
         await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
         self._last_inv_mode = InverterMode.DISCHARGE_ZERO_FEED_IN
+        self._last_charge_power_w = None
         self._in_fallback = True
         self._effective_mode_label = "Zero-Feed (Fallback)"
 
     async def _apply_step(self, step: PlanStep, cb: ApplyModeCb) -> None:
-        """Dispatch a plan step – only calls *cb* when the mode actually changes."""
+        """Dispatch a plan step – only calls *cb* when the mode or power actually changes."""
         mode = step.mode
-        if mode == self._last_inv_mode and not self._in_fallback:
-            return  # no change (and not coming from a fallback state)
-
         plan = self._subscriber._plan  # noqa: SLF001
         dt_hours = plan.dt_hours if plan is not None else 0.25
+
+        # Pre-compute charge power for AC_CHARGE modes so we can detect power changes
+        # even when the mode itself stays the same.
+        charge_w: Optional[int] = None
+        if mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
+            charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
+            charge_w = max(100, min(3000, charge_w))
+
+        # Skip if nothing changed
+        if mode == self._last_inv_mode and not self._in_fallback:
+            if charge_w is None or charge_w == self._last_charge_power_w:
+                return  # mode and power both unchanged
+            # AC_CHARGE power changed → fall through to dispatch
 
         logger.info(
             "AutoMode plan step change: %s → %s",
@@ -331,11 +345,10 @@ class AutoModeManager:
             await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
 
         elif mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
-            charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
-            charge_w = max(100, min(3000, charge_w))
             await cb(DeviceMode.AC_CHARGE, charge_w, None)
 
         self._last_inv_mode = mode
+        self._last_charge_power_w = charge_w
         self._in_fallback = False
         self._effective_mode_label = _MODE_LABELS.get(mode, mode.name)
 
