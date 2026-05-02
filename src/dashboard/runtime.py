@@ -137,7 +137,7 @@ class ControlRuntime:
         # Cooldown after resuming from full-battery pause: prevents immediate re-entry
         # when bypass clears slowly (1-2 ticks after resume command).
         self._full_battery_resumed_at: float = float("-inf")  # monotonic ts
-        self._full_battery_resume_cooldown_s: float = 5.0
+        self._full_battery_resume_cooldown_s: float = 10.0
 
         # Regulator registry
         self._regulators: dict[str, RegulatorBase] = {}
@@ -695,20 +695,31 @@ class ControlRuntime:
                 self._zfi_soc_limit_cap_w = 0
             return
 
-        bypass_active = bool(sample.bypass_active) if sample.bypass_active is not None else False
-        # Suppress bypass-based re-entry for a short cooldown after resuming.
-        # This prevents the race: resume→ next tick cache still shows bypass=True → re-pause.
+        _solar_w = float(sample.solar_input_w or 0.0)
+        _batt_out = abs(sample.battery_output_w)
         _in_cooldown = (
-            now_mono - self._full_battery_resumed_at
-        ) < self._full_battery_resume_cooldown_s
-        _pause_trigger = (soc is not None and soc >= self._full_soc_pct) or (
-            bypass_active and not _in_cooldown
+            (now_mono - self._full_battery_resumed_at) < self._full_battery_resume_cooldown_s
         )
 
-        if not self._zfi_paused_full_battery and _pause_trigger:
+        # "Battery not delivering" – reliable bypass proxy without using the unreliable
+        # bypass_active flag.  Condition: battery output near 0 while PV covers our minimum
+        # discharge request AND we are outside the post-resume cooldown window.
+        # When this is True the inverter is effectively routing PV directly to the house
+        # (bypass / full-battery state) and the battery cannot contribute.
+        _battery_not_delivering = (
+            not _in_cooldown
+            and _batt_out < self._min_discharge_w * 0.5
+            and _solar_w >= self._min_discharge_w
+        )
+
+        if not self._zfi_paused_full_battery and (
+            (soc is not None and soc >= self._full_soc_pct) or _battery_not_delivering
+        ):
             reason = (
-                "bypass active (PV direct-to-house, battery full)"
-                if bypass_active
+                f"battery not delivering (out={_batt_out:.0f}W < "
+                f"{self._min_discharge_w * 0.5:.0f}W threshold, "
+                f"solar={_solar_w:.0f}W \u2265 {self._min_discharge_w}W min)"
+                if _battery_not_delivering
                 else f"SoC {soc}% >= hardware maximum {self._full_soc_pct}%"
             )
             logger.info("ZFI full-battery pause: %s", reason)
@@ -717,13 +728,15 @@ class ControlRuntime:
             await self._battery.stop()
 
         elif self._zfi_paused_full_battery:
-            # When bypass just ended and SoC is below max: exit immediately (no timer
-            # needed – the battery wasn't actually at SOC limit, just PV bypassing).
-            if not bypass_active and (soc is not None and soc < self._full_soc_pct):
+            # Immediate exit: solar dropped below our minimum AND SOC is below the hardware
+            # maximum.  Neither the SOC-full condition nor the PV-bypass condition applies.
+            if _solar_w < self._min_discharge_w and (soc is None or soc < self._full_soc_pct):
                 logger.info(
-                    "ZFI full-battery pause ended: bypass cleared and SoC %d%% < %d%%",
+                    "ZFI full-battery pause ended immediately: "
+                    "solar %.0fW < %dW min and SoC %s%% < max",
+                    _solar_w,
+                    self._min_discharge_w,
                     soc,
-                    self._full_soc_pct,
                 )
                 self._zfi_paused_full_battery = False
                 self._full_battery_resume_since = None
@@ -732,13 +745,13 @@ class ControlRuntime:
                     self._active_regulator.reset()
                 await self._battery.start_discharge(self._min_discharge_w)
             else:
-                # SOC still at max (or unknown): use sustained grid-draw timer
+                # PV still available or SOC still high: use sustained grid-draw timer
                 grid_w = sample.total_grid_w
                 if grid_w >= self._full_soc_resume_threshold_w:
                     if self._full_battery_resume_since is None:
                         self._full_battery_resume_since = now_mono
                         logger.debug(
-                            "Full-battery pause: grid draw %.0fW – wake-up timer started", grid_w
+                            "Full-battery pause: grid draw %.0fW \u2013 wake-up timer started", grid_w
                         )
                     elif (
                         now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s
@@ -755,9 +768,10 @@ class ControlRuntime:
                             self._active_regulator.reset()
                         await self._battery.start_discharge(self._min_discharge_w)
                 else:
-                    # Grid draw below threshold → reset the timer
+                    # Grid draw below threshold \u2192 reset the timer
                     if self._full_battery_resume_since is not None:
-                        logger.debug("Full-battery pause: grid draw too low – wake-up timer reset")
+                        logger.debug("Full-battery pause: grid draw too low \u2013 wake-up timer reset")
+                    self._full_battery_resume_since = None
                     self._full_battery_resume_since = None
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
