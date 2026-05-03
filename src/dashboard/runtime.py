@@ -134,6 +134,8 @@ class ControlRuntime:
         # ZFI soft-limit: SOC in hysteresis, output capped at PV power
         self._zfi_soc_limited: bool = False
         self._zfi_soc_limit_cap_w: int = 0
+        # ZFI soft-limit but report as IDLE to MQTT: SoC closer to min_soc than to resume threshold
+        self._zfi_soc_limited_report_idle: bool = False
         # Cooldown after resuming from full-battery pause: prevents immediate re-entry
         # when bypass clears slowly (1-2 ticks after resume command).
         self._full_battery_resumed_at: float = float("-inf")  # monotonic ts
@@ -273,6 +275,12 @@ class ControlRuntime:
             else:
                 pw = self._min_discharge_w  # device minimum as sensible default
             self._charge_power_w = pw
+            # Clear all ZFI transient states
+            self._zfi_paused_low_soc = False
+            self._zfi_paused_full_battery = False
+            self._zfi_soc_limited = False
+            self._zfi_soc_limit_cap_w = 0
+            self._zfi_soc_limited_report_idle = False
             if self._active_regulator:
                 self._active_regulator.reset()
             setpoint = await self._battery.start_charge()
@@ -280,6 +288,12 @@ class ControlRuntime:
                 await self._battery.set_ac_input_limit(pw)
 
         elif mode == DeviceMode.IDLE:
+            # Clear all ZFI transient states
+            self._zfi_paused_low_soc = False
+            self._zfi_paused_full_battery = False
+            self._zfi_soc_limited = False
+            self._zfi_soc_limit_cap_w = 0
+            self._zfi_soc_limited_report_idle = False
             if self._active_regulator:
                 self._active_regulator.reset()
             await self._battery.stop()
@@ -320,6 +334,7 @@ class ControlRuntime:
             self._zfi_paused_no_grid = False
             self._zfi_soc_limited = False
             self._zfi_soc_limit_cap_w = 0
+            self._zfi_soc_limited_report_idle = False
             self._full_battery_resume_since = None
             # Explicit power wins; fall back to runtime minimum (never silently
             # resurrect a stale high-power setpoint via "pw = value or old").
@@ -537,7 +552,7 @@ class ControlRuntime:
             min_soc = None
             max_soc = None
 
-        self._min_soc_pct = min_soc if min_soc is not None else 15
+        self._min_soc_pct = min_soc if min_soc is not None else 10
         self._full_soc_pct = max_soc if max_soc is not None else 100
         self._min_soc_resume_pct = self._min_soc_pct + self._min_soc_hysteresis_pct
         if min_soc is None or max_soc is None:
@@ -594,6 +609,9 @@ class ControlRuntime:
 
         # ── Low-SoC soft-bypass ───────────────────────────────────────────────
         if soc is not None:
+            # Calculate midpoint of hysteresis band: if SoC <= midpoint, report as IDLE to MQTT
+            soc_midpoint = self._min_soc_pct + self._min_soc_hysteresis_pct / 2
+
             if self._zfi_paused_low_soc:
                 # Currently in full pause – check whether we can leave it
                 if soc >= self._min_soc_resume_pct:
@@ -623,6 +641,7 @@ class ControlRuntime:
                     self._zfi_paused_low_soc = False
                     self._zfi_soc_limited = True
                     self._zfi_soc_limit_cap_w = cap
+                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
                     if _discharge_mode:
                         if self._active_regulator:
                             self._active_regulator.reset()
@@ -639,6 +658,7 @@ class ControlRuntime:
                     )
                     self._zfi_soc_limited = False
                     self._zfi_soc_limit_cap_w = 0
+                    self._zfi_soc_limited_report_idle = False
                     if _discharge_mode and self._active_regulator:
                         self._active_regulator.reset()
                     if _discharge_mode:
@@ -653,14 +673,16 @@ class ControlRuntime:
                     )
                     self._zfi_soc_limited = False
                     self._zfi_soc_limit_cap_w = 0
+                    self._zfi_soc_limited_report_idle = False
                     self._zfi_paused_low_soc = True
                     if _discharge_mode:
                         await self._battery.stop()
 
                 else:
-                    # Still in hysteresis – update cap based on current PV
+                    # Still in hysteresis – update cap based on current PV and report status
                     cap = max(self._min_discharge_w, min(int(solar_w), self._max_discharge_w))
                     self._zfi_soc_limit_cap_w = cap
+                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
 
             else:
                 # Currently normal – check if we should enter hysteresis handling
@@ -675,18 +697,18 @@ class ControlRuntime:
                     if _discharge_mode:
                         await self._battery.stop()
 
-                elif soc < self._min_soc_resume_pct:
-                    # In hysteresis zone (SoC > min_soc or solar > 0) → soft-limit
+                elif soc <= self._min_soc_pct:
+                    # At or below min_soc with PV available → soft-limit
                     cap = max(self._min_discharge_w, min(int(solar_w), self._max_discharge_w))
                     logger.info(
-                        "ZFI soft-limit: SoC %d%% in hysteresis [%d%%, %d%%) → cap %dW",
+                        "ZFI soft-limit: SoC %d%% reached min_soc [%d%%] → cap %dW",
                         soc,
                         self._min_soc_pct,
-                        self._min_soc_resume_pct,
                         cap,
                     )
                     self._zfi_soc_limited = True
                     self._zfi_soc_limit_cap_w = cap
+                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
 
         # ── Full-battery rest (only relevant in ZFI modes) ───────────────────
         if not _discharge_mode:
@@ -697,6 +719,7 @@ class ControlRuntime:
             if self._zfi_soc_limited:
                 self._zfi_soc_limited = False
                 self._zfi_soc_limit_cap_w = 0
+                self._zfi_soc_limited_report_idle = False
             return
 
         _solar_w = float(sample.solar_input_w or 0.0)
