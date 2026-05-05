@@ -67,10 +67,15 @@ class FakeBattery:
         self.last_power = 20
         return 20
 
-    async def set_ac_input_limit(self, power_w: int) -> bool:
+    async def set_ac_input_limit(self, power_w: int) -> int:
         self.last_command = "input_limit"
         self.last_power = power_w
-        return True
+        return power_w
+
+    async def set_ac_output_limit(self, power_w: int) -> int:
+        self.last_command = "output_limit"
+        self.last_power = power_w
+        return power_w
 
     async def stop(self) -> bool:
         self.last_command = "stop"

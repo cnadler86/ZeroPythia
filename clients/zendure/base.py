@@ -370,6 +370,22 @@ class SolarFlowBase(ISolarFlowClient):
             else:
                 logger.warning("Unknown SolarFlow model from API: %s", data.product)
 
+        # Keep dynamic hardware limits in sync even after model discovery.
+        if self.model is not None:
+            limits = MODEL_LIMITS[self.model]
+            self._limits = BatteryLimits(
+                charge_limit=min(
+                    limits.charge_limit,
+                    data.properties.charge_max_limit or limits.charge_limit,
+                ),
+                discharge_limit=min(
+                    limits.discharge_limit,
+                    data.properties.inverse_max_power or limits.discharge_limit,
+                ),
+                solar_limit=limits.solar_limit,
+                min_power=limits.min_power,
+            )
+
     def _invalidate_cache(self) -> None:
         """Invalidate the cache."""
         self._cache_timestamp = 0
@@ -583,12 +599,16 @@ class SolarFlowBase(ISolarFlowClient):
 
     # ==================== High-Level API - Setters ====================
 
-    async def set_ac_output_limit(self, power_w: int, *, smart_mode: bool = True) -> bool:
+    async def set_ac_output_limit(self, power_w: int, *, smart_mode: bool = True) -> int:
         """Set the AC output power limit.
 
         Args:
             power_w: power in watts
             smart_mode: True = RAM only, False = write to flash
+
+        Returns:
+            Applied output setpoint in W (already clamped by device limits),
+            or ``-1`` on hardware/write error.
         """
         power_w = self.validate_output_limit(power_w)
         self._flush_energy_to_now()
@@ -596,14 +616,19 @@ class SolarFlowBase(ISolarFlowClient):
         if ok:
             self._current_mode = ACMode.OUTPUT
             self._setpoint_w = power_w
-        return ok
+            return power_w
+        return -1
 
-    async def set_ac_input_limit(self, power_w: int, *, smart_mode: bool = True) -> bool:
+    async def set_ac_input_limit(self, power_w: int, *, smart_mode: bool = True) -> int:
         """Set the AC input power limit.
 
         Args:
             power_w: power in watts
             smart_mode: True = RAM only, False = write to flash
+
+        Returns:
+            Applied input setpoint in W (already clamped by device limits),
+            or ``-1`` on hardware/write error.
         """
         power_w = self.validate_input_limit(power_w)
         self._flush_energy_to_now()
@@ -611,7 +636,8 @@ class SolarFlowBase(ISolarFlowClient):
         if ok:
             self._current_mode = ACMode.INPUT
             self._setpoint_w = power_w
-        return ok
+            return power_w
+        return -1
 
     async def set_ac_mode(self, mode: ACMode, *, smart_mode: bool = True) -> bool:
         """Set the AC mode (low-level).

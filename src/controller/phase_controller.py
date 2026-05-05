@@ -190,9 +190,7 @@ class PhaseController(_OscillationMixin):
         predictor_settings: Optional[BaseloadPredictorSettings] = None,
     ):
         self.settings = settings
-        self.preprocessor = HysteresisPreprocessor(
-            hysteresis=settings.hysteresis_w
-        )
+        self.preprocessor = HysteresisPreprocessor(hysteresis=settings.hysteresis_w)
         self.holder = BaseloadHolder(holder_settings) if holder_settings else None
         self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
         self._last_output: float = 0.0
@@ -389,6 +387,16 @@ class InverterPhaseController(_OscillationMixin):
             effective,
         )
         return effective
+
+    def apply_effective_total(self, effective_total_w: float, other_corrections_w: float) -> None:
+        """Align internal controller state to the actually applied battery setpoint.
+
+        This prevents windup when callers request a value above hardware limits
+        and the battery clamps to a lower effective setpoint.
+        """
+        self._last_desired_total = float(effective_total_w)
+        my_correction = self._last_desired_total - other_corrections_w
+        self._last_output = min(my_correction, self._last_osc_limit)
 
     @property
     def last_output(self) -> float:

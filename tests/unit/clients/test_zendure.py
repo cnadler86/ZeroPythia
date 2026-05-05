@@ -168,9 +168,9 @@ async def test_start_charge_mode_switch_from_discharge() -> None:
 
 async def test_set_ac_output_limit_updates_setpoint_on_success() -> None:
     client = FastMock(initial_soc=50)
-    ok = await client.set_ac_output_limit(300)
+    applied = await client.set_ac_output_limit(300)
 
-    assert ok is True
+    assert applied == 300
     assert client._setpoint_w == 300
     assert client._current_mode == ACMode.OUTPUT
     assert client._setpoint_w >= 0
@@ -178,9 +178,9 @@ async def test_set_ac_output_limit_updates_setpoint_on_success() -> None:
 
 async def test_set_ac_input_limit_updates_setpoint_and_mode() -> None:
     client = FastMock(initial_soc=50)
-    ok = await client.set_ac_input_limit(500)
+    applied = await client.set_ac_input_limit(500)
 
-    assert ok is True
+    assert applied == 500
     assert client._setpoint_w == 500
     assert client._current_mode == ACMode.INPUT
     assert client._setpoint_w >= 0

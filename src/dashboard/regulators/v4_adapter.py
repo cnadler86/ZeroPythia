@@ -222,6 +222,14 @@ class _V4Core:
 
         return ff_outputs, fb_correction, ff_sum
 
+    def apply_effective_total(self, effective_total_w: float, ff_sum: float) -> None:
+        """Synchronize feedback internals with the actually applied battery setpoint."""
+        if self._fb is None:
+            return
+        self._fb.apply_effective_total(
+            effective_total_w=effective_total_w, other_corrections_w=ff_sum
+        )
+
     # ── Watchdog ──────────────────────────────────────────────────────────────
 
     def check_watchdog(
@@ -434,6 +442,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
         self._core = _V4Core(cfg)
         self._queue: asyncio.Queue[_Sample] = asyncio.Queue(maxsize=cfg.queue_size())
         self._current_setpoint: int = 0
+        self._last_requested_setpoint: int = 0
         self._watchdog_total: int = 0
         self._last_status: ControlStatus = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
 
@@ -550,29 +559,37 @@ class ZeroFeedV4Regulator(RegulatorBase):
             self._watchdog_total += 1
             raw_target = float(min_output_w)
 
-        # Apply runtime limits
-        new_sp = int(round(max(float(min_output_w), min(float(max_output_w), raw_target))))
+        # Lower bound stays in the regulator. Upper clamping is delegated to
+        # the battery implementation so hardware-specific constraints are applied
+        # in one place (e.g. inverse_max_power, SoC-dependent limits).
+        requested_sp = int(round(max(float(min_output_w), raw_target)))
 
         changed = False
-        if new_sp != self._current_setpoint:
-            ok = await battery.set_ac_output_limit(new_sp)
-            if ok:
+        if requested_sp != self._last_requested_setpoint:
+            self._last_requested_setpoint = requested_sp
+            applied_sp = await battery.set_ac_output_limit(requested_sp)
+            if applied_sp >= 0:
                 # Record timing for PT1 model BEFORE updating current_setpoint
                 now = time.time()
                 self._sp_prev_output_w = self._estimate_batt_at(now)
                 self._sp_sent_at = now
-                self._sp_target_w = float(new_sp)
+                self._sp_target_w = float(applied_sp)
 
-                self._current_setpoint = new_sp
-                changed = True
+                changed = applied_sp != self._current_setpoint
+                self._current_setpoint = applied_sp
+                self._core.apply_effective_total(effective_total_w=applied_sp, ff_sum=ff_sum)
                 logger.debug(
-                    "V4 setpoint → %d W  (ff=%s  fb=%.0fW  ff_sum=%.0fW  ctrl=%s)",
-                    new_sp,
+                    "V4 setpoint request=%d W applied=%d W  (ff=%s  fb=%.0fW  ff_sum=%.0fW  ctrl=%s)",
+                    requested_sp,
+                    applied_sp,
                     {ph: f"{v:.0f}" for ph, v in ff_outputs.items()},
                     fb_correction,
                     ff_sum,
                     self._cfg.control_phase,
                 )
+            else:
+                self._last_requested_setpoint = self._current_setpoint
+                logger.warning("V4 setpoint request=%d W failed at battery layer", requested_sp)
 
         self._last_status = ControlStatus(
             regulator_name=self._NAME,
@@ -602,6 +619,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
             except asyncio.QueueEmpty:
                 break
         self._current_setpoint = 0
+        self._last_requested_setpoint = 0
         self._watchdog_total = 0
         self._last_status = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
         self._sp_sent_at = 0.0

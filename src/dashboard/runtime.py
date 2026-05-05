@@ -285,7 +285,9 @@ class ControlRuntime:
                 self._active_regulator.reset()
             setpoint = await self._battery.start_charge()
             if setpoint > 0 and pw > setpoint:
-                await self._battery.set_ac_input_limit(pw)
+                applied = await self._battery.set_ac_input_limit(pw)
+                if applied < 0:
+                    logger.error("set_mode(AC_CHARGE): set_ac_input_limit(%d) failed", pw)
 
         elif mode == DeviceMode.IDLE:
             # Clear all ZFI transient states
@@ -344,7 +346,11 @@ class ControlRuntime:
                 self._active_regulator.reset()
             setpoint = await self._battery.start_charge()
             if setpoint > 0 and pw > setpoint:
-                await self._battery.set_ac_input_limit(pw)
+                applied = await self._battery.set_ac_input_limit(pw)
+                if applied < 0:
+                    logger.error(
+                        "apply_effective_mode(AC_CHARGE): set_ac_input_limit(%d) failed", pw
+                    )
 
         elif mode == DeviceMode.IDLE:
             if self._active_regulator:
@@ -827,7 +833,9 @@ class ControlRuntime:
                     current_pw,
                 )
                 self._charge_power_w = limit_w
-                await self._battery.set_ac_input_limit(limit_w)
+                applied = await self._battery.set_ac_input_limit(limit_w)
+                if applied < 0:
+                    logger.error("AC charge throttle: set_ac_input_limit(%d) failed", limit_w)
 
     async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
         """Detect sustained feed-in and reset the regulator if triggered.
@@ -868,8 +876,8 @@ class ControlRuntime:
         if self._active_regulator is not None:
             self._active_regulator.reset()
 
-        ok = await self._battery.set_ac_output_limit(self._min_discharge_w)
-        if not ok:
+        applied = await self._battery.set_ac_output_limit(self._min_discharge_w)
+        if applied < 0:
             logger.error(
                 "Feed-in watchdog: set_ac_output_limit(%d) failed.",
                 self._min_discharge_w,
