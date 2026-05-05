@@ -25,6 +25,13 @@ class FastMock(SolarFlowAsyncMockClient):
         return True
 
 
+class FailingWriteMock(FastMock):
+    """Mock that simulates hardware write failures."""
+
+    async def _set_properties(self, properties: dict, smart_mode: bool = True) -> bool:  # noqa: ANN001
+        return False
+
+
 # ---------------------------------------------------------------------------
 # start_discharge
 # ---------------------------------------------------------------------------
@@ -84,12 +91,7 @@ async def test_start_discharge_bypass_kick_clamped_to_discharge_limit() -> None:
 
 async def test_start_discharge_hardware_error_returns_zero() -> None:
     """When _set_properties fails, start_discharge must return 0."""
-    client = FastMock(initial_soc=50)
-
-    async def _fail(*args, **kwargs):  # noqa: ANN002
-        return False
-
-    client._set_properties = _fail  # type: ignore[method-assign]
+    client = FailingWriteMock(initial_soc=50)
 
     result = await client.start_discharge()
 
@@ -136,12 +138,7 @@ async def test_start_charge_already_charging_returns_current_setpoint() -> None:
 
 async def test_start_charge_hardware_error_returns_zero() -> None:
     """When _set_properties fails, start_charge must return 0."""
-    client = FastMock(initial_soc=50)
-
-    async def _fail(*args, **kwargs):  # noqa: ANN002
-        return False
-
-    client._set_properties = _fail  # type: ignore[method-assign]
+    client = FailingWriteMock(initial_soc=50)
 
     result = await client.start_charge()
 

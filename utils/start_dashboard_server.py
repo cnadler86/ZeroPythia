@@ -27,8 +27,8 @@ import uvicorn
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
 from src.config.zerofeed_v4 import ZeroFeedV4Config, load_config
+from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
 from src.dashboard.models import DeviceMode
-from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
 

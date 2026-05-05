@@ -81,7 +81,7 @@ async def test_html_defaults_are_correct():
     """HTML should ship with localhost:1883 and SF800Pro as pre-filled values."""
     from httpx import ASGITransport, AsyncClient
 
-    from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
+    from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
     from src.dashboard.runtime import ControlRuntime
     from src.dashboard.server import create_app
 
@@ -109,7 +109,7 @@ async def test_auto_activate_from_dashboard():
     from httpx import ASGITransport, AsyncClient
 
     from src.dashboard.models import DeviceMode
-    from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
+    from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
     from src.dashboard.runtime import ControlRuntime
     from src.dashboard.server import create_app
 

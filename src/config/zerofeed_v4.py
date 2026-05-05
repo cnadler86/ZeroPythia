@@ -407,7 +407,7 @@ def _build_commented_map(cfg: ZeroFeedV4Config) -> CommentedMap:
             "feedback = regulation (battery phase)  |  feedforward = steering", "role"
         )
 
-        if is_fb:
+        if isinstance(ph_cfg, FeedbackPhaseConfig):
             ph_map["kp_draw"] = ph_cfg.kp_draw
             ph_map.yaml_add_eol_comment("P-gain when drawing from grid", "kp_draw")
             ph_map["kp_feed_in"] = ph_cfg.kp_feed_in

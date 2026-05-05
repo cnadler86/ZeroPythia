@@ -126,7 +126,9 @@ class SimplePlanExecutor:
                 return
             LOG.info("Plan mode: %s → start_discharge(%d W)", mode.name, plan_w)
             try:
-                await self._battery.start_discharge(plan_w)
+                setpoint = await self._battery.start_discharge()
+                if plan_w > setpoint:
+                    await self._battery.set_ac_output_limit(plan_w)
                 self._active_mode = mode
             except Exception:
                 LOG.exception("Error in start_discharge()")
@@ -145,7 +147,9 @@ class SimplePlanExecutor:
             else:
                 LOG.info("Plan mode: %s → start_charge(%d W)", mode.name, plan_charge_w)
                 try:
-                    await self._battery.start_charge(plan_charge_w)
+                    setpoint = await self._battery.start_charge()
+                    if plan_charge_w > setpoint:
+                        await self._battery.set_ac_input_limit(plan_charge_w)
                     self._active_mode = mode
                 except Exception:
                     LOG.exception("Error in start_charge()")

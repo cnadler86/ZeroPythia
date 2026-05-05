@@ -29,8 +29,8 @@ import uvicorn
 
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
 from src.config.zerofeed_v4 import ZeroFeedV4Config
+from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
 from src.dashboard.models import DeviceMode
-from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
 
@@ -228,9 +228,7 @@ async def run(
     )
     v4 = ZeroFeedV4Regulator(settings=v4_settings, yaml_path=v4_yaml)
     runtime.register_regulator(v4)
-    LOG.info(
-        "V4 settings: %s (file: %s)", v4_yaml, "present" if v4_yaml.exists() else "new"
-    )
+    LOG.info("V4 settings: %s (file: %s)", v4_yaml, "present" if v4_yaml.exists() else "new")
 
     # ── Initial mode ──────────────────────────────────────────────────────────
     mode_map = {"idle": DeviceMode.IDLE, "zero_feed": DeviceMode.DISCHARGE_ZERO_FEED}
@@ -279,9 +277,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument(
         "--load-c", type=float, default=100.0, metavar="W", help="Constant load on phase C [W]"
     )
-    parser.add_argument(
-        "--noise", type=float, default=5.0, metavar="W", help="Random noise ± W"
-    )
+    parser.add_argument("--noise", type=float, default=5.0, metavar="W", help="Random noise ± W")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")
     parser.add_argument(

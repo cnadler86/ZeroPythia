@@ -15,7 +15,7 @@ from typing import Dict, List
 
 from src.config.zerofeed_v4 import ZeroFeedV4Config
 from src.controller.phase_controller import PhaseSample
-from src.dashboard.regulators.v4_adapter import _V4Core
+from src.controller.zerofeed_v4_regulator import _V4Core
 
 from .grid_simulator import PhaseRecord, clean_csv_data, load_csv
 
