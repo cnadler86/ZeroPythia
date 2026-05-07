@@ -259,13 +259,25 @@ class AutoModeManager:
 
         *apply_cb* is an async callable: ``(mode, charge_power_w, max_discharge_w) → None``
         matching :py:meth:`ControlRuntime.apply_effective_mode`.
+
+        Fallback behavior:
+        - No plan received yet: fall back to safe default.
+        - Plan exists but no step is time-active: keep current status unchanged
+          (wait for first scheduled step to become active).
         """
         now = datetime.now(tz=timezone.utc)
         self._refresh_plan_summary(now)
 
         step = self._subscriber.get_current_step(now)
         if step is None:
-            await self._apply_fallback(apply_cb)
+            # Distinguish: has a plan been received?
+            if self._subscriber.has_plan:
+                # Plan exists but no step is currently time-active.
+                # Keep the current status – don't override it until the plan activates.
+                return
+            else:
+                # No plan has ever been received → fall back to safe default.
+                await self._apply_fallback(apply_cb)
         else:
             await self._apply_step(step, apply_cb)
 
