@@ -340,6 +340,17 @@ class SolarFlowBase(ISolarFlowClient):
         self._accumulated_discharge_wh: float = 0.0
         self._accumulated_charge_wh: float = 0.0
 
+        # SOC-based battery protection limits.
+        # Discharge cap: when SOC < low_soc_threshold_pct, output is limited to
+        # low_soc_output_limit_w (or half of the model discharge limit if None).
+        self.low_soc_threshold_pct: int = 25
+        self.low_soc_output_limit_w: Optional[int] = None  # None = half of model max
+        # Charge cap: when SOC > high_soc_threshold_pct, AC input is limited to
+        # high_soc_input_limit_w (or half of the model charge limit if None).
+        self.high_soc_threshold_pct: int = 90
+        self.high_soc_input_limit_w: Optional[int] = None  # None = half of model max
+        self._cached_soc: Optional[int] = None  # updated on every cache refresh
+
     # ==================== Cache Management ====================
 
     def _is_cache_valid(self) -> bool:
@@ -347,9 +358,10 @@ class SolarFlowBase(ISolarFlowClient):
         return (time() - self._cache_timestamp) < self.cache_ttl
 
     def _update_cache(self, data: APIResponseProtocol) -> None:
-        """Update cache, serial number, and model-specific limits."""
+        """Update cache, serial number, model-specific limits, and cached SOC."""
         self._response_cache = data
         self._cache_timestamp = time()
+        self._cached_soc = data.properties.electric_level
         if self._sn is None:
             self._sn = data.sn
         if self.model is None and data.product:
@@ -423,6 +435,38 @@ class SolarFlowBase(ISolarFlowClient):
     def validate_input_limit(self, power_w: int) -> int:
         """Validate and clamp the input limit."""
         return max(0, min(self._limits.charge_limit, int(power_w)))
+
+    # ==================== SOC Protection ====================
+
+    def _soc_discharge_cap(self) -> Optional[int]:
+        """Return the effective SOC-based output cap (W), or None when not active.
+
+        Active when cached SOC < ``low_soc_threshold_pct``.  Falls back to half
+        of the model discharge limit when ``low_soc_output_limit_w`` is None.
+        Returns None if the model limits are not yet known.
+        """
+        if self._cached_soc is None or self._cached_soc >= self.low_soc_threshold_pct:
+            return None
+        if self.low_soc_output_limit_w is not None:
+            return self.low_soc_output_limit_w
+        if self._limits.discharge_limit > 0:
+            return self._limits.discharge_limit // 2
+        return None
+
+    def _soc_charge_cap(self) -> Optional[int]:
+        """Return the effective SOC-based input cap (W), or None when not active.
+
+        Active when cached SOC > ``high_soc_threshold_pct``.  Falls back to half
+        of the model charge limit when ``high_soc_input_limit_w`` is None.
+        Returns None if the model limits are not yet known.
+        """
+        if self._cached_soc is None or self._cached_soc <= self.high_soc_threshold_pct:
+            return None
+        if self.high_soc_input_limit_w is not None:
+            return self.high_soc_input_limit_w
+        if self._limits.charge_limit > 0:
+            return self._limits.charge_limit // 2
+        return None
 
     def validate_min_soc(self, soc_percent: int) -> int:
         """Validate min SoC (0-50%) and convert to API value (0-500)."""
@@ -602,15 +646,31 @@ class SolarFlowBase(ISolarFlowClient):
     async def set_ac_output_limit(self, power_w: int, *, smart_mode: bool = True) -> int:
         """Set the AC output power limit.
 
+        The requested power is first clamped to the device discharge limit, then
+        further capped by the SOC-based low-battery protection when active
+        (SOC < ``low_soc_threshold_pct``).
+
         Args:
             power_w: power in watts
             smart_mode: True = RAM only, False = write to flash
 
         Returns:
-            Applied output setpoint in W (already clamped by device limits),
+            Applied output setpoint in W (after all clamping),
             or ``-1`` on hardware/write error.
         """
         power_w = self.validate_output_limit(power_w)
+        soc_cap = self._soc_discharge_cap()
+        if soc_cap is not None:
+            capped = min(power_w, soc_cap)
+            if capped != power_w:
+                logger.debug(
+                    "set_ac_output_limit: SOC %d%% < %d%% → capped %dW → %dW",
+                    self._cached_soc,
+                    self.low_soc_threshold_pct,
+                    power_w,
+                    capped,
+                )
+            power_w = capped
         self._flush_energy_to_now()
         ok = await self._set_properties({"outputLimit": power_w}, smart_mode)
         if ok:
@@ -622,15 +682,31 @@ class SolarFlowBase(ISolarFlowClient):
     async def set_ac_input_limit(self, power_w: int, *, smart_mode: bool = True) -> int:
         """Set the AC input power limit.
 
+        The requested power is first clamped to the device charge limit, then
+        further capped by the SOC-based high-charge protection when active
+        (SOC > ``high_soc_threshold_pct``).
+
         Args:
             power_w: power in watts
             smart_mode: True = RAM only, False = write to flash
 
         Returns:
-            Applied input setpoint in W (already clamped by device limits),
+            Applied input setpoint in W (after all clamping),
             or ``-1`` on hardware/write error.
         """
         power_w = self.validate_input_limit(power_w)
+        soc_cap = self._soc_charge_cap()
+        if soc_cap is not None:
+            capped = min(power_w, soc_cap)
+            if capped != power_w:
+                logger.debug(
+                    "set_ac_input_limit: SOC %d%% > %d%% → capped %dW → %dW",
+                    self._cached_soc,
+                    self.high_soc_threshold_pct,
+                    power_w,
+                    capped,
+                )
+            power_w = capped
         self._flush_energy_to_now()
         ok = await self._set_properties({"inputLimit": power_w}, smart_mode)
         if ok:
@@ -895,6 +971,18 @@ class SolarFlowBase(ISolarFlowClient):
             target = max(1, self._limits.min_power)
             logger.info("start_discharge: cold start at %dW (min_power)", target)
 
+        # Apply SOC-based discharge cap to the start target
+        soc_cap = self._soc_discharge_cap()
+        if soc_cap is not None and target > soc_cap:
+            logger.info(
+                "start_discharge: SOC %d%% < %d%% → start target capped %dW → %dW",
+                self._cached_soc,
+                self.low_soc_threshold_pct,
+                target,
+                soc_cap,
+            )
+            target = soc_cap
+
         self._flush_energy_to_now()
         props = {"acMode": ACMode.OUTPUT.value, "outputLimit": target, "inputLimit": 0}
         min_pw = self._limits.min_power or 1
@@ -967,6 +1055,18 @@ class SolarFlowBase(ISolarFlowClient):
         else:
             target = max(1, self._limits.min_power)
             logger.info("start_charge: cold start at %dW (min_power)", target)
+
+        # Apply SOC-based charge cap to the start target
+        soc_cap = self._soc_charge_cap()
+        if soc_cap is not None and target > soc_cap:
+            logger.info(
+                "start_charge: SOC %d%% > %d%% → start target capped %dW → %dW",
+                self._cached_soc,
+                self.high_soc_threshold_pct,
+                target,
+                soc_cap,
+            )
+            target = soc_cap
 
         self._flush_energy_to_now()
         props = {"acMode": ACMode.INPUT.value, "inputLimit": target, "outputLimit": 0}

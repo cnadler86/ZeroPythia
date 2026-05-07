@@ -32,6 +32,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
+from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
+
 from .models import (
     AutoStatus,
     DashboardState,
@@ -39,7 +41,6 @@ from .models import (
     GridSample,
     RegulatorInfo,
 )
-from .regulator import BatteryInverterProtocol, RegulatorBase
 
 logger: logging.Logger = logging.getLogger(__name__)
 

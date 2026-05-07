@@ -51,8 +51,8 @@ from src.controller.phase_controller import (
     InverterPhaseControllerSettings,
     PhaseSample,
 )
+from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
 from src.dashboard.models import ControlStatus, GridSample, OscState
-from src.dashboard.regulator import BatteryInverterProtocol, RegulatorBase
 
 logger = logging.getLogger(__name__)
 
