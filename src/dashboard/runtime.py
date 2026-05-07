@@ -745,7 +745,8 @@ class ControlRuntime:
             and _batt_out < self._min_discharge_w * 0.5
             and _solar_w >= self._min_discharge_w
         )
-
+        _battery_not_delivering = False # quick fix
+        
         if not self._zfi_paused_full_battery and (
             (soc is not None and soc >= self._full_soc_pct) or _battery_not_delivering
         ):
