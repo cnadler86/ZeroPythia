@@ -1,4 +1,4 @@
-"""Pydantic v2 configuration for ZeroFeed V4.
+"""Pydantic v2 configuration for ZeroFeed.
 
 Two controller types, configurable per phase:
 
@@ -124,8 +124,8 @@ PhaseConfig = Annotated[
 _ALL_PHASES = ("A", "B", "C")
 
 
-class ZeroFeedV4Config(BaseModel):
-    """Complete configuration for the ZeroFeed V4 regulator.
+class ZeroFeedConfig(BaseModel):
+    """Complete configuration for the ZeroFeed regulator.
 
     ``control_phase`` names the phase with the battery inverter.
     All three phases (A, B, C) must have entries in ``phases``; missing ones
@@ -173,7 +173,7 @@ class ZeroFeedV4Config(BaseModel):
     # ── Validator ─────────────────────────────────────────────────────────────
 
     @model_validator(mode="after")
-    def _fill_and_validate_phases(self) -> ZeroFeedV4Config:
+    def _fill_and_validate_phases(self) -> ZeroFeedConfig:
         # Fill missing phases with appropriate defaults
         for ph in _ALL_PHASES:
             if ph not in self.phases:
@@ -214,7 +214,7 @@ class ZeroFeedV4Config(BaseModel):
 # ── Flat settings bridge (for dashboard API) ──────────────────────────────────
 
 
-def config_to_flat(cfg: ZeroFeedV4Config) -> dict[str, Any]:
+def config_to_flat(cfg: ZeroFeedConfig) -> dict[str, Any]:
     """Serialize config to a flat ``{key: value}`` dict for the dashboard API."""
     result: dict[str, Any] = {
         "control_phase": cfg.control_phase,
@@ -248,7 +248,7 @@ def config_to_flat(cfg: ZeroFeedV4Config) -> dict[str, Any]:
     return result
 
 
-def flat_to_config(data: dict[str, Any], base: ZeroFeedV4Config) -> ZeroFeedV4Config:
+def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig:
     """Apply a flat settings dict on top of an existing config, return new validated config.
 
     If ``control_phase`` changes, the roles of the involved phases are swapped;
@@ -335,7 +335,7 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedV4Config) -> ZeroFeedV4Co
             osc["predictor"] = dict(osc["predictor"]) if isinstance(osc["predictor"], dict) else {}
             osc["predictor"]["threshold"] = data[p + "predictor_min_amplitude"]
 
-    return ZeroFeedV4Config.model_validate(raw)
+    return ZeroFeedConfig.model_validate(raw)
 
 
 # ── YAML I/O with comment support ─────────────────────────────────────────────
@@ -350,11 +350,11 @@ def _make_yaml_instance() -> YAML:
     return y
 
 
-def _build_commented_map(cfg: ZeroFeedV4Config) -> CommentedMap:
+def _build_commented_map(cfg: ZeroFeedConfig) -> CommentedMap:
     """Build a ruamel.yaml CommentedMap with descriptive inline comments (English)."""
     d = CommentedMap()
     d.yaml_set_start_comment(
-        "ZeroFeed V4 configuration\n"
+        "ZeroFeed configuration\n"
         "Exactly one phase has role: feedback (regulation phase = battery phase).\n"
         "All other phases have role: feedforward (steering phase, no battery inverter).\n"
         "This file is updated automatically by the dashboard; comments are preserved.\n"
@@ -526,8 +526,8 @@ def _update_inplace(target: Any, source: dict) -> None:
 # ── Public I/O functions ──────────────────────────────────────────────────────
 
 
-def load_config(path: Path) -> Optional[ZeroFeedV4Config]:
-    """Load ZeroFeedV4Config from a YAML file.  Returns None on missing file or parse error."""
+def load_config(path: Path) -> Optional[ZeroFeedConfig]:
+    """Load ZeroFeedConfig from a YAML file.  Returns None on missing file or parse error."""
     if not path.exists():
         return None
     try:
@@ -535,16 +535,16 @@ def load_config(path: Path) -> Optional[ZeroFeedV4Config]:
         raw = y.load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             return None
-        return ZeroFeedV4Config.model_validate(raw)
+        return ZeroFeedConfig.model_validate(raw)
     except Exception as exc:
-        logger.warning("V4 config: Fehler beim Laden von %s: %s", path, exc)
+        logger.warning("ZeroFeed config: Fehler beim Laden von %s: %s", path, exc)
     return None
 
 
 def save_config(
-    path: Path, cfg: ZeroFeedV4Config, *, old_control_phase: Optional[str] = None
+    path: Path, cfg: ZeroFeedConfig, *, old_control_phase: Optional[str] = None
 ) -> None:
-    """Save ZeroFeedV4Config to a YAML file, preserving existing comments.
+    """Save ZeroFeedConfig to a YAML file, preserving existing comments.
 
     If the file exists, values are updated in-place so user-added comments survive.
     If the phases structure changed (control_phase swap), the ``phases`` section
@@ -568,7 +568,9 @@ def save_config(
             else:
                 data = _build_commented_map(cfg)
         except Exception as exc:
-            logger.warning("V4 config: Fehler beim Lesen für In-Place-Update (%s): %s", path, exc)
+            logger.warning(
+                "ZeroFeed config: Fehler beim Lesen für In-Place-Update (%s): %s", path, exc
+            )
             data = _build_commented_map(cfg)
     elif path.exists() and phase_changed:
         # Phase structure changed – regenerate phases section, preserve rest
@@ -588,7 +590,9 @@ def save_config(
             }
             _update_inplace(data, top_level_dump)
         except Exception as exc:
-            logger.warning("V4 config: Fehler beim Lesen für Phase-Swap-Update (%s): %s", path, exc)
+            logger.warning(
+                "ZeroFeed config: Fehler beim Lesen für Phase-Swap-Update (%s): %s", path, exc
+            )
             data = _build_commented_map(cfg)
     else:
         # New file – generate with comments
@@ -599,6 +603,6 @@ def save_config(
         stream = StringIO()
         y.dump(data, stream)
         path.write_text(stream.getvalue(), encoding="utf-8")
-        logger.info("V4 config: gespeichert → %s", path)
+        logger.info("ZeroFeed config: gespeichert → %s", path)
     except Exception as exc:
-        logger.error("V4 config: Fehler beim Speichern (%s): %s", path, exc)
+        logger.error("ZeroFeed config: Fehler beim Speichern (%s): %s", path, exc)

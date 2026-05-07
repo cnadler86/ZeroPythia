@@ -33,8 +33,8 @@ from simulator.batch_runner import (
     run_simulation,
 )
 from simulator.grid_simulator import clean_csv_data, load_csv
-from src.config.zerofeed_v4 import ZeroFeedV4Config, config_to_flat, flat_to_config
-from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
+from src.config.zerofeed import ZeroFeedConfig, config_to_flat, flat_to_config
+from src.controller.zerofeed_regulator import ZeroFeedRegulator
 
 logger = logging.getLogger(__name__)
 
@@ -56,12 +56,12 @@ class ZeroFeedV4GUI:
         self.root.title("ZeroFeed V4 Analyse")
         self.root.geometry("1440x900")
 
-        self._config: ZeroFeedV4Config = ZeroFeedV4Config()
+        self._config: ZeroFeedConfig = ZeroFeedConfig()
         self._csv_files: List[Path] = []
         self._results: List[Tuple[SimulationResult, Statistics]] = []
         self._current_result: Optional[SimulationResult] = None
         self._current_stats: Optional[Statistics] = None
-        self._schema: Dict[str, Any] = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+        self._schema: Dict[str, Any] = ZeroFeedRegulator(settings=self._config).settings_schema()
         self._param_vars: Dict[str, tk.StringVar] = {}
         self._plot_figures: Dict[str, Figure] = {}
         self._plot_canvases: Dict[str, FigureCanvasTkAgg] = {}
@@ -173,15 +173,15 @@ class ZeroFeedV4GUI:
             for key, var in self._param_vars.items():
                 flat[key] = _parse_value(var.get(), self._schema.get(key, {}))
             self._config = flat_to_config(flat, self._config)
-            self._schema = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+            self._schema = ZeroFeedRegulator(settings=self._config).settings_schema()
             return True
         except Exception as e:
             messagebox.showerror("Parameter-Fehler", str(e))
             return False
 
     def _reset_params(self) -> None:
-        self._config = ZeroFeedV4Config()
-        self._schema = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+        self._config = ZeroFeedConfig()
+        self._schema = ZeroFeedRegulator(settings=self._config).settings_schema()
         self._populate_params()
 
     def _select_files(self) -> None:

@@ -5,7 +5,7 @@ Uses:
   - MockGridMeter              (constant load with configurable values)
 
 Starts dashboard at http://localhost:8765/
-V4 settings are stored in config/zerofeed_v4.yaml.
+ZeroFeed settings are stored in config/zerofeed.yaml.
 
 Usage:
     python utils/start_dashboard_mock.py
@@ -28,16 +28,16 @@ from typing import Optional
 import uvicorn
 
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
-from src.config.zerofeed_v4 import ZeroFeedV4Config
-from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
+from src.config.zerofeed import ZeroFeedConfig
+from src.controller.zerofeed_regulator import ZeroFeedRegulator
 from src.dashboard.models import DeviceMode
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
 
 LOG = logging.getLogger("start_dashboard_mock")
 
-# YAML config path for V4 (relative to project root)
-_V4_CONFIG = Path("config") / "zerofeed_v4.yaml"
+# YAML config path for Zerofeed (relative to project root)
+_CONFIG = Path("config") / "zerofeed.yaml"
 
 
 # ── Mock Grid Meter ───────────────────────────────────────────────────────────
@@ -221,12 +221,12 @@ async def run(
 
     # ── Register regulators ───────────────────────────────────────────────────
 
-    v4_yaml = _V4_CONFIG
-    v4_settings = ZeroFeedV4Config(
+    v4_yaml = _CONFIG
+    v4_settings = ZeroFeedConfig(
         max_output_w=max_output,
         min_output_w=min_discharge,
     )
-    v4 = ZeroFeedV4Regulator(settings=v4_settings, yaml_path=v4_yaml)
+    v4 = ZeroFeedRegulator(settings=v4_settings, yaml_path=v4_yaml)
     runtime.register_regulator(v4)
     LOG.info("V4 settings: %s (file: %s)", v4_yaml, "present" if v4_yaml.exists() else "new")
 

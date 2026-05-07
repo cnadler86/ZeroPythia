@@ -1,6 +1,6 @@
-"""ZeroFeed V4 regulator adapter.
+"""ZeroFeed regulator adapter.
 
-Wraps the ZeroFeed V4 control logic as a ``RegulatorBase`` implementation.
+Wraps the ZeroFeed control logic as a ``RegulatorBase`` implementation.
 Driven by ``ControlRuntime`` – no internal asyncio tasks.
 
 Architecture:
@@ -21,7 +21,7 @@ Architecture:
         hysteresis.
 
 Configuration:
-    Full Pydantic v2 model in ``src.config.zerofeed_v4``.
+    Full Pydantic v2 model in ``src.config.zerofeed``.
     ``control_phase`` selects the battery phase; any of A, B, C is supported.
     Settings persisted to YAML with comment support (ruamel.yaml).
 """
@@ -35,10 +35,10 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from src.config.zerofeed_v4 import (
+from src.config.zerofeed import (
     FeedbackPhaseConfig,
     FeedforwardPhaseConfig,
-    ZeroFeedV4Config,
+    ZeroFeedConfig,
     config_to_flat,
     flat_to_config,
     load_config,
@@ -116,17 +116,17 @@ class _Sample:
         self.battery_output = battery_output
 
 
-# ── V4 Core ───────────────────────────────────────────────────────────────────
+# ── Core ───────────────────────────────────────────────────────────────────
 
 
-class _V4Core:
-    """Holds all phase controllers and implements the V4 control + watchdog logic.
+class _Core:
+    """Holds all phase controllers and implements the control + watchdog logic.
 
     The feedback (battery) phase is determined by ``cfg.control_phase``.
     All other phases use feedforward controllers.
     """
 
-    def __init__(self, cfg: ZeroFeedV4Config) -> None:
+    def __init__(self, cfg: ZeroFeedConfig) -> None:
         self._cfg = cfg
         self._ff: dict[str, FeedforwardSteuerung] = {}
         self._fb: Optional[InverterPhaseController] = None
@@ -153,7 +153,7 @@ class _V4Core:
         current_battery_output_w: float,
         battery_settled: bool,
     ) -> tuple[dict[str, float], float, float]:
-        """Run one V4 control cycle.
+        """Run one ZeroFeed control cycle.
 
         Returns:
             (ff_outputs, fb_correction, ff_sum)
@@ -272,7 +272,7 @@ class _V4Core:
         if reset_phases:
             self._violation_count = 0
             logger.warning(
-                "V4 watchdog: reset phase(s) %s after %d cycles of feed-in "
+                "ZeroFeed watchdog: reset phase(s) %s after %d cycles of feed-in "
                 "(total=%.1fW  threshold=%.1fW)",
                 "+".join(sorted(reset_phases)),
                 cfg.watchdog_cycles,
@@ -411,8 +411,8 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
 # ── Regulator ─────────────────────────────────────────────────────────────────
 
 
-class ZeroFeedV4Regulator(RegulatorBase):
-    """ZeroFeed V4 – configurable-phase FF+FB zero-feed-in controller.
+class ZeroFeedRegulator(RegulatorBase):
+    """ZeroFeed – configurable-phase FF+FB zero-feed-in controller.
 
     ``control_phase`` selects which phase carries the battery inverter.
     All other phases are controlled via feedforward steering.
@@ -420,26 +420,26 @@ class ZeroFeedV4Regulator(RegulatorBase):
     Settings are persisted to YAML (ruamel.yaml, comments preserved).
     """
 
-    _NAME = "zerofeed_v4"
+    _NAME = "zerofeed"
     _DESC = (
-        "V4: Configurable regulation phase (battery phase). "
+        "Configurable regulation phase (battery phase). "
         "All other phases: feedforward steering. "
         "Cycle-based watchdog, per-phase individual settings, YAML-persistent."
     )
 
     def __init__(
         self,
-        settings: Optional[ZeroFeedV4Config] = None,
+        settings: Optional[ZeroFeedConfig] = None,
         yaml_path: Optional[Path] = None,
     ) -> None:
         self._yaml_path = yaml_path
 
         # Load from YAML if available, else use provided/default settings
         loaded = load_config(yaml_path) if yaml_path is not None else None
-        cfg = loaded if loaded is not None else (settings or ZeroFeedV4Config())
+        cfg = loaded if loaded is not None else (settings or ZeroFeedConfig())
 
         self._cfg = cfg
-        self._core = _V4Core(cfg)
+        self._core = _Core(cfg)
         self._queue: asyncio.Queue[_Sample] = asyncio.Queue(maxsize=cfg.queue_size())
         self._current_setpoint: int = 0
         self._last_requested_setpoint: int = 0
@@ -542,7 +542,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
         # Estimate current battery output from PT1 model at current wall time
         batt_now = self._estimate_batt_at(time.time())
 
-        # Core V4 calculation
+        # Core ZeroFeed calculation
         ff_outputs, fb_correction, ff_sum = self._core.calculate(
             phase_samples=phase_samples,
             batt_hist=batt_hist,
@@ -579,7 +579,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
                 self._current_setpoint = applied_sp
                 self._core.apply_effective_total(effective_total_w=applied_sp, ff_sum=ff_sum)
                 logger.debug(
-                    "V4 setpoint request=%d W applied=%d W  (ff=%s  fb=%.0fW  ff_sum=%.0fW  ctrl=%s)",
+                    "ZeroFeed setpoint request=%d W applied=%d W  (ff=%s  fb=%.0fW  ff_sum=%.0fW  ctrl=%s)",
                     requested_sp,
                     applied_sp,
                     {ph: f"{v:.0f}" for ph, v in ff_outputs.items()},
@@ -589,7 +589,9 @@ class ZeroFeedV4Regulator(RegulatorBase):
                 )
             else:
                 self._last_requested_setpoint = self._current_setpoint
-                logger.warning("V4 setpoint request=%d W failed at battery layer", requested_sp)
+                logger.warning(
+                    "ZeroFeed setpoint request=%d W failed at battery layer", requested_sp
+                )
 
         self._last_status = ControlStatus(
             regulator_name=self._NAME,
@@ -702,7 +704,7 @@ class ZeroFeedV4Regulator(RegulatorBase):
         old_cp = self._cfg.control_phase
         new_cfg = flat_to_config(data, self._cfg)
         self._cfg = new_cfg
-        self._core = _V4Core(new_cfg)
+        self._core = _Core(new_cfg)
         self._queue = asyncio.Queue(maxsize=new_cfg.queue_size())
         # PT1 state is kept (setpoint timing remains valid after param change)
 

@@ -26,13 +26,13 @@ import uvicorn
 
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
-from src.config.zerofeed_v4 import ZeroFeedV4Config, load_config
-from src.controller.zerofeed_v4_regulator import ZeroFeedV4Regulator
+from src.config.zerofeed import ZeroFeedConfig, load_config
+from src.controller.zerofeed_regulator import ZeroFeedRegulator
 from src.dashboard.models import DeviceMode
 from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
 
-_V4_CONFIG = Path("config") / "zerofeed_v4.yaml"
+_CONFIG = Path("config") / "zerofeed.yaml"
 
 LOG = logging.getLogger("start_dashboard")
 
@@ -72,12 +72,12 @@ async def run(
 
         # ── Register regulators ───────────────────────────────────────────────
 
-        # ── V4 Regulator ──────────────────────────────────────────────────────
-        v4_settings = ZeroFeedV4Config(
+        # ── Regulator ──────────────────────────────────────────────────────
+        settings = ZeroFeedConfig(
             max_output_w=max_output,
             min_output_w=min_discharge,
         )
-        runtime.register_regulator(ZeroFeedV4Regulator(settings=v4_settings, yaml_path=_V4_CONFIG))
+        runtime.register_regulator(ZeroFeedRegulator(settings=settings, yaml_path=_CONFIG))
 
         # ── Initial mode ──────────────────────────────────────────────────────
         if mqtt_broker and auto_start:
@@ -102,7 +102,7 @@ async def run(
 
         # ── Start HTTP server ─────────────────────────────────────────────────
         # Read language from config file (fallback: "en")
-        yaml_cfg = load_config(_V4_CONFIG)
+        yaml_cfg = load_config(_CONFIG)
         lang = yaml_cfg.language if yaml_cfg is not None else "en"
         app = create_app(runtime, lang=lang)
         config = uvicorn.Config(

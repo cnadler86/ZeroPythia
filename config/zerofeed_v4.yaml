@@ -1,4 +1,4 @@
-# ZeroFeed V4 configuration
+# ZeroFeed configuration
 # Exactly one phase has role: feedback (regulation phase = battery phase).
 # All other phases have role: feedforward (steering phase, no battery inverter).
 # This file is updated automatically by the dashboard; comments are preserved.

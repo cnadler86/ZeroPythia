@@ -1,4 +1,4 @@
-"""Feedforward control for phases without inverter (e.g. phases A + C in the V4 variant).
+"""Feedforward control for phases without inverter (e.g. phases A + C).
 
 This is an OPEN-LOOP CONTROLLER (no feedback):
   - Observes grid draw on a phase (e.g. A or C)
