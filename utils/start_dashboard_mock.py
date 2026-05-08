@@ -30,9 +30,9 @@ import uvicorn
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
 from src.config.zerofeed import ZeroFeedConfig
 from src.controller.zerofeed_regulator import ZeroFeedRegulator
-from src.dashboard.models import DeviceMode
-from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
+from src.runtime.control_runtime import ControlRuntime
+from src.runtime.models import DeviceMode
 
 LOG = logging.getLogger("start_dashboard_mock")
 

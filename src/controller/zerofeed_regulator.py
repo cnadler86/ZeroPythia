@@ -52,7 +52,7 @@ from src.controller.phase_controller import (
     PhaseSample,
 )
 from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
-from src.dashboard.models import ControlStatus, GridSample, OscState
+from src.runtime.models import ControlStatus, GridSample, OscState
 
 logger = logging.getLogger(__name__)
 

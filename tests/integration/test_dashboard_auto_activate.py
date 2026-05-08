@@ -82,7 +82,7 @@ async def test_html_defaults_are_correct():
     from httpx import ASGITransport, AsyncClient
 
     from src.controller.zerofeed_regulator import ZeroFeedRegulator
-    from src.dashboard.runtime import ControlRuntime
+    from src.runtime.control_runtime import ControlRuntime
     from src.dashboard.server import create_app
 
     runtime = ControlRuntime(FakeGrid(), cast(Any, FakeBattery()))
@@ -108,9 +108,9 @@ async def test_auto_activate_from_dashboard():
 
     from httpx import ASGITransport, AsyncClient
 
-    from src.dashboard.models import DeviceMode
+    from src.runtime.models import DeviceMode
     from src.controller.zerofeed_regulator import ZeroFeedRegulator
-    from src.dashboard.runtime import ControlRuntime
+    from src.runtime.control_runtime import ControlRuntime
     from src.dashboard.server import create_app
 
     battery = FakeBattery()

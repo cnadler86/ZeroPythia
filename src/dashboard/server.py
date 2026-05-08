@@ -30,14 +30,15 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from src.runtime.control_runtime import ControlRuntime
+from src.runtime.models import DashboardState
+
 from .i18n import TRANSLATIONS, build_js_t
 from .models import (
     AutoConnectCommand,
-    DashboardState,
     SelectRegulatorCommand,
     SetModeCommand,
 )
-from .runtime import ControlRuntime
 
 logger = logging.getLogger(__name__)
 

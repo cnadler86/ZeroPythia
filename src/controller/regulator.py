@@ -32,7 +32,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from src.dashboard.models import ControlStatus, GridSample
+from src.runtime.models import ControlStatus, GridSample
 
 
 class BatteryStateProtocol(Protocol):

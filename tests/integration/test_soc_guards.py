@@ -21,8 +21,8 @@ from typing import Any, Optional, cast
 
 import pytest
 
-from src.dashboard.models import DeviceMode, GridSample
-from src.dashboard.runtime import ControlRuntime
+from src.runtime.control_runtime import ControlRuntime
+from src.runtime.models import DeviceMode, GridSample
 
 
 # ── Minimal fakes ─────────────────────────────────────────────────────────────
@@ -356,7 +356,7 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
     """AutoModeManager must dispatch config_max_w (not discharge_ac_wh) for ZFI steps."""
     from datetime import timedelta
 
-    from src.dashboard.auto_mode import AutoModeManager
+    from src.runtime.auto_mode import AutoModeManager
 
     dispatched: list[tuple] = []
 

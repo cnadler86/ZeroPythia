@@ -28,9 +28,9 @@ from clients.shelly.shelly import ShellyClient
 from clients.zendure.aiozen import SolarFlowAsyncClient
 from src.config.zerofeed import ZeroFeedConfig, load_config
 from src.controller.zerofeed_regulator import ZeroFeedRegulator
-from src.dashboard.models import DeviceMode
-from src.dashboard.runtime import ControlRuntime
 from src.dashboard.server import create_app
+from src.runtime.control_runtime import ControlRuntime
+from src.runtime.models import DeviceMode
 
 _CONFIG = Path("config") / "zerofeed.yaml"
 

@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional
 
 from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
 
@@ -41,18 +41,9 @@ from .models import (
     GridSample,
     RegulatorInfo,
 )
+from .sampler import GridMeterProtocol, RuntimeSampler
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-
-# ── Protocols (mirrors clients) ───────────────────────────────────────────────
-
-
-class GridMeterProtocol(Protocol):
-    """Structural protocol for Shelly 3EM (or simulator)."""
-
-    async def get_phase_powers(self) -> Optional[tuple[float, float, float]]: ...
-    async def get_total_power(self) -> Optional[float]: ...
 
 
 # ── Type alias ────────────────────────────────────────────────────────────────
@@ -108,6 +99,7 @@ class ControlRuntime:
     ) -> None:
         self._grid_meter: GridMeterProtocol = grid_meter
         self._battery: BatteryInverterProtocol = battery
+        self._sampler = RuntimeSampler(grid_meter, battery)
         self._sampling_interval = sampling_interval_s
         self._control_interval = control_interval_s
         self._max_discharge_w = max_discharge_w
@@ -122,8 +114,6 @@ class ControlRuntime:
         self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
         self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
         self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half of max_charge_w
-        # Bypass state tracking (for change logging)
-        self._last_bypass_state: Optional[bool] = None
         # ZFI pause states
         self._zfi_paused_low_soc: bool = False
         self._zfi_paused_full_battery: bool = False
@@ -137,11 +127,6 @@ class ControlRuntime:
         self._zfi_soc_limit_cap_w: int = 0
         # ZFI soft-limit but report as IDLE to MQTT: SoC closer to min_soc than to resume threshold
         self._zfi_soc_limited_report_idle: bool = False
-        # Cooldown after resuming from full-battery pause: prevents immediate re-entry
-        # when bypass clears slowly (1-2 ticks after resume command).
-        self._full_battery_resumed_at: float = float("-inf")  # monotonic ts
-        self._full_battery_resume_cooldown_s: float = 10.0
-
         # Regulator registry
         self._regulators: dict[str, RegulatorBase] = {}
         self._active_regulator: Optional[RegulatorBase] = None
@@ -440,7 +425,7 @@ class ControlRuntime:
                 tick_start = time.monotonic()
 
                 # 1. Sample hardware
-                sample = await self._read_sample()
+                sample = await self._sampler.read()
 
                 # 2. SoC-based guard logic (updates _zfi_paused_low_soc / _zfi_paused_full_battery)
                 if sample is not None:
@@ -730,34 +715,11 @@ class ControlRuntime:
             return
 
         _solar_w = float(sample.solar_input_w or 0.0)
-        _batt_out = abs(sample.battery_output_w)
-        _in_cooldown = (
-            now_mono - self._full_battery_resumed_at
-        ) < self._full_battery_resume_cooldown_s
 
-        # "Battery not delivering" – reliable bypass proxy without using the unreliable
-        # bypass_active flag.  Condition: battery output near 0 while PV covers our minimum
-        # discharge request AND we are outside the post-resume cooldown window.
-        # When this is True the inverter is effectively routing PV directly to the house
-        # (bypass / full-battery state) and the battery cannot contribute.
-        _battery_not_delivering = (
-            not _in_cooldown
-            and _batt_out < self._min_discharge_w * 0.5
-            and _solar_w >= self._min_discharge_w
-        )
-        _battery_not_delivering = False # quick fix
-        
-        if not self._zfi_paused_full_battery and (
-            (soc is not None and soc >= self._full_soc_pct) or _battery_not_delivering
-        ):
-            reason = (
-                f"battery not delivering (out={_batt_out:.0f}W < "
-                f"{self._min_discharge_w * 0.5:.0f}W threshold, "
-                f"solar={_solar_w:.0f}W \u2265 {self._min_discharge_w}W min)"
-                if _battery_not_delivering
-                else f"SoC {soc}% >= hardware maximum {self._full_soc_pct}%"
+        if not self._zfi_paused_full_battery and (soc is not None and soc >= self._full_soc_pct):
+            logger.info(
+                "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%%", soc, self._full_soc_pct
             )
-            logger.info("ZFI full-battery pause: %s", reason)
             self._zfi_paused_full_battery = True
             self._full_battery_resume_since = None
             await self._battery.stop()
@@ -775,7 +737,6 @@ class ControlRuntime:
                 )
                 self._zfi_paused_full_battery = False
                 self._full_battery_resume_since = None
-                self._full_battery_resumed_at = now_mono
                 if self._active_regulator is not None:
                     self._active_regulator.reset()
                 await self._battery.start_discharge()
@@ -799,7 +760,6 @@ class ControlRuntime:
                         )
                         self._zfi_paused_full_battery = False
                         self._full_battery_resume_since = None
-                        self._full_battery_resumed_at = now_mono
                         if self._active_regulator is not None:
                             self._active_regulator.reset()
                         await self._battery.start_discharge()
@@ -809,7 +769,6 @@ class ControlRuntime:
                         logger.debug(
                             "Full-battery pause: grid draw too low \u2013 wake-up timer reset"
                         )
-                    self._full_battery_resume_since = None
                     self._full_battery_resume_since = None
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
@@ -887,64 +846,6 @@ class ControlRuntime:
 
         self._watchdog_violation_since = None
         self._watchdog_last_reset = now_mono
-
-    async def _read_sample(self) -> Optional[GridSample]:
-        try:
-            phases = await self._grid_meter.get_phase_powers()
-            if phases is None:
-                logger.debug("_read_sample: grid meter returned no phase data")
-                return None
-
-            batt_output = await self._battery.get_ac_output_power()
-            batt_state = await self._battery.get_state()
-
-            soc: int | None = None
-            charge_in: float | None = None
-            bypass_active: bool | None = None
-            if batt_state is not None:
-                soc = batt_state.battery_soc
-                charge_in = float(batt_state.grid_input_power or 0) or None
-                bypass_active = batt_state.bypass_mode
-
-                # Log bypass state changes
-                if bypass_active != self._last_bypass_state:
-                    if bypass_active:
-                        solar_w = batt_state.solar_input_power
-                        logger.warning(
-                            "Inverter entered BYPASS mode: PV (%d W) routed directly to house. "
-                            "battery_output_w (%s W) reflects solar bypass, not battery output. "
-                            "outputLimit commands are ignored!",
-                            solar_w,
-                            batt_output,
-                        )
-                    elif self._last_bypass_state is not None:
-                        logger.info("Inverter left bypass mode – battery control active")
-                    self._last_bypass_state = bypass_active
-
-                if bypass_active:
-                    logger.debug(
-                        "Bypass active: solar=%d W  home_output=%s W  soc=%s%%",
-                        batt_state.solar_input_power,
-                        batt_output,
-                        soc,
-                    )
-
-            return GridSample(
-                timestamp=time.time(),
-                phase_a_w=phases[0],
-                phase_b_w=phases[1],
-                phase_c_w=phases[2],
-                battery_output_w=float(batt_output) if batt_output is not None else 0.0,
-                soc_percent=soc,
-                charge_input_w=charge_in,
-                bypass_active=bypass_active,
-                solar_input_w=float(batt_state.solar_input_power)
-                if batt_state is not None
-                else None,
-            )
-        except Exception:
-            logger.debug("Sample read failed", exc_info=True)
-            return None
 
     def _update_state(
         self,
