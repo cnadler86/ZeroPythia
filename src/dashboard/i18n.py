@@ -24,7 +24,7 @@ import json
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
         # ── HTML placeholders ──────────────────────────────────────────────
-        "t_title": "Zendure Dashboard",
+        "t_title": "ZeroPythia",
         "t_pv": "PV",
         "t_soc": "SoC",
         "t_grid": "Grid",
@@ -89,7 +89,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "de": {
         # ── HTML placeholders ──────────────────────────────────────────────
-        "t_title": "Zendure Dashboard",
+        "t_title": "ZeroPythia",
         "t_pv": "PV",
         "t_soc": "SoC",
         "t_grid": "Netz",
@@ -127,7 +127,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "t_plan_published": "Plan erstellt",
         "t_effective_label": "Aktuell effektiv",
         "t_version_prefix": "v",
-        "t_footer_project": "Zero Feed Controller",
+        "t_footer_project": "ZeroPythia",
         "t_github": "GitHub",
         "t_saved": "Gespeichert",
         # ── JS T object keys ───────────────────────────────────────────────
