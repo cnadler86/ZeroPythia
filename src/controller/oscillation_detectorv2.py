@@ -446,16 +446,22 @@ class BaseloadPredictor(OscillationDetector):
         if self._phase == "low":
             return self.base_load or self._last_value
 
-        # In high phase, check if we should preemptively go to base load
+        # In high phase: let the controller respond normally to the rising flank.
+        # Only reduce to base load once we're within reaction_time of the predicted
+        # falling edge — and never at the exact rising-edge sample itself, so that
+        # normal regulation always has at least one full cycle to react.
         min_high_time = self.get_min_rising_falling_time()
         if min_high_time and self._rising_times:
-            expected_falling_time = self._rising_times[-1] + min_high_time
-            # If we're within reaction_time before the expected falling edge, reduce to base load
-            if self._current_timestamp >= expected_falling_time - self.reaction_time:
-                return self.base_load or self._last_value
+            last_rising = self._rising_times[-1]
+            # Skip the limit at the exact rising-edge sample
+            # (_current_timestamp == last_rising) so normal regulation can respond.
+            if self._current_timestamp > last_rising:
+                expected_falling_time = last_rising + min_high_time
+                if self._current_timestamp >= expected_falling_time - self.reaction_time:
+                    return self.base_load or self._last_value
 
-        # Otherwise, return current value
-        return self._last_value
+        # No predictor limit – normal regulation
+        return float("inf")
 
 
 @dataclass
