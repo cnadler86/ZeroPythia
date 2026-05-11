@@ -193,7 +193,6 @@
       <h2><<<t_overview_card>>></h2>
       <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">&#8211;</span>
     </div>
-    <div class="row"><span class="label"><<<t_controller>>></span><span class="value" id="ctrl-name">&#8211;</span></div>
     <div class="row"><span class="label"><<<t_setpoint>>></span><span class="value" id="ctrl-sp">&#8211;</span></div>
     <div class="row"><span class="label"><<<t_raw_target>>></span><span class="value" id="ctrl-raw">&#8211;</span></div>
     <div class="row"><span class="label"><<<t_ff_total>>></span><span class="value" id="ctrl-ff">&#8211;</span></div>
@@ -543,7 +542,6 @@ function render(s) {
 
   // Global stats card
   const sp = c?.setpoint_w ?? null;
-  document.getElementById('ctrl-name').textContent = c?.regulator_name ?? '\u2013';
   document.getElementById('ctrl-sp').textContent   = sp != null ? sp + '\u00a0W' : '\u2013';
   document.getElementById('ctrl-raw').innerHTML    = c?.raw_target_w != null ? Number(c.raw_target_w).toFixed(0)+'\u00a0W' : '\u2013';
   document.getElementById('ctrl-ff').innerHTML     = c?.ff_output_w  != null ? Number(c.ff_output_w).toFixed(0)+'\u00a0W' : '\u2013';
