@@ -134,6 +134,7 @@ class ControlRuntime:
         # Operating mode
         self._mode: DeviceMode = DeviceMode.IDLE
         self._charge_power_w: Optional[int] = None
+        self._ac_charge_requested_power_w: Optional[int] = None
 
         # AUTO mode: effective mode used for sample routing and control
         self._auto_effective_mode: DeviceMode = DeviceMode.IDLE
@@ -261,6 +262,7 @@ class ControlRuntime:
             else:
                 pw = self._min_discharge_w  # device minimum as sensible default
             self._charge_power_w = pw
+            self._ac_charge_requested_power_w = pw
             # Clear all ZFI transient states
             self._zfi_paused_low_soc = False
             self._zfi_paused_full_battery = False
@@ -276,6 +278,7 @@ class ControlRuntime:
                     logger.error("set_mode(AC_CHARGE): set_ac_input_limit(%d) failed", pw)
 
         elif mode == DeviceMode.IDLE:
+            self._ac_charge_requested_power_w = None
             # Clear all ZFI transient states
             self._zfi_paused_low_soc = False
             self._zfi_paused_full_battery = False
@@ -288,12 +291,14 @@ class ControlRuntime:
 
         elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
             self._charge_power_w = None
+            self._ac_charge_requested_power_w = None
             if self._active_regulator:
                 self._active_regulator.reset()
             # The regulator loop will start the battery on its first compute_setpoint call.
             await self._battery.start_discharge()
 
         elif mode == DeviceMode.AUTO:
+            self._ac_charge_requested_power_w = None
             # AUTO: don't touch the battery yet – the AutoModeManager drives it
             if self._active_regulator:
                 self._active_regulator.reset()
@@ -328,6 +333,7 @@ class ControlRuntime:
             # resurrect a stale high-power setpoint via "pw = value or old").
             pw = charge_power_w if charge_power_w is not None else self._min_discharge_w
             self._charge_power_w = pw
+            self._ac_charge_requested_power_w = pw
             if self._active_regulator:
                 self._active_regulator.reset()
             setpoint = await self._battery.start_charge()
@@ -339,12 +345,14 @@ class ControlRuntime:
                     )
 
         elif mode == DeviceMode.IDLE:
+            self._ac_charge_requested_power_w = None
             if self._active_regulator:
                 self._active_regulator.reset()
             await self._battery.stop()
 
         elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
             self._charge_power_w = None
+            self._ac_charge_requested_power_w = None
             if self._auto_effective_mode != DeviceMode.DISCHARGE_ZERO_FEED:
                 # Only reset/restart when actually switching into this mode.
                 # Respect the low-SoC guard: if the pause is active, keep the
@@ -714,62 +722,50 @@ class ControlRuntime:
                 self._zfi_soc_limited_report_idle = False
             return
 
-        _solar_w = float(sample.solar_input_w or 0.0)
+        household_load_w = sample.total_grid_w
 
-        if not self._zfi_paused_full_battery and (soc is not None and soc >= self._full_soc_pct):
-            logger.info(
-                "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%%", soc, self._full_soc_pct
-            )
-            self._zfi_paused_full_battery = True
-            self._full_battery_resume_since = None
-            await self._battery.stop()
+        if soc is not None and soc >= self._full_soc_pct:
+            if household_load_w > self._full_soc_resume_threshold_w:
+                if self._zfi_paused_full_battery:
+                    logger.info(
+                        "ZFI full-battery pause ended: SoC %d%% at max, "
+                        "household load %.0fW > %.0fW",
+                        soc,
+                        household_load_w,
+                        self._full_soc_resume_threshold_w,
+                    )
+                    self._zfi_paused_full_battery = False
+                    self._full_battery_resume_since = None
+                    if self._active_regulator is not None:
+                        self._active_regulator.reset()
+                    await self._battery.start_discharge()
+            else:
+                if not self._zfi_paused_full_battery:
+                    logger.info(
+                        "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%% and "
+                        "household load %.0fW <= %.0fW",
+                        soc,
+                        self._full_soc_pct,
+                        household_load_w,
+                        self._full_soc_resume_threshold_w,
+                    )
+                    self._zfi_paused_full_battery = True
+                    self._full_battery_resume_since = None
+                    await self._battery.stop()
+                else:
+                    self._full_battery_resume_since = None
 
         elif self._zfi_paused_full_battery:
-            # Immediate exit: solar dropped below our minimum AND SOC is below the hardware
-            # maximum.  Neither the SOC-full condition nor the PV-bypass condition applies.
-            if _solar_w < self._min_discharge_w and (soc is None or soc < self._full_soc_pct):
-                logger.info(
-                    "ZFI full-battery pause ended immediately: "
-                    "solar %.0fW < %dW min and SoC %s%% < max",
-                    _solar_w,
-                    self._min_discharge_w,
-                    soc,
-                )
-                self._zfi_paused_full_battery = False
-                self._full_battery_resume_since = None
-                if self._active_regulator is not None:
-                    self._active_regulator.reset()
-                await self._battery.start_discharge()
-            else:
-                # PV still available or SOC still high: use sustained grid-draw timer
-                grid_w = sample.total_grid_w
-                if grid_w >= self._full_soc_resume_threshold_w:
-                    if self._full_battery_resume_since is None:
-                        self._full_battery_resume_since = now_mono
-                        logger.debug(
-                            "Full-battery pause: grid draw %.0fW \u2013 wake-up timer started",
-                            grid_w,
-                        )
-                    elif (
-                        now_mono - self._full_battery_resume_since >= self._full_soc_resume_delay_s
-                    ):
-                        logger.info(
-                            "Full-battery pause ended: grid draw %.0fW sustained for >= %.0fs",
-                            grid_w,
-                            self._full_soc_resume_delay_s,
-                        )
-                        self._zfi_paused_full_battery = False
-                        self._full_battery_resume_since = None
-                        if self._active_regulator is not None:
-                            self._active_regulator.reset()
-                        await self._battery.start_discharge()
-                else:
-                    # Grid draw below threshold \u2192 reset the timer
-                    if self._full_battery_resume_since is not None:
-                        logger.debug(
-                            "Full-battery pause: grid draw too low \u2013 wake-up timer reset"
-                        )
-                    self._full_battery_resume_since = None
+            logger.info(
+                "ZFI full-battery pause ended: SoC %s%% < hardware maximum %d%%",
+                soc,
+                self._full_soc_pct,
+            )
+            self._zfi_paused_full_battery = False
+            self._full_battery_resume_since = None
+            if self._active_regulator is not None:
+                self._active_regulator.reset()
+            await self._battery.start_discharge()
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
         """Reduce AC charge power when SoC exceeds the configured upper threshold."""
@@ -780,10 +776,15 @@ class ControlRuntime:
             self._charge_power_w if self._charge_power_w is not None else self._min_discharge_w
         )
         if soc > self._high_soc_charge_limit_pct:
+            base_pw = (
+                self._ac_charge_requested_power_w
+                if self._ac_charge_requested_power_w is not None
+                else current_pw
+            )
             limit_w = (
                 self._high_soc_charge_limit_w
                 if self._high_soc_charge_limit_w is not None
-                else max(50, current_pw // 2)
+                else max(50, int(base_pw) // 2)
             )
             if current_pw > limit_w:
                 logger.info(
