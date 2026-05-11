@@ -95,7 +95,7 @@ class SolarFlowAsyncMockClient(BatteryManager):
         device_ip: str = "127.0.0.1",
         model: BatteryModel = DEFAULT_MODEL,
         *,
-        initial_soc: int = 50,
+        initial_soc: int = 100,
         battery_capacity_wh: int = 1920,
         **kwargs,
     ):

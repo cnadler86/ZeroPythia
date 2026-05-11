@@ -44,9 +44,6 @@
   /* ── Layout grid ──────────────────────────── */
   .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
             gap: 10px; padding: 12px 12px 0; max-width: 1500px; margin: 0 auto; }
-  .layout-settings { display: none; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 10px; padding: 8px 12px 0; max-width: 1500px; margin: 0 auto; }
-  .layout-settings.visible { display: grid; }
   .card { background: var(--card); border: 1px solid var(--border);
           border-radius: 10px; padding: 12px; }
   .card-head { display: flex; align-items: center; justify-content: space-between;
@@ -104,6 +101,20 @@
   /* ── Per-phase card ───────────────────────── */
   .phase-header { display: flex; align-items: center; justify-content: space-between;
                   margin-bottom: 6px; }
+  .card-tools { display: flex; align-items: center; gap: 6px; }
+  .card-config-btn {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    border-radius: 6px;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+  }
+  .card-config-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .card-config-btn.active { border-color: var(--accent); color: #fff; background: var(--accent); }
   .osc-inline { display: flex; align-items: center; gap: 5px; font-size: 12px; }
   /* ── Plan list (CSS grid for column alignment) */
   .plan-entry {
@@ -119,6 +130,9 @@
   .plan-next-day { color: var(--yellow); font-size: 9px; vertical-align: super; margin-left: 1px; }
   .plan-mode { font-weight: 600; font-size: 12px; }
   .plan-pwr  { font-size: 11px; color: var(--muted); white-space: nowrap; text-align: right; }
+  .config-layout { display: none; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px; padding: 8px 12px 0; max-width: 1500px; margin: 0 auto; }
+  .config-layout.visible { display: grid; }
   /* ── Footer ───────────────────────────────── */
   .footer {
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -142,7 +156,6 @@
     <div class="dot" id="ws-dot"></div>
     <h1><<<t_title>>></h1>
     <span id="zfi-pause-badge" class="badge badge-yellow" style="display:none">&#8987;</span>
-    <button id="btn-config-toggle" class="icon-btn" onclick="toggleConfigMode()" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>">&#9881;</button>
   </div>
   <div class="header-zendure">
     <div class="metric" id="hm-pv-metric" style="display:none">
@@ -191,7 +204,10 @@
   <div class="card">
     <div class="phase-header">
       <h2><<<t_overview_card>>></h2>
-      <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">&#8211;</span>
+      <div class="card-tools">
+        <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">&#8211;</span>
+        <button class="card-config-btn" id="btn-config-overview" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>" onclick="toggleConfigTarget('general')">&#9881;</button>
+      </div>
     </div>
     <div class="row"><span class="label"><<<t_setpoint>>></span><span class="value" id="ctrl-sp">&#8211;</span></div>
     <div class="row"><span class="label"><<<t_raw_target>>></span><span class="value" id="ctrl-raw">&#8211;</span></div>
@@ -212,9 +228,12 @@
   <div class="card" id="card-live-A">
     <div class="phase-header">
       <h2>Phase A &nbsp;<span id="ph-role-A" class="badge badge-blue" style="font-size:10px">FF</span></h2>
-      <div class="osc-inline">
-        <span id="osc-badge-A" class="badge badge-gray" style="font-size:11px">&#8211;</span>
-        <span id="osc-det-A" style="color:var(--accent);font-size:11px"></span>
+      <div class="card-tools">
+        <div class="osc-inline">
+          <span id="osc-badge-A" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+          <span id="osc-det-A" style="color:var(--accent);font-size:11px"></span>
+        </div>
+        <button class="card-config-btn" id="btn-config-A" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>" onclick="toggleConfigTarget('A')">&#9881;</button>
       </div>
     </div>
     <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-A">&#8211;</span></div>
@@ -227,9 +246,12 @@
   <div class="card" id="card-live-B">
     <div class="phase-header">
       <h2>Phase B &nbsp;<span id="ph-role-B" class="badge badge-green" style="font-size:10px">Bat</span></h2>
-      <div class="osc-inline">
-        <span id="osc-badge-B" class="badge badge-gray" style="font-size:11px">&#8211;</span>
-        <span id="osc-det-B" style="color:var(--accent);font-size:11px"></span>
+      <div class="card-tools">
+        <div class="osc-inline">
+          <span id="osc-badge-B" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+          <span id="osc-det-B" style="color:var(--accent);font-size:11px"></span>
+        </div>
+        <button class="card-config-btn" id="btn-config-B" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>" onclick="toggleConfigTarget('B')">&#9881;</button>
       </div>
     </div>
     <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-B">&#8211;</span></div>
@@ -243,9 +265,12 @@
   <div class="card" id="card-live-C">
     <div class="phase-header">
       <h2>Phase C &nbsp;<span id="ph-role-C" class="badge badge-blue" style="font-size:10px">FF</span></h2>
-      <div class="osc-inline">
-        <span id="osc-badge-C" class="badge badge-gray" style="font-size:11px">&#8211;</span>
-        <span id="osc-det-C" style="color:var(--accent);font-size:11px"></span>
+      <div class="card-tools">
+        <div class="osc-inline">
+          <span id="osc-badge-C" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+          <span id="osc-det-C" style="color:var(--accent);font-size:11px"></span>
+        </div>
+        <button class="card-config-btn" id="btn-config-C" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>" onclick="toggleConfigTarget('C')">&#9881;</button>
       </div>
     </div>
     <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-C">&#8211;</span></div>
@@ -254,61 +279,7 @@
     <div class="chart-wrap"><canvas id="chart-C"></canvas></div>
   </div>
 
-  <!-- ── GridPythia Plan (jetzt im Live-Layout, immer sichtbar) ─────────── -->
-  <div class="card" id="card-auto">
-    <div class="card-head">
-      <h2><<<t_auto_card>>></h2>
-      <div id="auto-conn-dot" class="dot" title=""></div>
-    </div>
-    <div class="row">
-      <span class="label"><<<t_plan_published>>></span>
-      <span id="auto-plan-ts" style="color:var(--muted);font-size:11px">&#8211;</span>
-    </div>
-    <div class="row">
-      <span class="label"><<<t_effective_label>>></span>
-      <span id="auto-effective" class="badge badge-gray">&#8211;</span>
-    </div>
-    <div id="plan-list" style="margin-top:8px"></div>
-  </div>
-
-</div>
-
-<div class="layout-settings" id="layout-settings">
-
-  <!-- ── Controller Settings ─────────────────────────────────────────────── -->
-  <div class="card" id="card-general">
-    <h2><<<t_settings_card>>></h2>
-    <select id="reg-select" onchange="onRegSelectChange()" style="display:none"></select>
-    <div id="general-settings" style="margin-top:8px"></div>
-    <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('General')"><<<t_apply>>></button>
-  </div>
-
-  <!-- ── Phase A Settings ────────────────────────────────────────────────── -->
-  <div class="card" id="card-phase-A" style="display:none">
-    <h2 id="ph-head-A">Phase A</h2>
-    <div id="phase-settings-A"></div>
-    <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase A')"><<<t_apply>>></button>
-  </div>
-
-  <!-- ── Phase B Settings ────────────────────────────────────────────────── -->
-  <div class="card" id="card-phase-B" style="display:none">
-    <h2 id="ph-head-B">Phase B</h2>
-    <div id="phase-settings-B"></div>
-    <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase B')"><<<t_apply>>></button>
-  </div>
-
-  <!-- ── Phase C Settings ────────────────────────────────────────────────── -->
-  <div class="card" id="card-phase-C" style="display:none">
-    <h2 id="ph-head-C">Phase C</h2>
-    <div id="phase-settings-C"></div>
-    <button class="apply-btn" style="margin-top:8px"
-            onclick="applyGroupSettings('Phase C')"><<<t_apply>>></button>
-  </div>
-
-  <!-- ── Operating Mode (jetzt im Settings-Layout, nur im Config-Mode sichtbar) ── -->
+  <!-- ── Operating Mode ──────────────────────────────────────────────────── -->
   <div class="card" id="card-mode">
     <h2><<<t_mode_card>>></h2>
     <div class="btn-row">
@@ -332,6 +303,77 @@
     </div>
   </div>
 
+  <!-- ── GridPythia Plan (nur im Auto-Modus) ────────────────────────────── -->
+  <div class="card" id="card-auto">
+    <div class="card-head">
+      <h2><<<t_auto_card>>></h2>
+      <div class="card-tools">
+        <div id="auto-conn-dot" class="dot" title=""></div>
+        <button class="card-config-btn" id="btn-config-auto" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>" onclick="toggleConfigTarget('auto')">&#9881;</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label"><<<t_plan_published>>></span>
+      <span id="auto-plan-ts" style="color:var(--muted);font-size:11px">&#8211;</span>
+    </div>
+    <div class="row">
+      <span class="label"><<<t_effective_label>>></span>
+      <span id="auto-effective" class="badge badge-gray">&#8211;</span>
+    </div>
+    <div id="plan-list" style="margin-top:8px"></div>
+  </div>
+
+</div>
+
+<div class="config-layout" id="layout-config">
+  <select id="reg-select" onchange="renderConfigPanel()" style="display:none"></select>
+
+  <div class="card" id="card-config-general" style="display:none">
+    <h2><<<t_settings_card>>></h2>
+    <div id="general-settings" style="margin-top:8px"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applySettingsFor('general')"><<<t_apply>>></button>
+  </div>
+
+  <div class="card" id="card-config-phase-base" style="display:none">
+    <h2 id="phase-base-head">Phase</h2>
+    <div id="phase-settings-base"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applySettingsFor('phase-base')"><<<t_apply>>></button>
+  </div>
+
+  <div class="card" id="card-config-phase-holder" style="display:none">
+    <h2 id="phase-holder-head">Holder</h2>
+    <div id="phase-settings-holder"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applySettingsFor('phase-holder')"><<<t_apply>>></button>
+  </div>
+
+  <div class="card" id="card-config-phase-predictor" style="display:none">
+    <h2 id="phase-predictor-head">Predictor</h2>
+    <div id="phase-settings-predictor"></div>
+    <button class="apply-btn" style="margin-top:8px" onclick="applySettingsFor('phase-predictor')"><<<t_apply>>></button>
+  </div>
+
+  <div class="card" id="card-config-auto-mode" style="display:none">
+    <h2><<<t_mode_card>>></h2>
+    <div class="btn-row">
+      <button class="mode-btn" id="cfg-btn-idle" onclick="setModeCfg('idle')"><<<t_btn_idle>>></button>
+      <button class="mode-btn" id="cfg-btn-zf"   onclick="setModeCfg('discharge_zero_feed')"><<<t_btn_zf>>></button>
+      <button class="mode-btn" id="cfg-btn-charge" onclick="openChargeDialogCfg()"><<<t_btn_charge>>></button>
+      <button class="mode-btn" id="cfg-btn-auto"   onclick="openAutoDialogCfg()"><<<t_btn_auto>>></button>
+    </div>
+    <div id="cfg-charge-panel" style="display:none;margin-top:10px">
+      <label><<<t_charge_power_label>>></label>
+      <input type="number" id="cfg-charge-w" value="400" min="1" max="3000"/>
+      <button class="apply-btn" onclick="setModeCfg('ac_charge')"><<<t_charge_start>>></button>
+    </div>
+    <div id="cfg-auto-panel" style="display:none;margin-top:10px">
+      <label><<<t_broker_label>>></label>
+      <input type="text" id="cfg-auto-broker" value="mqtt://localhost:1883"/>
+      <label><<<t_device_id_label>>></label>
+      <input type="text" id="cfg-auto-device-id" value="SF800Pro"/>
+      <button class="apply-btn" onclick="activateAutoCfg()"><<<t_auto_activate>>></button>
+      <button class="apply-btn secondary" style="margin-top:4px" onclick="deactivateAutoCfg()"><<<t_auto_deactivate>>></button>
+    </div>
+  </div>
 </div>
 
 <!-- ── Footer ──────────────────────────────────────────────────────────────── -->
@@ -350,7 +392,14 @@
 <script>
 // ── State & history ────────────────────────────────────────────────────────
 let ws, state = null, regulators = [];
-let configMode = false;
+let selectedConfigTarget = null;
+let settingsFieldBuckets = {
+  general: [],
+  phaseBase: [],
+  phaseHolder: [],
+  phasePredictor: [],
+  auto: [],
+};
 const HISTORY = 60;
 const phHist = { A:{grid:[],sp:[],cons:[],err:[]}, B:{grid:[],sp:[],cons:[],err:[]}, C:{grid:[],sp:[],cons:[],err:[]} };
 const globalHist = { err:[] };
@@ -402,16 +451,24 @@ function resolvePhaseRoles(controlStatus) {
   return roles;
 }
 
-function setConfigMode(enabled) {
-  configMode = !!enabled;
-  const layout = document.getElementById('layout-settings');
-  const button = document.getElementById('btn-config-toggle');
-  if (layout) layout.classList.toggle('visible', configMode);
-  if (button) button.classList.toggle('active', configMode);
+function toggleConfigTarget(target) {
+  selectedConfigTarget = selectedConfigTarget === target ? null : target;
+  updateConfigButtons();
+  renderConfigPanel();
 }
 
-function toggleConfigMode() {
-  setConfigMode(!configMode);
+function updateConfigButtons() {
+  const byTarget = {
+    general: 'btn-config-overview',
+    A: 'btn-config-A',
+    B: 'btn-config-B',
+    C: 'btn-config-C',
+    auto: 'btn-config-auto',
+  };
+  ['general', 'A', 'B', 'C', 'auto'].forEach(t => {
+    const el = document.getElementById(byTarget[t]);
+    if (el) el.classList.toggle('active', selectedConfigTarget === t);
+  });
 }
 
 // ── Chart drawing ──────────────────────────────────────────────────────────
@@ -468,6 +525,15 @@ function render(s) {
   else if (s.mode==='ac_charge')           document.getElementById('btn-charge').classList.add('active');
   else if (s.mode==='auto')                document.getElementById('btn-auto').classList.add('active');
 
+  ['cfg-btn-idle','cfg-btn-zf','cfg-btn-charge','cfg-btn-auto'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
+  });
+  if (s.mode==='idle')                    document.getElementById('cfg-btn-idle')?.classList.add('active');
+  else if (s.mode==='discharge_zero_feed') document.getElementById('cfg-btn-zf')?.classList.add('active');
+  else if (s.mode==='ac_charge')           document.getElementById('cfg-btn-charge')?.classList.add('active');
+  else if (s.mode==='auto')                document.getElementById('cfg-btn-auto')?.classList.add('active');
+
   // Pause badge
   const paused = s.zfi_paused_low_soc || s.zfi_paused_full_battery;
   const pauseBadge = document.getElementById('zfi-pause-badge');
@@ -475,9 +541,16 @@ function render(s) {
   if (s.zfi_paused_low_soc)           pauseBadge.textContent = '\u23f8 ' + T.paused_soc;
   else if (s.zfi_paused_full_battery) pauseBadge.textContent = '\u23f8 ' + T.paused_full;
 
-  // Auto plan card (immer sichtbar)
+  // GridPythia-Plan als modusabhängige Begleitkarte
   const cardAuto = document.getElementById('card-auto');
-  if (cardAuto) cardAuto.style.display = '';
+  if (cardAuto) cardAuto.style.display = s.mode === 'auto' ? '' : 'none';
+  const cardMode = document.getElementById('card-mode');
+  if (cardMode) cardMode.style.display = s.mode === 'auto' ? 'none' : '';
+  if (s.mode !== 'auto' && selectedConfigTarget === 'auto') {
+    selectedConfigTarget = null;
+    updateConfigButtons();
+    renderConfigPanel();
+  }
   if (s.auto_status) renderAutoStatus(s.auto_status, s);
 
   // Sample data
@@ -604,38 +677,125 @@ async function fetchRegulators() {
   const res = await fetch('/api/regulators');
   regulators = await res.json();
   const sel = document.getElementById('reg-select');
-  if (sel) sel.innerHTML = regulators.map(r =>
-    `<option value="${r.name}" ${r.is_active?'selected':''}>${r.name}</option>`
-  ).join('');
-  renderRegSettings();
+  if (sel) {
+    sel.innerHTML = regulators.map(r =>
+      `<option value="${r.name}" ${r.is_active?'selected':''}>${r.name}</option>`
+    ).join('');
+  }
+  renderConfigPanel();
 }
 
-function onRegSelectChange() { renderRegSettings(); }
-
-function renderRegSettings() {
+function getSelectedRegulator() {
   const sel  = document.getElementById('reg-select');
   const name = sel?.value || regulators[0]?.name || '';
   const reg  = regulators.find(r => r.name === name) || regulators[0];
-  if (!reg) return;
-  // reg-desc element removed – description no longer shown in UI
+  return reg || null;
+}
 
+function groupSettingsByName(reg) {
   const groups = {};
-  for (const [key, def] of Object.entries(reg.settings_schema)) {
+  for (const [key, def] of Object.entries(reg.settings_schema || {})) {
     const g = def.group || 'General';
     if (!groups[g]) groups[g] = [];
     groups[g].push([key, def]);
   }
-  fillSettingsContainer('general-settings', groups['General'] || [], reg.current_settings);
-  ['A','B','C'].forEach(ph => {
-    const gKey = Object.keys(groups).find(g => g.startsWith('Phase '+ph));
-    const card = document.getElementById('card-phase-'+ph);
-    if (!card) return;
-    if (!gKey) { card.style.display = 'none'; return; }
-    const hd = document.getElementById('ph-head-'+ph);
-    if (hd) hd.textContent = gKey;
-    fillSettingsContainer('phase-settings-'+ph, groups[gKey], reg.current_settings);
-    card.style.display = '';
+  return groups;
+}
+
+function renderConfigPanel() {
+  const layout = document.getElementById('layout-config');
+  const cardGeneral = document.getElementById('card-config-general');
+  const cardBase = document.getElementById('card-config-phase-base');
+  const cardHolder = document.getElementById('card-config-phase-holder');
+  const cardPredictor = document.getElementById('card-config-phase-predictor');
+  const cardAutoMode = document.getElementById('card-config-auto-mode');
+  const reg = getSelectedRegulator();
+
+  settingsFieldBuckets = { general: [], phaseBase: [], phaseHolder: [], phasePredictor: [], auto: [] };
+
+  if (!selectedConfigTarget || !reg) {
+    if (layout) layout.classList.remove('visible');
+    if (cardGeneral) cardGeneral.style.display = 'none';
+    if (cardBase) cardBase.style.display = 'none';
+    if (cardHolder) cardHolder.style.display = 'none';
+    if (cardPredictor) cardPredictor.style.display = 'none';
+    if (cardAutoMode) cardAutoMode.style.display = 'none';
+    return;
+  }
+
+  const groups = groupSettingsByName(reg);
+  if (layout) layout.classList.add('visible');
+
+  if (selectedConfigTarget === 'general') {
+    const generalFields = groups['General'] || [];
+    settingsFieldBuckets.general = generalFields;
+    fillSettingsContainer('general-settings', generalFields, reg.current_settings);
+    if (cardGeneral) cardGeneral.style.display = '';
+    if (cardBase) cardBase.style.display = 'none';
+    if (cardHolder) cardHolder.style.display = 'none';
+    if (cardPredictor) cardPredictor.style.display = 'none';
+    if (cardAutoMode) cardAutoMode.style.display = 'none';
+    return;
+  }
+
+  if (selectedConfigTarget === 'auto') {
+    if (cardGeneral) cardGeneral.style.display = 'none';
+    if (cardBase) cardBase.style.display = 'none';
+    if (cardHolder) cardHolder.style.display = 'none';
+    if (cardPredictor) cardPredictor.style.display = 'none';
+    if (cardAutoMode) cardAutoMode.style.display = '';
+    return;
+  }
+
+  const phase = selectedConfigTarget;
+  const prefix = phase.toLowerCase() + '_';
+  const groupName = Object.keys(groups).find(g => g.startsWith('Phase ' + phase));
+  const allPhaseFields = groupName ? (groups[groupName] || []) : [];
+
+  const phaseBaseFields = allPhaseFields.filter(([key]) => {
+    if (key === prefix + 'holder_enabled') return true;
+    if (key === prefix + 'predictor_enabled') return true;
+    if (key.startsWith(prefix + 'holder_')) return false;
+    if (key.startsWith(prefix + 'predictor_')) return false;
+    return true;
   });
+  const phaseHolderFields = allPhaseFields.filter(([key]) => {
+    if (key === prefix + 'holder_enabled') return false;
+    return key.startsWith(prefix + 'holder_');
+  });
+  const phasePredictorFields = allPhaseFields.filter(([key]) => {
+    if (key === prefix + 'predictor_enabled') return false;
+    return key.startsWith(prefix + 'predictor_');
+  });
+
+  const holderEnabled = !!reg.current_settings?.[prefix + 'holder_enabled'];
+  const predictorEnabled = !!reg.current_settings?.[prefix + 'predictor_enabled'];
+
+  settingsFieldBuckets.phaseBase = phaseBaseFields;
+  settingsFieldBuckets.phaseHolder = holderEnabled ? phaseHolderFields : [];
+  settingsFieldBuckets.phasePredictor = predictorEnabled ? phasePredictorFields : [];
+
+  const baseHead = document.getElementById('phase-base-head');
+  if (baseHead) baseHead.textContent = groupName || ('Phase ' + phase);
+  fillSettingsContainer('phase-settings-base', phaseBaseFields, reg.current_settings);
+  if (cardBase) cardBase.style.display = phaseBaseFields.length ? '' : 'none';
+
+  const holderHead = document.getElementById('phase-holder-head');
+  if (holderHead) holderHead.textContent = 'Phase ' + phase + ' Holder';
+  fillSettingsContainer('phase-settings-holder', settingsFieldBuckets.phaseHolder, reg.current_settings);
+  if (cardHolder) cardHolder.style.display = settingsFieldBuckets.phaseHolder.length ? '' : 'none';
+
+  const predictorHead = document.getElementById('phase-predictor-head');
+  if (predictorHead) predictorHead.textContent = 'Phase ' + phase + ' Predictor';
+  fillSettingsContainer('phase-settings-predictor', settingsFieldBuckets.phasePredictor, reg.current_settings);
+  if (cardPredictor) cardPredictor.style.display = settingsFieldBuckets.phasePredictor.length ? '' : 'none';
+
+  if (cardGeneral) cardGeneral.style.display = 'none';
+  if (cardAutoMode) cardAutoMode.style.display = 'none';
+}
+
+function onRegSelectChange() {
+  renderConfigPanel();
 }
 
 function fillSettingsContainer(containerId, fields, cur) {
@@ -658,32 +818,36 @@ function fillSettingsContainer(containerId, fields, cur) {
   }).join('');
 }
 
-function collectGroupSettings(groupPrefix) {
-  const sel  = document.getElementById('reg-select');
-  const name = sel?.value || regulators[0]?.name || '';
-  const reg  = regulators.find(r => r.name === name) || regulators[0];
-  if (!reg) return null;
+function collectSettingsForFields(fields) {
+  const reg = getSelectedRegulator();
+  if (!reg || !fields?.length) return null;
   const settings = {};
-  for (const [key, def] of Object.entries(reg.settings_schema)) {
-    const g = def.group || 'General';
-    if (!g.startsWith(groupPrefix)) continue;
+  fields.forEach(([key, def]) => {
     const el = document.getElementById('s_'+key);
-    if (!el) continue;
+    if (!el) return;
     if (def.type==='boolean') settings[key] = el.checked;
     else if (def.type==='string') settings[key] = el.value;
     else settings[key] = Number(el.value);
-  }
-  return {name, settings};
+  });
+  return {name: reg.name, settings};
 }
 
-async function applyGroupSettings(groupPrefix) {
-  const r = collectGroupSettings(groupPrefix);
+async function applySettingsFor(kind) {
+  const map = {
+    general: settingsFieldBuckets.general,
+    'phase-base': settingsFieldBuckets.phaseBase,
+    'phase-holder': settingsFieldBuckets.phaseHolder,
+    'phase-predictor': settingsFieldBuckets.phasePredictor,
+  };
+  const fields = map[kind] || [];
+  const r = collectSettingsForFields(fields);
   if (!r) return;
   await fetch(`/api/regulators/${r.name}/settings`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify(r.settings)
   });
-  fetchRegulators(); showToast(T.saved);
+  await fetchRegulators();
+  showToast(T.saved);
 }
 
 // ── Mode control ───────────────────────────────────────────────────────────
@@ -723,6 +887,48 @@ async function activateAuto() {
 async function deactivateAuto() {
   await fetch('/api/auto/disconnect', {method:'POST'});
   document.getElementById('auto-panel').style.display = 'none';
+  showToast(T.auto_deactivated);
+}
+
+function openChargeDialogCfg() {
+  const p = document.getElementById('cfg-charge-panel');
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('cfg-auto-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
+}
+
+function openAutoDialogCfg() {
+  const p = document.getElementById('cfg-auto-panel');
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('cfg-charge-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
+}
+
+function setModeCfg(mode) {
+  const body = {mode};
+  if (mode === 'ac_charge') {
+    body.charge_power_w = parseInt(document.getElementById('cfg-charge-w').value);
+    document.getElementById('cfg-charge-panel').style.display = 'none';
+  }
+  fetch('/api/mode', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+}
+
+async function activateAutoCfg() {
+  const broker    = document.getElementById('cfg-auto-broker').value.trim();
+  const device_id = document.getElementById('cfg-auto-device-id').value.trim();
+  if (!broker || !device_id) { showToast(T.broker_required); return; }
+  const res = await fetch('/api/auto/connect', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mqtt_broker:broker, device_id, topic_prefix:'gridpythia', status_interval_s:60})
+  });
+  if (res.ok) { document.getElementById('cfg-auto-panel').style.display='none'; showToast(T.auto_activated); }
+  else { const err = await res.json().catch(()=>({})); showToast('Error: '+(err.detail||res.status)); }
+}
+
+async function deactivateAutoCfg() {
+  await fetch('/api/auto/disconnect', {method:'POST'});
+  document.getElementById('cfg-auto-panel').style.display = 'none';
   showToast(T.auto_deactivated);
 }
 
@@ -776,7 +982,8 @@ function showToast(msg) {
 }
 
 connect();
-setConfigMode(false);
+updateConfigButtons();
+renderConfigPanel();
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js')
