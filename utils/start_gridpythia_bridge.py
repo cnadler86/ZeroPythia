@@ -1,22 +1,22 @@
-"""GridPythia Bridge – Status reporten + Plan ausführen.
+"""GridPythia Bridge – report status + execute plan.
 
-Verbindet Zendure SolarFlow mit GridPythia über MQTT:
+Connects Zendure SolarFlow with GridPythia via MQTT:
 
-  1. Status-Reporter (alle 60 s):
-       Liest SoC vom Zendure-Gerät und publiziert ihn an GridPythia:
+  1. Status reporter (every 60 s):
+       Reads SoC from the Zendure device and publishes it to GridPythia:
        → gridpythia/inverters/{device_id}/status  {"soc": 63.5, "mode": 2}
 
-  2. Plan-Executor (alle 60 s):
-       Empfängt den Optimierungsplan von GridPythia und setzt die Batterie
-       entsprechend dem aktuellen Slot:
+  2. Plan executor (every 60 s):
+       Receives the optimisation plan from GridPythia and sets the battery
+       according to the current slot:
 
        IDLE (0)                  → battery.stop()
        DISCHARGE (1)             → battery.start_discharge(plan_w)
        DISCHARGE_ZERO_FEED_IN(2) → battery.start_discharge(plan_w)
        AC_CHARGE (3+4)           → battery.start_charge(plan_charge_w)
-       Kein Plan / veraltet      → battery.start_discharge(fallback_w)
+       No plan / stale           → battery.start_discharge(fallback_w)
 
-Kein Zero-Feed-Regelkreis – die Batterie folgt einfach dem Plan.
+No zero-feed control loop – the battery simply follows the plan.
 
 Usage:
     python utils/start_gridpythia_bridge.py
@@ -51,10 +51,10 @@ LOG = logging.getLogger("gridpythia_bridge")
 
 
 class SimplePlanExecutor:
-    """Führt GridPythia-Plan-Schritte direkt als Batterie-Befehle aus.
+    """Executes GridPythia plan steps directly as battery commands.
 
-    Wird alle *check_interval_s* Sekunden ausgeführt.  Wenn kein gültiger
-    Plan vorhanden ist, läuft die Batterie auf *fallback_discharge_w* Entladung.
+    Called every *check_interval_s* seconds.  When no valid plan is present,
+    the battery falls back to *fallback_discharge_w* discharge.
     """
 
     def __init__(
@@ -72,7 +72,7 @@ class SimplePlanExecutor:
 
     async def run(self) -> None:
         LOG.info(
-            "Plan-Executor gestartet (device_id=%s, interval=%.0fs)",
+            "Plan executor started (device_id=%s, interval=%.0f s)",
             self._device_id,
             self._interval,
         )
@@ -83,7 +83,7 @@ class SimplePlanExecutor:
         except asyncio.CancelledError:
             pass
         finally:
-            LOG.info("Plan-Executor gestoppt")
+            LOG.info("Plan executor stopped")
 
     async def _tick(self) -> None:
         now = datetime.now(tz=timezone.utc)
@@ -96,13 +96,13 @@ class SimplePlanExecutor:
 
     async def _apply_fallback(self) -> None:
         if self._active_mode == InverterMode.IDLE:
-            return  # bereits gestoppt
-        LOG.info("Kein aktiver Plan → stop")
+            return  # already stopped
+        LOG.info("No active plan → stop")
         try:
             await self._battery.stop()
             self._active_mode = InverterMode.IDLE
         except Exception:
-            LOG.exception("Fehler beim Fallback-stop()")
+            LOG.exception("Error during fallback stop()")
 
     async def _apply_step(self, step: PlanStep) -> None:
         mode = step.mode
@@ -112,43 +112,47 @@ class SimplePlanExecutor:
         if mode == InverterMode.IDLE:
             if self._active_mode == InverterMode.IDLE:
                 return
-            LOG.info("Plan-Modus: IDLE → stop")
+            LOG.info("Plan mode: IDLE → stop")
             try:
                 await self._battery.stop()
                 self._active_mode = InverterMode.IDLE
             except Exception:
-                LOG.exception("Fehler bei stop()")
+                LOG.exception("Error in stop()")
 
         elif mode in (InverterMode.DISCHARGE, InverterMode.DISCHARGE_ZERO_FEED_IN):
             plan_w = int(step.discharge_ac_wh / dt_h) if dt_h > 0 else 0
             plan_w = max(1, plan_w)
             if self._active_mode == mode:
                 return
-            LOG.info("Plan-Modus: %s → start_discharge(%dW)", mode.name, plan_w)
+            LOG.info("Plan mode: %s → start_discharge(%d W)", mode.name, plan_w)
             try:
-                await self._battery.start_discharge(plan_w)
+                setpoint = await self._battery.start_discharge()
+                if plan_w > setpoint:
+                    await self._battery.set_ac_output_limit(plan_w)
                 self._active_mode = mode
             except Exception:
-                LOG.exception("Fehler bei start_discharge()")
+                LOG.exception("Error in start_discharge()")
 
         elif mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
             plan_charge_w = int(step.charge_ac_wh / dt_h) if dt_h > 0 else 0
             if self._active_mode == mode:
                 return
             if plan_charge_w <= 0:
-                LOG.info("Plan-Modus: %s mit 0 Wh → stop", mode.name)
+                LOG.info("Plan mode: %s with 0 Wh → stop", mode.name)
                 try:
                     await self._battery.stop()
                     self._active_mode = InverterMode.IDLE
                 except Exception:
-                    LOG.exception("Fehler bei stop()")
+                    LOG.exception("Error in stop()")
             else:
-                LOG.info("Plan-Modus: %s → start_charge(%dW)", mode.name, plan_charge_w)
+                LOG.info("Plan mode: %s → start_charge(%d W)", mode.name, plan_charge_w)
                 try:
-                    await self._battery.start_charge(plan_charge_w)
+                    setpoint = await self._battery.start_charge()
+                    if plan_charge_w > setpoint:
+                        await self._battery.set_ac_input_limit(plan_charge_w)
                     self._active_mode = mode
                 except Exception:
-                    LOG.exception("Fehler bei start_charge()")
+                    LOG.exception("Error in start_charge()")
 
 
 # ── Hauptfunktion ────────────────────────────────────────────────────────────
@@ -173,7 +177,7 @@ async def run(
         device_id=device_id,
         topic_prefix=topic_prefix,
     )
-    plan_subscriber.register()  # vor mqtt_client.start() registrieren
+    plan_subscriber.register()  # must be registered before mqtt_client.start()
 
     async with SolarFlowAsyncClient(zendure_ip) as solarflow:
         # Status-Reporter
@@ -195,7 +199,7 @@ async def run(
 
         mqtt_client.start()
         LOG.info(
-            "GridPythia Bridge gestartet — Zendure=%s  device_id=%s  broker=%s",
+            "GridPythia Bridge started — Zendure=%s  device_id=%s  broker=%s",
             zendure_ip,
             device_id,
             mqtt_broker,
@@ -206,7 +210,7 @@ async def run(
             asyncio.create_task(executor.run(), name="plan-executor"),
         ]
 
-        # Ersten Tick sofort ausführen (nicht 60 s warten)
+        # Execute first tick immediately (don't wait 60 s)
         await executor._tick()
 
         try:
@@ -214,16 +218,16 @@ async def run(
             done = await asyncio.gather(*tasks, return_exceptions=True)
             for result in done:
                 if isinstance(result, Exception):
-                    LOG.error("Task-Fehler: %s", result, exc_info=result)
+                    LOG.error("Task error: %s", result, exc_info=result)
         except asyncio.CancelledError:
             pass
         finally:
-            LOG.info("Bridge wird gestoppt …")
+            LOG.info("Stopping bridge…")
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             mqtt_client.stop()
-            LOG.info("Bridge gestoppt")
+            LOG.info("Bridge stopped")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

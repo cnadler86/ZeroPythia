@@ -16,10 +16,10 @@ class HysteresisPreprocessor:
             self._current_group = [values[0]]
             return values[0]
 
-        # Median als robuster Referenzpunkt (unempfindlich gegen Ausreißer)
+        # Median as a robust reference point (insensitive to outliers)
         med = median(values)
 
-        # Sammle alle Werte innerhalb der Hysterese um den Median (Inlier)
+        # Collect all values within the hysteresis band around the median (inliers)
         inliers = []
         inlier_positions = []
         for i, v in enumerate(values):
@@ -29,17 +29,17 @@ class HysteresisPreprocessor:
 
         if len(inliers) >= 2:
             self._current_group = inliers
-            # Gewichteter Mittelwert der Inlier (Position = Gewicht)
+            # Weighted mean of inliers (position = weight)
             weights = self._compute_weights(inlier_positions)
             weighted_sum = sum(v * w for v, w in zip(inliers, weights, strict=False))
             return weighted_sum / sum(weights)
         else:
-            # Zu wenige Inlier → Median als robuster Fallback
+            # Too few inliers → median as robust fallback
             self._current_group = list(values)
             return med
 
     def _compute_weights(self, positions: list[int]) -> list[float]:
-        """Berechne Gewichte basierend auf Position (neuere Werte = höheres Gewicht)."""
+        """Compute weights based on position (newer values = higher weight)."""
         n = len(positions)
         if self.weight_type == 'linear':
             return [p + 1 for p in range(n)]

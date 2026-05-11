@@ -1,18 +1,18 @@
-"""Feedforward-Steuerung für Phasen ohne Inverter (z.B. Phase A + C in V4-Variante).
+"""Feedforward control for phases without inverter (e.g. phases A + C).
 
-Diese Steuerung ist eine OFFENE STEUERUNG (kein Feedback-Regelkreis):
-  - Beobachtet Netzbezug an einer Phase (z.B. A oder C)
-  - Berechnet eine Batterie-Anfrage, um diesen Netzbezug auf 0W zu bringen
-  - Kein Stabilitätsrisiko, da die Batterie an einer anderen Phase (B) hängt
+This is an OPEN-LOOP CONTROLLER (no feedback):
+  - Observes grid draw on a phase (e.g. A or C)
+  - Computes a battery request to bring that grid draw to 0 W
+  - No stability risk, because the battery is connected to a different phase (B)
 
-Regler-Struktur (P-Steuerung mit Hysterese-Preprocessor):
-  - Außerhalb Hysterese:  kp      × phase_power   (volle Kompensation, default kp=1.0)
-  - Innerhalb Hysterese:  kp_hyst × phase_power   (gedämpft, default 0.3)
-  - Danach: Begrenzung durch Oszillationsdetektoren (Holder + Predictor)
-  - Anti-Export-Schutz:   Anfrage nie größer als aktueller Netzbezug (kein Over-Shoot)
+Controller structure (P-control with hysteresis preprocessor):
+  - Outside hysteresis: kp      × phase_power   (full compensation, default kp=1.0)
+  - Inside  hysteresis: kp_hyst × phase_power   (damped, default 0.3)
+  - Followed by clamping via oscillation detectors (Holder + Predictor)
+  - Anti-export guard:  request never exceeds current grid draw (no over-shoot)
 
-Ausgabe: Batterie-Anfrage in Watt (immer >= 0).
-Die Summe aller FF-Phasen-Anfragen bildet das variable Target für die Phase-B-Regelung.
+Output: battery request in watts (always >= 0).
+The sum of all FF-phase requests forms the variable target for phase-B control.
 """
 
 import logging
@@ -31,41 +31,41 @@ from .pre_processor import HysteresisPreprocessor
 logger = logging.getLogger(__name__)
 
 
-# ── Einstellungen ─────────────────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class FeedforwardSteuerungSettings:
-    """Einstellungen für eine Feedforward-Steuerung-Phase (z.B. A oder C)."""
+    """Settings for a feedforward-control phase (e.g. A or C)."""
 
     kp: float = 1.0
-    """Verstärkung außerhalb der Hysterese.
-    1.0 = volle Kompensation des Netzbezugs (Vorsteuerung ohne Abschwächung)."""
+    """Gain outside the hysteresis band.
+    1.0 = full compensation of grid draw (pure feedforward, no attenuation)."""
 
     kp_hysteresis: float = 0.3
-    """Gedämpfte Verstärkung innerhalb der Hysterese.
-    Verhindert Kleinschwingungen nahe dem Nullpunkt."""
+    """Damped gain inside the hysteresis band.
+    Prevents small oscillations near the zero-point."""
 
     hysteresis_w: float = 8.0
-    """Hysterese-Band in Watt.
-    Innerhalb: kp_hysteresis aktiv. Außerhalb: kp aktiv."""
+    """Hysteresis band width in watts.
+    Inside: kp_hysteresis active. Outside: kp active."""
 
 
-# ── Feedforward-Steuerung ─────────────────────────────────────────────────────
+# ── Feedforward control ───────────────────────────────────────────────────────
 
 
 class FeedforwardSteuerung:
-    """P-Steuerung für eine Phase ohne Inverter.
+    """P-controller for a phase without inverter.
 
-    Berechnet eine Batterie-Anfrage (Demand), um Netzbezug an dieser Phase
-    auf 0W zu bringen. Target ist fest auf 0W gesetzt.
+    Computes a battery demand to bring the grid draw of this phase to 0 W.
+    The target is fixed at 0 W.
 
-    Verwendet Hysterese-Preprocessor (robuste Filterung) und optionale
-    Oszillationsdetektoren (Holder und/oder Predictor) als Ausgabe-Limiter.
+    Uses a hysteresis preprocessor (robust filtering) and optional
+    oscillation detectors (Holder and/or Predictor) as output limiters.
 
-    Die Ausgabe ist immer >= 0W: negative Werte (Einspeisung an dieser Phase)
-    führen zu keiner Rücknahme der Batterie-Anfrage – das ist Aufgabe des
-    Phase-B-Reglers.
+    Output is always >= 0 W: negative values (feed-in on this phase)
+    do not reduce the battery request – that is the responsibility of
+    the phase-B controller.
     """
 
     def __init__(
@@ -82,23 +82,23 @@ class FeedforwardSteuerung:
         self._last_raw_output: float = 0.0
         self._last_osc_limit: float = float("inf")
 
-    # ── Oszillation ───────────────────────────────────────────────────
+    # ── Oscillation ───────────────────────────────────────────────────
 
     @property
     def is_oscillating(self) -> bool:
-        """True wenn mindestens ein Oszillationsdetektor aktiv ist."""
+        """True if at least one oscillation detector is active."""
         return (self.holder is not None and self.holder.is_oscillating) or (
             self.predictor is not None and self.predictor.is_oscillating
         )
 
     def feed_osc_samples(self, samples: Optional[list[PhaseSample]] = None) -> float:
-        """Füttert Oszillationsdetektoren mit neuen Samples und gibt aktives Limit zurück.
+        """Feed oscillation detectors with new samples and return the active limit.
 
-        Nur positive Werte (Netzbezug) werden an die Detektoren übergeben –
-        Einspeisung ist kein Indikator für Lastoszillation.
+        Only positive values (grid draw) are passed to the detectors –
+        feed-in is not an indicator of load oscillation.
 
         Returns:
-            Aktives Osc-Limit in Watt (float('inf') wenn kein Detektor aktiv).
+            Active oscillation limit in watts (float('inf') when no detector is active).
         """
         if samples:
             for sample in samples:
@@ -115,35 +115,35 @@ class FeedforwardSteuerung:
             limits.append(self.predictor.get_limit())
         return min(limits) if limits else float("inf")
 
-    # ── Steuerungsberechnung ──────────────────────────────────────────
+    # ── Control calculation ───────────────────────────────────────────
 
     def calculate(
         self,
         phase_power_w: list[float],
         osc_samples: Optional[list[PhaseSample]] = None,
     ) -> float:
-        """Berechnet Batterie-Anfrage für diese Phase.
+        """Compute the battery demand for this phase.
 
-        Ablauf:
-          1. Osc-Detektoren mit neuen Samples füttern → Limit ermitteln
-          2. Hysterese-Preprocessor filtert Messwerte
-          3. P-Steuerung: error = filtered (target=0), output = kp * error
-          4. Ausgabe begrenzen: [0, min(raw, osc_limit, anti_export_cap)]
+        Steps:
+          1. Feed oscillation detectors with new samples → determine limit
+          2. Hysteresis preprocessor filters measurements
+          3. P-control: error = filtered (target=0), output = kp * error
+          4. Clamp output: [0, min(raw, osc_limit, anti_export_cap)]
 
         Args:
-            phase_power_w: Letzte Messwerte dieser Phase in Watt (positiv = Netzbezug,
-                negativ = Einspeisung). Neueste zuletzt.
-            osc_samples: Samples inkl. Zeitstempel für Oszillationsdetektoren.
-                Kann von phase_power_w abweichen (z.B. kürzeres Fenster).
+            phase_power_w: Latest samples for this phase in watts (positive = grid
+                draw, negative = feed-in). Newest last.
+            osc_samples: Samples with timestamps for oscillation detectors.
+                May differ from phase_power_w (e.g. shorter window).
 
         Returns:
-            Batterie-Anfrage in Watt. Immer >= 0, bereits durch Osc-Limit begrenzt.
+            Battery demand in watts. Always >= 0, already capped by osc limit.
         """
         osc_limit = self.feed_osc_samples(osc_samples)
         self._last_osc_limit = osc_limit
 
         if not phase_power_w:
-            # Kein neues Sample: letzten Output nur durch Osc-Limit begrenzen
+            # No new sample: only clamp last output by osc limit
             self._last_output = min(self._last_output, osc_limit)
             return self._last_output
 
@@ -152,7 +152,7 @@ class FeedforwardSteuerung:
             self._last_output = min(self._last_output, osc_limit)
             return self._last_output
 
-        # P-Steuerung: target = 0W → error = filtered
+        # P-control: target = 0 W → error = filtered
         error = filtered
         if abs(error) < self.settings.hysteresis_w:
             raw = self.settings.kp_hysteresis * error
@@ -161,18 +161,18 @@ class FeedforwardSteuerung:
 
         self._last_raw_output = raw
 
-        # Anti-Export-Schutz: Anfrage darf aktuellen Bezug nicht übersteigen
-        # Verhindert Einspeisung, wenn Last zwischen Filterung und Berechnung fällt
+        # Anti-export guard: request must not exceed current draw.
+        # Prevents feed-in if the load drops between filtering and calculation.
         current_phase = phase_power_w[-1]
         max_output = max(current_phase, 0.0)
 
-        # Ausgabe begrenzen: [0, min(raw, osc_limit, anti_export_cap)]
+        # Clamp output: [0, min(raw, osc_limit, anti_export_cap)]
         output = max(0.0, min(raw, osc_limit, max_output))
         self._last_output = output
 
         logger.debug(
-            "FFSteuerung: phase_last=%.0fW filtered=%.1fW error=%.1fW "
-            "raw=%.1fW osc_limit=%.0fW anti_exp=%.0fW → output=%.1fW",
+            "FFSteuerung: phase_last=%.0f W  filtered=%.1f W  error=%.1f W  "
+            "raw=%.1f W  osc_limit=%.0f W  anti_exp=%.0f W  → output=%.1f W",
             current_phase,
             filtered,
             error,
@@ -187,15 +187,15 @@ class FeedforwardSteuerung:
 
     @property
     def last_output(self) -> float:
-        """Letzter Ausgabewert (bereits begrenzt)."""
+        """Last output value (already clamped)."""
         return self._last_output
 
     @property
     def last_raw_output(self) -> float:
-        """Letzter ungekappter P-Steuerungsoutput (vor Osc-Limit + Anti-Export)."""
+        """Last uncapped P-control output (before osc limit + anti-export)."""
         return self._last_raw_output
 
     @property
     def last_osc_limit(self) -> float:
-        """Aktives Oszillations-Limit (inf wenn kein Detektor aktiv)."""
+        """Active oscillation limit (inf when no detector is active)."""
         return self._last_osc_limit

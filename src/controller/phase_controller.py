@@ -1,31 +1,26 @@
-"""Gekapselte Phasen-Controller für Zero-Feed.
+"""Per-phase controllers for zero-feed-in regulation.
 
-Architektur - jeder Phasen-Controller kapselt:
-  1. Preprocessor  (Hysterese-basierte Sample-Filterung)
-  2. P-Regler      (Feedforward oder Feedback)
-  3. Oszillationsdetektoren (Holder + Predictor)
+Architecture - each phase controller encapsulates:
+  1. Preprocessor  (hysteresis-based sample filtering)
+  2. P-controller  (feedforward or feedback)
+  3. Oscillation detectors (Holder + Predictor)
 
-Eingabe:  Samples vom Energiemessgerät pro Phase
-Ausgabe:  Korrekturwert (gewünschte Batterie-Kompensation für diese Phase)
+Input:  per-phase power samples from the energy meter
+Output: correction value (desired battery compensation for this phase)
 
-PhaseController (Phasen OHNE Inverter, z.B. A+C):
-  Reiner Feedforward.  Beobachtet Netzbezug → fordert Batterie-Kompensation.
-  Kein Stabilitätsrisiko, da Batterie diese Phase nicht beeinflusst.
+PhaseController (phases WITHOUT inverter, e.g. A+C):
+  Pure feedforward.  Observes grid draw → requests battery compensation.
+  No stability risk, because the battery does not affect this phase.
 
-InverterPhaseController (Phase MIT Inverter, z.B. B):
-  Feedback-Regler.
-  Berücksichtigt Korrekturen anderer Phasen für korrekte Zerlegung.
-  Oszillationserkennung auf Realverbrauch.
-
-ZeroFeedManager:
-  Addiert alle Phasen-Korrekturen → finaler Batterie-Setpoint.
-    Liefert ungekappte Ziel-Leistung; Batterie-Grenzen werden am Ende angewandt.
-  Optionaler Gesamt-Oszillationsdetektor als Sicherheitsnetz.
+InverterPhaseController (phase WITH inverter, e.g. B):
+  Feedback regulator.
+  Takes corrections from other phases into account for correct decomposition.
+  Oscillation detection on real consumption.
 """
 
 import logging
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import Optional
 
 from .oscillation_detectorv2 import (
     BaseloadHolder,
@@ -38,81 +33,50 @@ from .pre_processor import HysteresisPreprocessor
 logger = logging.getLogger(__name__)
 
 
-# ── Einstellungen ─────────────────────────────────────────────────────────────
+# ── Settings ──────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class PhaseControllerSettings:
-    """Einstellungen für Feedforward-Phasen-Controller (ohne Inverter)."""
+    """Settings for the feedforward phase controller (phases without inverter)."""
 
     kp: float = 1.0
-    """Verstärkung: 1.0 = volle Kompensation des Netzbezugs"""
+    """Gain: 1.0 = full compensation of grid draw"""
 
     hysteresis_w: float = 8.0
-    """Hysterese in Watt – innerhalb dieser Zone gedämpfte Regelung"""
+    """Hysteresis band in watts – damped control within this zone"""
 
     kp_hysteresis: float = 0.3
-    """Gedämpfter Kp innerhalb der Hysterese"""
+    """Damped Kp inside the hysteresis band"""
 
 
 @dataclass
 class InverterPhaseControllerSettings:
-    """Einstellungen für Feedback-Phasen-Controller (mit Inverter)."""
+    """Settings for the feedback phase controller (phase with inverter)."""
 
     kp_draw: float = 0.95
-    """Verstärkung bei Netzbezug (vorsichtiger)"""
+    """Gain for grid draw (conservative)"""
 
     kp_feed_in: float = 1.05
-    """Verstärkung bei Einspeisung (aggressiver)"""
+    """Gain for feed-in (aggressive)"""
 
     hysteresis_w: float = 10.0
-    """Hysterese in Watt"""
+    """Hysteresis band in watts"""
 
     kp_hysteresis: float = 0.3
-    """Gedämpfter Kp innerhalb der Hysterese"""
+    """Damped Kp inside the hysteresis band"""
 
     target_power_w: float = 1.0
-    """Ziel-Bezug in Watt – wir regeln auf diesen Wert, nicht auf den aktuellen Netzbezug."""
+    """Target draw in watts – regulate to this value, not to current grid draw."""
 
     feedback_enabled: bool = True
-    """False = reiner Feedforward-Modus (Phase B liefert Korrektur=0, total=A+C).
-    Nützlich für Tests und wenn Phase B keine eigenständige Last hat."""
-
-
-@dataclass
-class ZeroFeedManagerSettings:
-    """Einstellungen für den Zero-Feed Manager."""
-
-    min_output_w: int = 20
-    """Minimaler Batterie-Output (Hardware-Limit)"""
-
-    max_output_w: int = 800
-    """Maximaler Batterie-Output (Hardware-Limit)"""
-
-    target_power_w: float = 1.0
-    """Ziel-Bezug in Watt – wir kompensieren nur, was diesen Wert übersteigt.
-    Positive Werte reduzieren Einspeisung auf Kosten eines kleinen permanenten Bezugs."""
-
-
-class ManagerDebugInfo(NamedTuple):
-    """Zwischenwerte für Logging/Analyse."""
-
-    feedback_output_w: float
-    """Desired-Total vom Inverter-Controller."""
-
-    ff_output_w: float
-    """Summe der Feedforward-Korrekturen (A+C)."""
-
-    raw_setpoint_w: int
-    """Setpoint vor Gesamt-Oszillations-Limit."""
-
-    osc_limit_w: float
-    """Aktives Oszillations-Limit des B-Reglers."""
+    """False = pure feedforward mode (phase B returns correction=0, total=A+C).
+    Useful for tests and when phase B has no independent load."""
 
 
 @dataclass(frozen=True)
 class PhaseSample:
-    """Zeitpunkt + Wert für Phasensample."""
+    """Timestamp and value for a phase sample."""
 
     timestamp: float
     value: float
@@ -124,11 +88,11 @@ def _sample_values(samples: Optional[list[PhaseSample]]) -> list[float]:
     return [sample.value for sample in samples]
 
 
-# ── Oszillations-Hilfsmethoden ────────────────────────────────────────────────
+# ── Oscillation helpers ───────────────────────────────────────────────────────
 
 
 class _OscillationMixin:
-    """Gemeinsame Oszillations-Logik für beide Controller-Typen."""
+    """Shared oscillation-detection logic for both controller types."""
 
     holder: Optional[BaseloadHolder]
     predictor: Optional[BaseloadPredictor]
@@ -168,19 +132,19 @@ class _OscillationMixin:
         return min(limits) if limits else float("inf")
 
 
-# ── PhaseController (Feedforward, ohne Inverter) ──────────────────────────────
+# ── PhaseController (feedforward, without inverter) ──────────────────────────
 
 
 class PhaseController(_OscillationMixin):
-    """Gekapselter Controller für eine Phase OHNE Inverter.
+    """Controller for a phase WITHOUT inverter.
 
-    Kapselt: Preprocessor, P-Regler, Oszillationsdetektoren.
+    Encapsulates: preprocessor, P-regulator, oscillation detectors.
 
-    Eingabe:  Phasen-Leistung vom Energiemessgerät (positiv = Bezug).
-    Ausgabe:  Korrekturwert = gewünschte Batterie-Kompensation für diese Phase.
+    Input:  phase power from the energy meter (positive = grid draw).
+    Output: correction = desired battery compensation for this phase.
 
-    Feedforward: Kein Stabilitätsrisiko, da Batterie diese Phase nicht
-    beeinflusst (Batterie hängt an einer anderen Phase).
+    Feedforward: no stability risk, because the battery does not affect
+    this phase (battery is connected to a different phase).
     """
 
     def __init__(
@@ -190,9 +154,7 @@ class PhaseController(_OscillationMixin):
         predictor_settings: Optional[BaseloadPredictorSettings] = None,
     ):
         self.settings = settings
-        self.preprocessor = HysteresisPreprocessor(
-            hysteresis=settings.hysteresis_w  # Hysterese für Preprocessor = Regelungs-Hysterese
-        )
+        self.preprocessor = HysteresisPreprocessor(hysteresis=settings.hysteresis_w)
         self.holder = BaseloadHolder(holder_settings) if holder_settings else None
         self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
         self._last_output: float = 0.0
@@ -205,14 +167,14 @@ class PhaseController(_OscillationMixin):
         target_power_w: float,
         osc_samples: Optional[list[PhaseSample]] = None,
     ) -> float:
-        """Berechnet Korrekturwert (Feedforward-Kompensation).
+        """Compute the correction value (feedforward compensation).
 
         Args:
-            phase_power_w: Letzte Messwerte dieser Phase.
-                Positiv = Bezug, Negativ = Einspeisung.
+            phase_power_w: Latest samples for this phase.
+                Positive = grid draw, negative = feed-in.
 
         Returns:
-            Korrekturwert (bereits durch Oszillations-Limit begrenzt).
+            Correction value (already capped by oscillation limit).
         """
         osc_limit = self.get_osc_limit(osc_samples)
         self._last_osc_limit = osc_limit
@@ -226,19 +188,19 @@ class PhaseController(_OscillationMixin):
             self._last_output = min(self._last_output, osc_limit)
             return self._last_output
 
-        # Feedforward: Kompensiere Netzbezug oberhalb des Zielwerts
+        # Feedforward: compensate grid draw above target
         error = filtered - target_power_w
         if abs(error) < self.settings.hysteresis_w:
             compensation = self.settings.kp_hysteresis * error
         else:
             compensation = self.settings.kp * error
 
-        # Anti-Export-Schutz: positive Correction nie größer als aktueller
-        # verfügbarer Bezug über dem Zielwert dieser Phase.
+        # Anti-export guard: positive correction must not exceed current
+        # available draw above the target for this phase.
         current_phase = phase_power_w[-1]
         max_positive_correction = max(current_phase - target_power_w, 0.0)
 
-        # Oszillations-Limit und Anti-Export-Schutz anwenden
+        # Apply oscillation limit and anti-export guard
         correction = min(compensation, osc_limit, max_positive_correction)
         self._last_controller_output = compensation
         self._last_output = correction
@@ -258,25 +220,23 @@ class PhaseController(_OscillationMixin):
         return self._last_osc_limit
 
 
-# ── InverterPhaseController (Feedback, mit Inverter) ──────────────────────────
+# ── InverterPhaseController (feedback, with inverter) ─────────────────────────
 
 
 class InverterPhaseController(_OscillationMixin):
-    """Gekapselter Controller für die Phase MIT Inverter.
+    """Controller for the phase WITH inverter.
 
-    Kapselt: Preprocessor, asymmetrischer P-Regler, Oszillationsdetektoren.
+    Encapsulates: preprocessor, asymmetric P-regulator, oscillation detectors.
 
-    Eingabe:  Grid-Leistung der B-Phase + Batteriezustand.
-    Ausgabe:  Korrekturwert = Anteil dieser Phase am Batterie-Setpoint.
+    Input:  grid power of phase B + battery state.
+    Output: correction = this phase's share of the battery setpoint.
 
-    Feedback: Regelt ausschließlich auf der B-Phase. Die Feedforward-
-    Korrekturen der Phasen A+C gehen als Offset in den Sollwert der B-Phase
-    ein, damit deren Kompensation nicht fälschlich als Fehler der B-Regelung
-    interpretiert wird.
+    Feedback: regulates exclusively on phase B.  Feedforward corrections
+    from phases A+C enter as an offset into the phase-B target so that
+    their compensation is not misinterpreted as a phase-B control error.
 
-    Oszillationserkennung: Läuft auf dem geschätzten Realverbrauch der
-    B-Phase. Dazu wird der Batterie-Output um den Feedforward-Anteil von
-    A+C bereinigt.
+    Oscillation detection: operates on the estimated real consumption of
+    phase B, which is the B-phase grid power corrected for A+C feedforward.
     """
 
     def __init__(
@@ -304,21 +264,20 @@ class InverterPhaseController(_OscillationMixin):
         settled: bool = True,
         osc_samples: Optional[list[PhaseSample]] = None,
     ) -> float:
-        """Berechnet Korrekturwert (Feedback nur auf Phase B).
+        """Compute the correction value (feedback on phase B only).
 
-        Der Korrekturwert repräsentiert den Anteil dieser Phase am
-        gewünschten Batterie-Output.  Wenn alle Phasen-Korrekturen
-        addiert werden, ergibt sich der gewünschte Total-Setpoint.
+        The correction represents this phase's share of the desired battery
+        output.  Summing all phase corrections gives the desired total setpoint.
 
         Args:
-            phase_b_grid_power_w: Letzte Messwerte der B-Phase.
-            current_battery_output_w: Aktueller Batterie-Output.
-            other_corrections_w: Summe der Korrekturen anderer Phasen.
-            settled: True wenn Inverter am vorherigen Setpoint angekommen.
-                Bei False wird Feedback eingefroren.
+            phase_b_grid_power_w: Latest samples for phase B.
+            current_battery_output_w: Current battery output.
+            other_corrections_w: Sum of corrections from other phases.
+            settled: True when the inverter has reached the previous setpoint.
+                When False, feedback is frozen.
 
         Returns:
-            Korrekturwert (bereits durch Oszillations-Limit begrenzt).
+            Correction value (already capped by oscillation limit).
         """
         osc_limit = self.get_osc_limit(osc_samples)
         self._last_osc_limit = osc_limit
@@ -328,8 +287,8 @@ class InverterPhaseController(_OscillationMixin):
         # Wenn Feedback deaktiviert: immer 0 zurückgeben (reiner FF-Modus)
         if not self.settings.feedback_enabled:
             logger.debug(
-                "InverterPhaseController: feedback_enabled=False – B-Korrektur=0"
-                " (ff_sum=%.0fW übernimmt als Total)",
+                "InverterPhaseController: feedback_enabled=False – B-correction=0"
+                " (ff_sum=%.0f W used as total)",
                 other_corrections_w,
             )
             self._last_output = 0.0
@@ -366,19 +325,19 @@ class InverterPhaseController(_OscillationMixin):
         else:
             if not settled:
                 logger.debug(
-                    "InverterPhaseController [!settled]: Feedback eingefroren"
-                    " bei desired_total=%.0fW  phase_target=%.1fW  ff_sum=%.0fW",
+                    "InverterPhaseController [!settled]: feedback frozen"
+                    " at desired_total=%.0f W  phase_target=%.1f W  ff_sum=%.0f W",
                     self._last_desired_total,
                     phase_target,
                     other_corrections_w,
                 )
             elif not phase_b_grid_power_w:
-                logger.debug("InverterPhaseController: keine Phase-B Samples")
+                logger.debug("InverterPhaseController: no phase-B samples")
 
-        # Mein Anteil = gewünschtes Total minus Feedforward-Offset von A+C
+        # My share = desired total minus feedforward offset from A+C
         my_correction = self._last_desired_total - other_corrections_w
 
-        # Oszillations-Limit auf meinen Anteil anwenden
+        # Apply oscillation limit to my share
         effective = min(my_correction, osc_limit)
         self._last_output = effective
 
@@ -392,6 +351,16 @@ class InverterPhaseController(_OscillationMixin):
             effective,
         )
         return effective
+
+    def apply_effective_total(self, effective_total_w: float, other_corrections_w: float) -> None:
+        """Align internal controller state to the actually applied battery setpoint.
+
+        This prevents windup when callers request a value above hardware limits
+        and the battery clamps to a lower effective setpoint.
+        """
+        self._last_desired_total = float(effective_total_w)
+        my_correction = self._last_desired_total - other_corrections_w
+        self._last_output = min(my_correction, self._last_osc_limit)
 
     @property
     def last_output(self) -> float:
@@ -416,212 +385,3 @@ class InverterPhaseController(_OscillationMixin):
     @property
     def last_feedback_error(self) -> float:
         return self._last_feedback_error
-
-
-# ── ZeroFeedManager ───────────────────────────────────────────────────────────
-
-
-class ZeroFeedManager:
-    """Kombiniert Phasen-Controller zu einem Batterie-Setpoint.
-
-    1. Berechnet Feedforward-Korrekturen (Phasen ohne Inverter)
-    2. Übergibt deren Summe an den Inverter-Controller
-    3. Addiert alle Korrekturen
-    4. Optional: Gesamt-Oszillationsdetektor als zusätzliches Limit
-    5. Gibt die Ziel-Leistung zurück (Batterie-Grenzen erfolgen außerhalb)
-    """
-
-    def __init__(
-        self,
-        manager_settings: ZeroFeedManagerSettings,
-        phase_a: PhaseController,
-        phase_b: InverterPhaseController,
-        phase_c: PhaseController,
-        total_holder_settings: Optional[BaseloadHolderSettings] = None,
-        total_predictor_settings: Optional[BaseloadPredictorSettings] = None,
-    ):
-        self.settings = manager_settings
-        self.phases: dict[str, PhaseController | InverterPhaseController] = {
-            "A": phase_a,
-            "B": phase_b,
-            "C": phase_c,
-        }
-        self._phase_a = phase_a
-        self._phase_b = phase_b
-        self._phase_c = phase_c
-
-        # Optionaler Gesamt-Detektor (Sicherheitsnetz)
-        self._total_holder = (
-            BaseloadHolder(total_holder_settings) if total_holder_settings else None
-        )
-        self._total_predictor = (
-            BaseloadPredictor(total_predictor_settings) if total_predictor_settings else None
-        )
-
-        self._last_setpoint: float = 0.0
-        self._last_debug: ManagerDebugInfo = ManagerDebugInfo(
-            feedback_output_w=0.0, ff_output_w=0.0, raw_setpoint_w=0, osc_limit_w=float("inf")
-        )
-
-    # ── Oszillation (Total) ───────────────────────────────────────────
-
-    @property
-    def total_is_oscillating(self) -> bool:
-        return (self._total_holder is not None and self._total_holder.is_oscillating) or (
-            self._total_predictor is not None and self._total_predictor.is_oscillating
-        )
-
-    def get_total_osc_limit(self, samples: Optional[list[PhaseSample]] = None) -> float:
-        if samples:
-            for sample in samples:
-                if sample.value > 0:
-                    if self._total_holder:
-                        self._total_holder.add_sample(sample.value, sample.timestamp)
-                    if self._total_predictor:
-                        self._total_predictor.add_sample(sample.value, sample.timestamp)
-
-        limits: list[float] = []
-        if self._total_holder and self._total_holder.is_oscillating:
-            limits.append(self._total_holder.get_limit())
-        if self._total_predictor and self._total_predictor.is_oscillating:
-            limits.append(self._total_predictor.get_limit())
-        return min(limits) if limits else float("inf")
-
-    @property
-    def is_oscillating(self) -> bool:
-        return (
-            self._phase_a.is_oscillating
-            or self._phase_b.is_oscillating
-            or self._phase_c.is_oscillating
-            or self.total_is_oscillating
-        )
-
-    # ── Regelung ──────────────────────────────────────────────────────
-
-    def calculate(
-        self,
-        phase_a_samples: Optional[list[PhaseSample]],
-        phase_b_samples: Optional[list[PhaseSample]],
-        phase_c_samples: Optional[list[PhaseSample]],
-        current_battery_output_w: float,
-        battery_settled: bool = True,
-        phase_battery_output_samples_w: Optional[list[float]] = None,
-        total_osc_samples: Optional[list[PhaseSample]] = None,
-    ) -> float:
-        """Berechnet die ungekappte Batterie-Ziel-Leistung.
-
-        Args:
-            phase_a_samples: Messwerte Phase A inkl. Zeitstempel (neueste zuletzt).
-            phase_b_samples: Messwerte Phase B inkl. Zeitstempel (neueste zuletzt).
-            phase_c_samples: Messwerte Phase C inkl. Zeitstempel (neueste zuletzt).
-            current_battery_output_w: Aktueller Batterie-Output.
-            battery_settled: True wenn Inverter am Setpoint angekommen.
-
-        Returns:
-            Ziel-Leistung in Watt nach Oszillations-Limits, aber ohne Batterie-Min/Max.
-        """
-        phase_a_power_w = _sample_values(phase_a_samples)
-        phase_b_power_w = _sample_values(phase_b_samples)
-        phase_c_power_w = _sample_values(phase_c_samples)
-
-        # 1) Feedforward-Phasen zuerst (A + C)
-        correction_a = self._phase_a.calculate(
-            phase_a_power_w,
-            self.settings.target_power_w,
-            osc_samples=phase_a_samples,
-        )
-        correction_c = self._phase_c.calculate(
-            phase_c_power_w,
-            self.settings.target_power_w,
-            osc_samples=phase_c_samples,
-        )
-        other_corrections = correction_a + correction_c
-        logger.debug(
-            "Manager FF: A=%.0fW (raw=%.0fW osc=%.0fW)  C=%.0fW (raw=%.0fW osc=%.0fW)  sum=%.0fW",
-            correction_a,
-            self._phase_a.last_controller_output,
-            self._phase_a.last_osc_limit,
-            correction_c,
-            self._phase_c.last_controller_output,
-            self._phase_c.last_osc_limit,
-            other_corrections,
-        )
-
-        phase_b_real_consumption_samples: Optional[list[PhaseSample]] = None
-        if phase_b_samples and phase_battery_output_samples_w:
-            n = min(len(phase_b_samples), len(phase_battery_output_samples_w))
-            phase_b_real_consumption_samples = [
-                PhaseSample(
-                    timestamp=phase_b_samples[i].timestamp,
-                    value=phase_b_samples[i].value
-                    + phase_battery_output_samples_w[i]
-                    - other_corrections,
-                )
-                for i in range(n)
-            ]
-
-        # 2) Inverter-Phase (Feedback) – bekommt Summe der anderen
-        correction_b = self._phase_b.calculate(
-            phase_b_power_w,
-            self.settings.target_power_w,
-            current_battery_output_w,
-            other_corrections,
-            battery_settled,
-            osc_samples=phase_b_real_consumption_samples,
-        )
-
-        # 3) Summe aller Korrekturen
-        raw_total = correction_a + correction_b + correction_c
-
-        self._last_setpoint = raw_total
-
-        logger.debug(
-            "Manager summary: ff=%.0fW  b_target=%.0fW  fb=%.0fW  settled=%s  corr_a=%.0fW corr_b=%.0fW corr_c=%.0fW -> raw=%.0fW",
-            other_corrections,
-            self._phase_b.last_phase_target,
-            self._phase_b.last_controller_output,
-            battery_settled,
-            correction_a,
-            correction_b,
-            correction_c,
-            raw_total,
-        )
-
-        # Gesamt-Detektor ebenfalls on-the-fly mit den aktuellen Samples füttern.
-        self.get_total_osc_limit(total_osc_samples)
-
-        # Store debug info for callers that request it
-        self._last_debug = ManagerDebugInfo(
-            feedback_output_w=self._phase_b.last_controller_output,
-            ff_output_w=other_corrections,
-            raw_setpoint_w=int(round(raw_total)),
-            osc_limit_w=self._phase_b.last_osc_limit,
-        )
-
-        return raw_total
-
-    def calculate_debug(
-        self,
-        phase_a_samples: Optional[list[PhaseSample]],
-        phase_b_samples: Optional[list[PhaseSample]],
-        phase_c_samples: Optional[list[PhaseSample]],
-        current_battery_output_w: float,
-        battery_settled: bool = True,
-        phase_battery_output_samples_w: Optional[list[float]] = None,
-        total_osc_samples: Optional[list[PhaseSample]] = None,
-    ) -> tuple[float, ManagerDebugInfo]:
-        """Wrapper: führt `calculate` aus und liefert zusätzlich Debug-Infos."""
-        setpoint = self.calculate(
-            phase_a_samples,
-            phase_b_samples,
-            phase_c_samples,
-            current_battery_output_w,
-            battery_settled,
-            phase_battery_output_samples_w,
-            total_osc_samples,
-        )
-        return setpoint, self._last_debug
-
-    @property
-    def last_feedforward_output_w(self) -> float:
-        return self._phase_a.last_output + self._phase_c.last_output

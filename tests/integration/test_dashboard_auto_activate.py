@@ -41,11 +41,21 @@ class FakeBattery:
     async def get_ac_output_power(self):
         return 200
 
-    async def start_charge(self, w):
-        return True
+    async def start_charge(self):
+        self._setpoint_w = 20
+        return 20
 
-    async def start_discharge(self, w):
-        return True
+    async def start_discharge(self):
+        self._setpoint_w = 20
+        return 20
+
+    async def set_ac_input_limit(self, power_w: int) -> int:
+        self._setpoint_w = power_w
+        return power_w
+
+    async def set_ac_output_limit(self, power_w: int) -> int:
+        self._setpoint_w = power_w
+        return power_w
 
     async def stop(self):
         return True
@@ -71,12 +81,12 @@ async def test_html_defaults_are_correct():
     """HTML should ship with localhost:1883 and SF800Pro as pre-filled values."""
     from httpx import ASGITransport, AsyncClient
 
-    from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
-    from src.dashboard.runtime import ControlRuntime
+    from src.controller.zerofeed_regulator import ZeroFeedRegulator
+    from src.runtime.control_runtime import ControlRuntime
     from src.dashboard.server import create_app
 
     runtime = ControlRuntime(FakeGrid(), cast(Any, FakeBattery()))
-    runtime.register_regulator(ZeroFeedV4Regulator())
+    runtime.register_regulator(ZeroFeedRegulator())
     app = create_app(runtime)
 
     async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as c:
@@ -98,9 +108,9 @@ async def test_auto_activate_from_dashboard():
 
     from httpx import ASGITransport, AsyncClient
 
-    from src.dashboard.models import DeviceMode
-    from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
-    from src.dashboard.runtime import ControlRuntime
+    from src.runtime.models import DeviceMode
+    from src.controller.zerofeed_regulator import ZeroFeedRegulator
+    from src.runtime.control_runtime import ControlRuntime
     from src.dashboard.server import create_app
 
     battery = FakeBattery()
@@ -110,7 +120,7 @@ async def test_auto_activate_from_dashboard():
         sampling_interval_s=0.1,
         control_interval_s=0.5,
     )
-    runtime.register_regulator(ZeroFeedV4Regulator())
+    runtime.register_regulator(ZeroFeedRegulator())
     await runtime.start()
     app = create_app(runtime)
 

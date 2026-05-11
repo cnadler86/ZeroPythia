@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="<<<lang>>>">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title><<<t_title>>></title>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#0f1117"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="ZeroFeed"/>
+<link rel="apple-touch-icon" href="/icon.svg"/>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1c1f2e; --border: #2a2d3e;
+    --accent: #4f8ef7; --green: #22c55e; --red: #ef4444;
+    --yellow: #eab308; --text: #e2e8f0; --muted: #64748b;
+    --font: system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; }
+  h1 { font-size: 1.1rem; font-weight: 600; }
+  h2 { font-size: 0.75rem; font-weight: 600; color: var(--muted); text-transform: uppercase;
+       letter-spacing: .05em; margin-bottom: .5rem; }
+  /* ── Header ───────────────────────────────── */
+  .header { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+            border-bottom: 1px solid var(--border); flex-wrap: wrap; row-gap: 4px; }
+  .header-left { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .header-zendure { display: flex; gap: 6px; flex: 0 0 auto; }
+  .header-grid { display: flex; gap: 6px; margin-left: auto; flex: 0 0 auto; }
+  @media (max-width: 440px) {
+    .header-zendure { margin-left: auto; }
+    .header-grid {
+      flex: 0 0 100%; margin-left: 0;
+      justify-content: space-around;
+      border-top: 1px solid var(--border); padding-top: 5px;
+    }
+  }
+  .metric { display: flex; align-items: center; gap: 2px; font-size: 12px; }
+  .metric-icon { font-size: 13px; }
+  .metric-val { font-weight: 700; font-variant-numeric: tabular-nums; min-width: 40px; font-size: 12px; }
+  .metric-label { color: var(--muted); font-size: 10px; }
+  /* ── Layout grid ──────────────────────────── */
+  .layout-live { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px; padding: 12px 12px 0; max-width: 1500px; margin: 0 auto; }
+  .layout-settings { display: none; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 10px; padding: 8px 12px 0; max-width: 1500px; margin: 0 auto; }
+  .layout-settings.visible { display: grid; }
+  .card { background: var(--card); border: 1px solid var(--border);
+          border-radius: 10px; padding: 12px; }
+  .card-head { display: flex; align-items: center; justify-content: space-between;
+               margin-bottom: 6px; }
+  /* ── Misc helpers ─────────────────────────── */
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); flex-shrink:0; }
+  .dot.live { background:var(--green); box-shadow: 0 0 5px var(--green); }
+  .dot.error { background:var(--red); }
+  .row { display: flex; justify-content: space-between; align-items: center;
+         padding: 3px 0; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: none; }
+  .label { color: var(--muted); font-size: 12px; }
+  .value { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 7px; border-radius: 4px;
+           font-size: 11px; font-weight: 700; }
+  .badge-green { background: #14532d; color: var(--green); }
+  .badge-red   { background: #450a0a; color: var(--red); }
+  .badge-yellow{ background: #422006; color: var(--yellow); }
+  .badge-blue  { background: #1e3a5f; color: var(--accent); }
+  .badge-gray  { background: #1e293b; color: var(--muted); }
+  .mode-btn { padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px;
+              background: var(--card); color: var(--text); cursor: pointer;
+              font-size: 12px; transition: all .15s; }
+  .mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .mode-btn.active { background: var(--accent); border-color: var(--accent); color:#fff; }
+  .icon-btn {
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .icon-btn.active { border-color: var(--accent); color: #fff; background: var(--accent); }
+  .btn-row { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
+  input[type=number], input[type=text], select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 5px 8px; width: 100%; font-size: 12px;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  label { display: block; color: var(--muted); font-size: 11px; margin: 6px 0 2px; }
+  .apply-btn { margin-top: 10px; padding: 7px 14px; background: var(--accent);
+               border: none; border-radius: 6px; color: #fff;
+               cursor: pointer; font-size: 12px; width: 100%; }
+  .apply-btn:hover { opacity: .85; }
+  .apply-btn.secondary { background: #374151; }
+  .apply-btn.secondary:hover { background: #4b5563; }
+  /* ── Mini chart ───────────────────────────── */
+  .chart-wrap { width: 100%; height: 80px; overflow: hidden; margin-top: 8px; }
+  canvas { width: 100%; height: 100%; display: block; }
+  /* ── Per-phase card ───────────────────────── */
+  .phase-header { display: flex; align-items: center; justify-content: space-between;
+                  margin-bottom: 6px; }
+  .osc-inline { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+  /* ── Plan list (CSS grid for column alignment) */
+  .plan-entry {
+    display: grid;
+    grid-template-columns: 5em 1fr auto;
+    gap: 4px; padding: 3px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: start;
+  }
+  .plan-entry:last-child { border-bottom: none; }
+  .plan-time { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--muted); }
+  .plan-day  { display: block; font-size: 10px; }
+  .plan-next-day { color: var(--yellow); font-size: 9px; vertical-align: super; margin-left: 1px; }
+  .plan-mode { font-weight: 600; font-size: 12px; }
+  .plan-pwr  { font-size: 11px; color: var(--muted); white-space: nowrap; text-align: right; }
+  /* ── Footer ───────────────────────────────── */
+  .footer {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 8px 12px; border-top: 1px solid var(--border);
+    margin: 12px auto 0; max-width: 1500px;
+    color: var(--muted); font-size: 11px;
+  }
+  .footer a { color: var(--muted); text-decoration: none; }
+  .footer a:hover { color: var(--accent); }
+  .footer-spacer { flex: 1; }
+  /* ── Toast ────────────────────────────────── */
+  #toast { position: fixed; bottom: 18px; right: 18px; background: #22c55e; color: #fff;
+           padding: 9px 16px; border-radius: 8px; font-size: 13px; display: none; z-index: 99; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<div class="header">
+  <div class="header-left">
+    <div class="dot" id="ws-dot"></div>
+    <h1><<<t_title>>></h1>
+    <span id="zfi-pause-badge" class="badge badge-yellow" style="display:none">&#8987;</span>
+    <button id="btn-config-toggle" class="icon-btn" onclick="toggleConfigMode()" title="<<<t_config_mode>>>" aria-label="<<<t_config_mode>>>">&#9881;</button>
+  </div>
+  <div class="header-zendure">
+    <div class="metric" id="hm-pv-metric" style="display:none">
+      <span class="metric-icon">&#9728;&#65039;</span>
+      <div>
+        <div class="metric-label"><<<t_pv>>></div>
+        <div class="metric-val" id="hm-pv">&#8211;</div>
+      </div>
+    </div>
+    <div class="metric">
+      <span class="metric-icon">&#128267;</span>
+      <div>
+        <div class="metric-label"><<<t_soc>>></div>
+        <div class="metric-val" id="hm-soc">&#8211;</div>
+      </div>
+    </div>
+  </div>
+  <div class="header-grid">
+    <div class="metric">
+      <span class="metric-icon">&#9889;</span>
+      <div>
+        <div class="metric-label"><<<t_grid>>></div>
+        <div class="metric-val" id="hm-total">&#8211;</div>
+      </div>
+    </div>
+    <div class="metric">
+      <span class="metric-icon">&#127968;</span>
+      <div>
+        <div class="metric-label"><<<t_load>>></div>
+        <div class="metric-val" id="hm-cons">&#8211;</div>
+      </div>
+    </div>
+    <div class="metric">
+      <span class="metric-icon">&#128267;</span>
+      <div>
+        <div class="metric-label"><<<t_bat>>></div>
+        <div class="metric-val" id="hm-batt">&#8211;</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="layout-live">
+
+  <!-- ── Overview & Controller ───────────────────────────────────────────── -->
+  <div class="card">
+    <div class="phase-header">
+      <h2><<<t_overview_card>>></h2>
+      <span id="ctrl-status-badge" class="badge badge-gray" style="font-size:10px">&#8211;</span>
+    </div>
+    <div class="row"><span class="label"><<<t_controller>>></span><span class="value" id="ctrl-name">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_setpoint>>></span><span class="value" id="ctrl-sp">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_raw_target>>></span><span class="value" id="ctrl-raw">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_ff_total>>></span><span class="value" id="ctrl-ff">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_feedback>>></span><span class="value" id="ctrl-fb">&#8211;</span></div>
+    <div class="row">
+      <span class="label"><<<t_watchdog_resets>>></span>
+      <span class="value" id="ctrl-wdog" style="color:var(--muted)">0</span>
+    </div>
+    <div class="row">
+      <span class="label"><<<t_deviation>>></span>
+      <span class="value" id="ctrl-delta">&#8211;</span>
+    </div>
+    <div class="chart-wrap"><canvas id="chart-global"></canvas></div>
+  </div>
+
+  <!-- ── Phase A ─────────────────────────────────────────────────────────── -->
+  <div class="card" id="card-live-A">
+    <div class="phase-header">
+      <h2>Phase A &nbsp;<span id="ph-role-A" class="badge badge-blue" style="font-size:10px">FF</span></h2>
+      <div class="osc-inline">
+        <span id="osc-badge-A" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+        <span id="osc-det-A" style="color:var(--accent);font-size:11px"></span>
+      </div>
+    </div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-A">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_demand>>></span><span class="value" id="ph-sp-A">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-A" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-A" style="color:var(--yellow)">&#8211;</span></div>
+    <div class="chart-wrap"><canvas id="chart-A"></canvas></div>
+  </div>
+
+  <!-- ── Phase B ─────────────────────────────────────────────────────────── -->
+  <div class="card" id="card-live-B">
+    <div class="phase-header">
+      <h2>Phase B &nbsp;<span id="ph-role-B" class="badge badge-green" style="font-size:10px">Bat</span></h2>
+      <div class="osc-inline">
+        <span id="osc-badge-B" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+        <span id="osc-det-B" style="color:var(--accent);font-size:11px"></span>
+      </div>
+    </div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-B">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_load_est>>></span><span class="value" id="ph-cons-B">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_setpoint_fb>>></span><span class="value" id="ph-sp-B">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-B" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-B" style="color:var(--yellow)">&#8211;</span></div>
+    <div class="chart-wrap"><canvas id="chart-B"></canvas></div>
+  </div>
+
+  <!-- ── Phase C ─────────────────────────────────────────────────────────── -->
+  <div class="card" id="card-live-C">
+    <div class="phase-header">
+      <h2>Phase C &nbsp;<span id="ph-role-C" class="badge badge-blue" style="font-size:10px">FF</span></h2>
+      <div class="osc-inline">
+        <span id="osc-badge-C" class="badge badge-gray" style="font-size:11px">&#8211;</span>
+        <span id="osc-det-C" style="color:var(--accent);font-size:11px"></span>
+      </div>
+    </div>
+    <div class="row"><span class="label"><<<t_grid_row>>></span><span class="value" id="ph-grid-C">&#8211;</span></div>
+    <div class="row"><span class="label"><<<t_demand>>></span><span class="value" id="ph-sp-C">&#8211;</span></div>
+    <div class="row" id="osc-lim-row-C" style="display:none"><span class="label"><<<t_osc_limit>>></span><span class="value" id="osc-lim-C" style="color:var(--yellow)">&#8211;</span></div>
+    <div class="chart-wrap"><canvas id="chart-C"></canvas></div>
+  </div>
+
+  <!-- ── Operating Mode ──────────────────────────────────────────────────── -->
+  <div class="card" id="card-mode">
+    <h2><<<t_mode_card>>></h2>
+    <div class="btn-row">
+      <button class="mode-btn" id="btn-idle" onclick="setMode('idle')"><<<t_btn_idle>>></button>
+      <button class="mode-btn" id="btn-zf"   onclick="setMode('discharge_zero_feed')"><<<t_btn_zf>>></button>
+      <button class="mode-btn" id="btn-charge" onclick="openChargeDialog()"><<<t_btn_charge>>></button>
+      <button class="mode-btn" id="btn-auto"   onclick="openAutoDialog()"><<<t_btn_auto>>></button>
+    </div>
+    <div id="charge-panel" style="display:none;margin-top:10px">
+      <label><<<t_charge_power_label>>></label>
+      <input type="number" id="charge-w" value="400" min="1" max="3000"/>
+      <button class="apply-btn" onclick="setMode('ac_charge')"><<<t_charge_start>>></button>
+    </div>
+    <div id="auto-panel" style="display:none;margin-top:10px">
+      <label><<<t_broker_label>>></label>
+      <input type="text" id="auto-broker" value="mqtt://localhost:1883"/>
+      <label><<<t_device_id_label>>></label>
+      <input type="text" id="auto-device-id" value="SF800Pro"/>
+      <button class="apply-btn" onclick="activateAuto()"><<<t_auto_activate>>></button>
+      <button class="apply-btn secondary" style="margin-top:4px" onclick="deactivateAuto()"><<<t_auto_deactivate>>></button>
+    </div>
+  </div>
+
+</div>
+
+<div class="layout-settings" id="layout-settings">
+
+  <!-- ── Controller Settings ─────────────────────────────────────────────── -->
+  <div class="card" id="card-general">
+    <h2><<<t_settings_card>>></h2>
+    <select id="reg-select" onchange="onRegSelectChange()" style="display:none"></select>
+    <div id="general-settings" style="margin-top:8px"></div>
+    <button class="apply-btn" style="margin-top:8px"
+            onclick="applyGroupSettings('General')"><<<t_apply>>></button>
+  </div>
+
+  <!-- ── Phase A Settings ────────────────────────────────────────────────── -->
+  <div class="card" id="card-phase-A" style="display:none">
+    <h2 id="ph-head-A">Phase A</h2>
+    <div id="phase-settings-A"></div>
+    <button class="apply-btn" style="margin-top:8px"
+            onclick="applyGroupSettings('Phase A')"><<<t_apply>>></button>
+  </div>
+
+  <!-- ── Phase B Settings ────────────────────────────────────────────────── -->
+  <div class="card" id="card-phase-B" style="display:none">
+    <h2 id="ph-head-B">Phase B</h2>
+    <div id="phase-settings-B"></div>
+    <button class="apply-btn" style="margin-top:8px"
+            onclick="applyGroupSettings('Phase B')"><<<t_apply>>></button>
+  </div>
+
+  <!-- ── Phase C Settings ────────────────────────────────────────────────── -->
+  <div class="card" id="card-phase-C" style="display:none">
+    <h2 id="ph-head-C">Phase C</h2>
+    <div id="phase-settings-C"></div>
+    <button class="apply-btn" style="margin-top:8px"
+            onclick="applyGroupSettings('Phase C')"><<<t_apply>>></button>
+  </div>
+
+  <!-- ── GridPythia Plan ─────────────────────────────────────────────────── -->
+  <div class="card" id="card-auto" style="display:none">
+    <div class="card-head">
+      <h2><<<t_auto_card>>></h2>
+      <div id="auto-conn-dot" class="dot" title=""></div>
+    </div>
+    <div class="row">
+      <span class="label"><<<t_plan_published>>></span>
+      <span id="auto-plan-ts" style="color:var(--muted);font-size:11px">&#8211;</span>
+    </div>
+    <div class="row">
+      <span class="label"><<<t_effective_label>>></span>
+      <span id="auto-effective" class="badge badge-gray">&#8211;</span>
+    </div>
+    <div id="plan-list" style="margin-top:8px"></div>
+  </div>
+
+</div>
+
+<!-- ── Footer ──────────────────────────────────────────────────────────────── -->
+<div class="footer">
+  <span id="ts"></span>
+  <span><<<t_version_prefix>>><<<VERSION>>></span>
+  <span class="footer-spacer"></span>
+  <<<GITHUB_LINK>>>
+  <span><<<t_footer_project>>></span>
+</div>
+
+<div id="toast">&#10003; <<<t_saved>>></div>
+
+<script id="i18n-data" type="application/json"><<<T_JSON>>></script>
+
+<script>
+// ── State & history ────────────────────────────────────────────────────────
+let ws, state = null, regulators = [];
+let configMode = false;
+const HISTORY = 60;
+const phHist = { A:{grid:[],sp:[],cons:[],err:[]}, B:{grid:[],sp:[],cons:[],err:[]}, C:{grid:[],sp:[],cons:[],err:[]} };
+const globalHist = { err:[] };
+
+// ── i18n strings (injected server-side) ───────────────────────────────────
+const _tNode = document.getElementById('i18n-data');
+const T = _tNode ? JSON.parse(_tNode.textContent || '{}') : {};
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { dot('live'); fetchRegulators(); };
+  ws.onclose = () => { dot('error'); setTimeout(connect, 3000); };
+  ws.onerror = () => { dot('error'); };
+  ws.onmessage = (ev) => { state = JSON.parse(ev.data); render(state); };
+}
+function dot(cls) { document.getElementById('ws-dot').className = 'dot ' + cls; }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function w(v, dec=0, unit='W') {
+  if (v == null) return '&#8211;';
+  const n = Number(v);
+  const s = n.toFixed(dec) + '\u00a0' + unit;
+  if (n > 0) return `<span style="color:var(--red)">${s}</span>`;
+  if (n < 0) return `<span style="color:var(--green)">${s}</span>`;
+  return s;
+}
+function push(arr, val) { arr.push(val ?? 0); if (arr.length > HISTORY) arr.shift(); }
+
+function getActiveRegulator() {
+  return regulators.find(r => r.is_active) || regulators[0] || null;
+}
+
+function getConfiguredBatteryPhase() {
+  const reg = getActiveRegulator();
+  const phase = reg?.current_settings?.control_phase;
+  return ['A', 'B', 'C'].includes(phase) ? phase : null;
+}
+
+function resolvePhaseRoles(controlStatus) {
+  const roles = { A: 'Bat', B: 'Bat', C: 'Bat' };
+  const configuredBatteryPhase = getConfiguredBatteryPhase();
+  if (configuredBatteryPhase) {
+    ['A', 'B', 'C'].forEach(ph => { roles[ph] = ph === configuredBatteryPhase ? 'Bat' : 'FF'; });
+    return roles;
+  }
+  const ffp = controlStatus?.ff_per_phase || {};
+  ['A', 'B', 'C'].forEach(ph => { roles[ph] = (ffp[ph] !== undefined) ? 'FF' : 'Bat'; });
+  return roles;
+}
+
+function setConfigMode(enabled) {
+  configMode = !!enabled;
+  const layout = document.getElementById('layout-settings');
+  const button = document.getElementById('btn-config-toggle');
+  if (layout) layout.classList.toggle('visible', configMode);
+  if (button) button.classList.toggle('active', configMode);
+}
+
+function toggleConfigMode() {
+  setConfigMode(!configMode);
+}
+
+// ── Chart drawing ──────────────────────────────────────────────────────────
+function drawChartWithZero(id, data, color) {
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const W = rect.width * dpr, H = rect.height * dpr;
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  if (!data.length) return;
+  const mn = Math.min(...data, -5), mx = Math.max(...data, 5);
+  const range = mx - mn || 1;
+  const zeroY = H - ((0 - mn) / range) * H;
+  ctx.strokeStyle = '#3d4460'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(W, zeroY); ctx.stroke();
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = (i / (HISTORY - 1)) * W;
+    const y = H - ((v - mn) / range) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.lineTo(((data.length-1)/(HISTORY-1))*W, zeroY);
+  ctx.lineTo(0, zeroY);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, 'rgba(239,68,68,0.25)');
+  grad.addColorStop((zeroY/H), 'rgba(239,68,68,0.05)');
+  grad.addColorStop((zeroY/H), 'rgba(34,197,94,0.05)');
+  grad.addColorStop(1, 'rgba(34,197,94,0.25)');
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5 * dpr;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = (i / (HISTORY - 1)) * W;
+    const y = H - ((v - mn) / range) * H;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// ── Main render ────────────────────────────────────────────────────────────
+function render(s) {
+  document.getElementById('ts').textContent = new Date(s.timestamp*1000).toLocaleTimeString();
+
+  // Mode buttons
+  ['btn-idle','btn-zf','btn-charge','btn-auto'].forEach(id =>
+    document.getElementById(id).classList.remove('active'));
+  if (s.mode==='idle')                    document.getElementById('btn-idle').classList.add('active');
+  else if (s.mode==='discharge_zero_feed') document.getElementById('btn-zf').classList.add('active');
+  else if (s.mode==='ac_charge')           document.getElementById('btn-charge').classList.add('active');
+  else if (s.mode==='auto')                document.getElementById('btn-auto').classList.add('active');
+
+  // Pause badge
+  const paused = s.zfi_paused_low_soc || s.zfi_paused_full_battery;
+  const pauseBadge = document.getElementById('zfi-pause-badge');
+  pauseBadge.style.display = paused ? '' : 'none';
+  if (s.zfi_paused_low_soc)           pauseBadge.textContent = '\u23f8 ' + T.paused_soc;
+  else if (s.zfi_paused_full_battery) pauseBadge.textContent = '\u23f8 ' + T.paused_full;
+
+  // Auto plan card
+  const cardAuto = document.getElementById('card-auto');
+  cardAuto.style.display = s.mode === 'auto' ? '' : 'none';
+  if (s.auto_status) renderAutoStatus(s.auto_status, s);
+
+  // Sample data
+  const sm = s.sample;
+  const total  = sm ? (sm.phase_a_w||0)+(sm.phase_b_w||0)+(sm.phase_c_w||0) : null;
+  const cons   = sm ? (total + (sm.battery_output_w||0)) : null;
+  const battOut = sm?.battery_output_w;
+  const battIn  = sm?.charge_input_w;
+  const pvW     = sm?.solar_input_w;
+
+  // Header metrics
+  document.getElementById('hm-total').innerHTML = w(total);
+  document.getElementById('hm-cons').innerHTML  = w(cons);
+  if (battOut > 0)     document.getElementById('hm-batt').innerHTML = `<span style="color:var(--green)">\u2193${battOut.toFixed(0)}\u00a0W</span>`;
+  else if (battIn > 0) document.getElementById('hm-batt').innerHTML = `<span style="color:var(--yellow)">\u2191${battIn.toFixed(0)}\u00a0W</span>`;
+  else                 document.getElementById('hm-batt').textContent = '\u2014';
+  document.getElementById('hm-soc').textContent = sm?.soc_percent != null ? sm.soc_percent + '\u00a0%' : '\u2013';
+  const pvMetric = document.getElementById('hm-pv-metric');
+  if (pvW != null) {
+    pvMetric.style.display = '';
+    document.getElementById('hm-pv').textContent = pvW.toFixed(0) + '\u00a0W';
+  } else {
+    pvMetric.style.display = 'none';
+  }
+
+  // Per-phase live cards
+  const c   = s.control;
+  const ffp = c?.ff_per_phase || {};
+  const phaseRoles = resolvePhaseRoles(c);
+  const configTarget = c?.target_power_w ?? null;
+  (['A','B','C']).forEach(ph => {
+    const role = phaseRoles[ph] || 'Bat';
+    const isFF = role === 'FF';
+    const roleBadge = document.getElementById('ph-role-' + ph);
+    if (roleBadge) {
+      roleBadge.textContent = role;
+      roleBadge.className = 'badge ' + (isFF ? 'badge-blue' : 'badge-green');
+    }
+    const gridVal = sm ? sm['phase_'+ph.toLowerCase()+'_w'] : null;
+    document.getElementById('ph-grid-' + ph).innerHTML = w(gridVal);
+    const consEl = document.getElementById('ph-cons-' + ph);
+    let consVal = null;
+    if (consEl) {
+      consVal = (gridVal != null && sm?.battery_output_w != null)
+        ? gridVal + sm.battery_output_w : null;
+      consEl.innerHTML = consVal != null ? w(consVal) : '\u2013';
+      push(phHist[ph].cons, consVal);
+    }
+    let spVal = null;
+    if (c) spVal = isFF ? (ffp[ph] ?? null)
+                       : ((c.target_power_w ?? 0) - (c.ff_output_w ?? 0));
+    document.getElementById('ph-sp-' + ph).innerHTML = spVal != null ? w(spVal) : '\u2013';
+    const oscData = c ? c['osc_'+ph.toLowerCase()] : null;
+    renderOscInline('osc-badge-'+ph, 'osc-det-'+ph, 'osc-lim-'+ph, oscData);
+    push(phHist[ph].grid, gridVal);
+    push(phHist[ph].sp,   spVal);
+    const errVal = (gridVal != null && spVal != null) ? gridVal - spVal : null;
+    push(phHist[ph].err, errVal);
+    const phColor = ph==='A' ? '#4f8ef7' : ph==='B' ? '#fb923c' : '#eab308';
+    drawChartWithZero('chart-'+ph, phHist[ph].err, phColor);
+  });
+
+  // Global stats card
+  const sp = c?.setpoint_w ?? null;
+  document.getElementById('ctrl-name').textContent = c?.regulator_name ?? '\u2013';
+  document.getElementById('ctrl-sp').textContent   = sp != null ? sp + '\u00a0W' : '\u2013';
+  document.getElementById('ctrl-raw').innerHTML    = c?.raw_target_w != null ? Number(c.raw_target_w).toFixed(0)+'\u00a0W' : '\u2013';
+  document.getElementById('ctrl-ff').innerHTML     = c?.ff_output_w  != null ? Number(c.ff_output_w).toFixed(0)+'\u00a0W' : '\u2013';
+  document.getElementById('ctrl-fb').innerHTML     = c?.feedback_output_w != null ? Number(c.feedback_output_w).toFixed(0)+'\u00a0W' : '\u2013';
+  const wd = c?.watchdog_resets ?? 0;
+  const wdEl = document.getElementById('ctrl-wdog');
+  wdEl.textContent = wd; wdEl.style.color = wd > 0 ? 'var(--red)' : 'var(--muted)';
+  const trackErr = (total != null && configTarget != null) ? total - configTarget : null;
+  document.getElementById('ctrl-delta').innerHTML = trackErr != null ? w(trackErr, 1) : '\u2013';
+  push(globalHist.err, trackErr);
+  drawChartWithZero('chart-global', globalHist.err, '#4f8ef7');
+
+  // Status badge in overview card header
+  const statusBadge = document.getElementById('ctrl-status-badge');
+  if (s.zfi_paused_low_soc) {
+    statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
+  } else if (s.zfi_paused_full_battery) {
+    statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
+  } else if (s.mode === 'discharge_zero_feed' || (s.mode==='auto' && c)) {
+    statusBadge.textContent = T.active; statusBadge.className = 'badge badge-green';
+  } else {
+    statusBadge.textContent = s.mode ?? '\u2013'; statusBadge.className = 'badge badge-gray';
+  }
+}
+
+function renderOscInline(badgeId, detId, limId, osc) {
+  const b = document.getElementById(badgeId);
+  const d = document.getElementById(detId);
+  const l = document.getElementById(limId);
+  const limRow = document.getElementById(limId.replace('osc-lim-', 'osc-lim-row-'));
+  if (!b) return;
+  if (!osc) {
+    b.textContent='\u2013'; b.className='badge badge-gray';
+    if(d) d.textContent='';
+    if(l) l.textContent='';
+    if(limRow) limRow.style.display='none';
+    return;
+  }
+  b.textContent = osc.oscillating ? 'OSC!' : 'OK';
+  b.className = 'badge ' + (osc.oscillating ? 'badge-red' : 'badge-green');
+  if (l) {
+    if (osc.limit_w != null) {
+      l.textContent = Number(osc.limit_w).toFixed(0)+'\u00a0W';
+      if (limRow) limRow.style.display = '';
+    } else {
+      l.textContent = '';
+      if (limRow) limRow.style.display = 'none';
+    }
+  }
+  if (d) {
+    const parts = [];
+    if (osc.holder_active)    parts.push(osc.holder_oscillating    ? '<b style="color:var(--red)">H</b>' : '<span style="color:var(--muted)">H</span>');
+    if (osc.predictor_active) parts.push(osc.predictor_oscillating ? '<b style="color:var(--red)">P</b>' : '<span style="color:var(--muted)">P</span>');
+    d.innerHTML = parts.length ? '['+parts.join('\xb7')+']' : '';
+  }
+}
+
+// ── Regulator settings panel ───────────────────────────────────────────────
+async function fetchRegulators() {
+  const res = await fetch('/api/regulators');
+  regulators = await res.json();
+  const sel = document.getElementById('reg-select');
+  if (sel) sel.innerHTML = regulators.map(r =>
+    `<option value="${r.name}" ${r.is_active?'selected':''}>${r.name}</option>`
+  ).join('');
+  renderRegSettings();
+}
+
+function onRegSelectChange() { renderRegSettings(); }
+
+function renderRegSettings() {
+  const sel  = document.getElementById('reg-select');
+  const name = sel?.value || regulators[0]?.name || '';
+  const reg  = regulators.find(r => r.name === name) || regulators[0];
+  if (!reg) return;
+  // reg-desc element removed – description no longer shown in UI
+
+  const groups = {};
+  for (const [key, def] of Object.entries(reg.settings_schema)) {
+    const g = def.group || 'General';
+    if (!groups[g]) groups[g] = [];
+    groups[g].push([key, def]);
+  }
+  fillSettingsContainer('general-settings', groups['General'] || [], reg.current_settings);
+  ['A','B','C'].forEach(ph => {
+    const gKey = Object.keys(groups).find(g => g.startsWith('Phase '+ph));
+    const card = document.getElementById('card-phase-'+ph);
+    if (!card) return;
+    if (!gKey) { card.style.display = 'none'; return; }
+    const hd = document.getElementById('ph-head-'+ph);
+    if (hd) hd.textContent = gKey;
+    fillSettingsContainer('phase-settings-'+ph, groups[gKey], reg.current_settings);
+    card.style.display = '';
+  });
+}
+
+function fillSettingsContainer(containerId, fields, cur) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!fields || !fields.length) { el.innerHTML = ''; return; }
+  el.innerHTML = fields.map(([key, def]) => {
+    const val = cur[key] ?? def.default ?? '';
+    if (def.type === 'boolean') {
+      return `<label style="margin-top:5px;display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="s_${key}" ${val?'checked':''} style="width:auto"> ${def.title}</label>`;
+    }
+    if (def.type === 'string' && def.enum) {
+      const opts = def.enum.map(v => `<option value="${v}" ${v===String(val)?'selected':''}>${v}</option>`).join('');
+      return `<label>${def.title}</label><select id="s_${key}">${opts}</select>`;
+    }
+    return `<label>${def.title}</label>
+      <input type="number" id="s_${key}" value="${val}"
+        min="${def.minimum??''}" max="${def.maximum??''}" step="${def.step??'any'}"/>`;
+  }).join('');
+}
+
+function collectGroupSettings(groupPrefix) {
+  const sel  = document.getElementById('reg-select');
+  const name = sel?.value || regulators[0]?.name || '';
+  const reg  = regulators.find(r => r.name === name) || regulators[0];
+  if (!reg) return null;
+  const settings = {};
+  for (const [key, def] of Object.entries(reg.settings_schema)) {
+    const g = def.group || 'General';
+    if (!g.startsWith(groupPrefix)) continue;
+    const el = document.getElementById('s_'+key);
+    if (!el) continue;
+    if (def.type==='boolean') settings[key] = el.checked;
+    else if (def.type==='string') settings[key] = el.value;
+    else settings[key] = Number(el.value);
+  }
+  return {name, settings};
+}
+
+async function applyGroupSettings(groupPrefix) {
+  const r = collectGroupSettings(groupPrefix);
+  if (!r) return;
+  await fetch(`/api/regulators/${r.name}/settings`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(r.settings)
+  });
+  fetchRegulators(); showToast(T.saved);
+}
+
+// ── Mode control ───────────────────────────────────────────────────────────
+function openChargeDialog() {
+  const p = document.getElementById('charge-panel');
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('auto-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
+}
+function openAutoDialog() {
+  const p = document.getElementById('auto-panel');
+  const wasOpen = p.style.display !== 'none';
+  document.getElementById('charge-panel').style.display = 'none';
+  p.style.display = wasOpen ? 'none' : 'block';
+}
+function setMode(mode) {
+  const body = {mode};
+  if (mode === 'ac_charge') {
+    body.charge_power_w = parseInt(document.getElementById('charge-w').value);
+    document.getElementById('charge-panel').style.display = 'none';
+  }
+  fetch('/api/mode', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)});
+}
+
+async function activateAuto() {
+  const broker    = document.getElementById('auto-broker').value.trim();
+  const device_id = document.getElementById('auto-device-id').value.trim();
+  if (!broker || !device_id) { showToast(T.broker_required); return; }
+  const res = await fetch('/api/auto/connect', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({mqtt_broker:broker, device_id, topic_prefix:'gridpythia', status_interval_s:60})
+  });
+  if (res.ok) { document.getElementById('auto-panel').style.display='none'; showToast(T.auto_activated); }
+  else { const err = await res.json().catch(()=>({})); showToast('Error: '+(err.detail||res.status)); }
+}
+async function deactivateAuto() {
+  await fetch('/api/auto/disconnect', {method:'POST'});
+  document.getElementById('auto-panel').style.display = 'none';
+  showToast(T.auto_deactivated);
+}
+
+// ── Auto plan rendering ────────────────────────────────────────────────────
+function renderAutoStatus(as, fullState) {
+  const dot = document.getElementById('auto-conn-dot');
+  dot.className = 'dot ' + (as.connected ? (as.has_plan ? 'live' : '') : 'error');
+  dot.title = as.connected
+    ? (as.has_plan ? T.connected_plan : T.connected_no_plan)
+    : T.disconnected;
+
+  document.getElementById('auto-plan-ts').textContent = as.plan_published_at || '\u2013';
+  const effEl = document.getElementById('auto-effective');
+  effEl.textContent = as.effective_mode || '\u2013';
+  effEl.className = 'badge ' + effectiveBadgeClass(as.effective_mode);
+
+  const list = document.getElementById('plan-list');
+  if (!as.plan_summary?.length) {
+    list.innerHTML = `<div style="color:var(--muted);font-size:11px;padding:4px 0">${T.no_plan}</div>`;
+    return;
+  }
+  list.innerHTML = as.plan_summary.map(e => {
+    const dayLabel      = e.date ? `<span class="plan-day">${e.date}</span>` : '';
+    const nextDaySuffix = e.end_next_day
+      ? `<span class="plan-next-day" title="${T.ends_next_day}">+1</span>` : '';
+    const pwr = e.power_w != null ? e.power_w + '\u00a0W' : '';
+    return `<div class="plan-entry">
+      <div class="plan-time">${dayLabel}${e.from_time}\u2013${e.to_time}${nextDaySuffix}</div>
+      <div class="plan-mode">${planModeIcon(e.mode_label)} ${e.mode_label}</div>
+      <div class="plan-pwr">${pwr}</div></div>`;
+  }).join('');
+}
+
+function effectiveBadgeClass(l) {
+  if (!l || l==='\u2013') return 'badge-gray';
+  if (l.includes('Charge') || l.includes('Laden')) return 'badge-yellow';
+  if (l === 'Idle') return 'badge-gray';
+  return 'badge-green';
+}
+function planModeIcon(l) {
+  if (!l) return '';
+  if (l.includes('Charge') || l.includes('Laden')) return '\u2b06';
+  if (l.includes('Zero-Feed') || l.includes('Discharge') || l.includes('Entladen')) return '\u2b07';
+  return '\u23f8';
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = '\u2713 ' + msg; t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 2500);
+}
+
+connect();
+setConfigMode(false);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .catch(e => console.warn('SW registration failed:', e));
+}
+</script>
+</body>
+</html>

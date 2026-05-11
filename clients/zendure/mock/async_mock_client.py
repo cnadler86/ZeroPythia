@@ -138,6 +138,9 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         self._actual_input_power = 0
         self._solar_input_power = 0
 
+        # Bypass: True wenn SOC=100 und solar durch bypass geleitet wird
+        self._bypass: bool = initial_soc >= 100
+
         # Sichtbare Limits (was get_ac_output_limit() zurückgibt)
         self._visible_output_limit = 0
         self._visible_input_limit = 0
@@ -226,6 +229,15 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         # Wenn wir den Setpoint-Delay überspringen, backdaten wir den Timestamp
         if skip_setpoint_delay:
             self._current_setpoint.timestamp -= self.setpoint_delay
+
+        # Bypass erzwungen aus wenn Output > Solar (Batterie muss liefern)
+        if output_limit > self._solar_input_power and self._bypass:
+            logger.info(
+                "Mock: outputLimit=%dW > solar=%dW → bypass FORCED OFF",
+                output_limit,
+                self._solar_input_power,
+            )
+            self._bypass = False
 
         logger.debug(
             "New Setpoint: mode=%s, input=%dW, output=%dW, was_standby=%s, start_output=%dW, skip_delay=%s",
@@ -375,8 +387,8 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         if self._actual_input_power > 0:
             energy_flow_wh += self._actual_input_power * elapsed_hours * self.EFFICIENCY
 
-        # AC Output (Entladen)
-        if self._actual_output_power > 0:
+        # AC Output (Entladen) – entfällt im Bypass (Batterie liefert nicht)
+        if self._actual_output_power > 0 and not self._bypass:
             energy_flow_wh -= self._actual_output_power * elapsed_hours / self.EFFICIENCY
 
         # Solar Input (immer Laden mit Effizienz)
@@ -400,6 +412,17 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
 
         self._last_update = now
         self._check_auto_standby()
+        self._update_bypass()
+
+    def _update_bypass(self) -> None:
+        """Aktualisiert Bypass-Zustand: SOC=100 → bypass an, SOC<100 → bypass aus."""
+        soc_int = int(self._soc)
+        if soc_int >= 100 and not self._bypass:
+            self._bypass = True
+            logger.info("Mock: SOC=%d%% → bypass ON (Batterie voll)", soc_int)
+        elif soc_int < 100 and self._bypass:
+            self._bypass = False
+            logger.info("Mock: SOC=%d%% → bypass OFF (SOC unter 100%%)", soc_int)
 
     def _check_auto_standby(self) -> None:
         """Prüft ob Auto-Standby aktiviert werden muss."""
@@ -465,9 +488,11 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
                 "solar_power_1": self._solar_input_power,
                 "solar_power_2": 0,
                 "grid_input_power": self._actual_input_power,
-                "output_home_power": self._actual_output_power,
+                "output_home_power": self._solar_input_power
+                if self._bypass
+                else self._actual_output_power,
                 "output_pack_power": 0,
-                "pack_input_power": 0,
+                "pack_input_power": 0 if self._bypass else self._actual_output_power,
                 "electric_level": int(self._soc),
                 "pack_state": battery_state.value,
                 "pack_num": 1,
@@ -477,7 +502,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
                 "soc_set": self._max_soc_percent * 10,
                 "ac_mode": ac_mode.value,
                 "smart_mode": 1 if self._smart_mode else 0,
-                "pass": 0,
+                "pass": 1 if self._bypass else 0,
                 "grid_state": 1,
                 "heat_state": 0,
                 "hyper_tmp": 2981,

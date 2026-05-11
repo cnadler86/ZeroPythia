@@ -1,17 +1,17 @@
-"""Zendure SolarFlow Modelle.
+"""Zendure SolarFlow models.
 
 ==========================
 
-Dieses Modul definiert:
-- Abstrakte Protokolle für HAL-unabhängige API Responses
+This module defines:
+- Abstract protocols for HAL-independent API responses
 - Enums (ACMode, BatteryState)
 - Limits (BatteryLimits, MODEL_LIMITS)
-- Pydantic Models für Parsing (Properties, BatteryPack, APIResponse)
+- Pydantic models for parsing (Properties, BatteryPack, APIResponse)
 
-Die HAL-Implementierungen (aiozen, mock) können beliebige Parser nutzen.
-Die Base-Klasse arbeitet mit den abstrakten Protokollen.
+HAL implementations (aiozen, mock) can use any parser.
+The base class works with the abstract protocols.
 
-Reference: Zendure zenSDK Documentation
+Reference: Zendure zenSDK documentation
 """
 
 from abc import ABC, abstractmethod
@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class BatteryState(IntEnum):
-    """Batterie-Zustände."""
+    """Battery states."""
 
     STANDBY = 0
     CHARGING = 1
@@ -32,17 +32,17 @@ class BatteryState(IntEnum):
 
 
 class ACMode(IntEnum):
-    """AC-Modus für SolarFlow."""
+    """AC mode for SolarFlow."""
 
-    INPUT = 1  # Laden vom Netz
-    OUTPUT = 2  # Einspeisung ins Netz
+    INPUT = 1  # charge from grid
+    OUTPUT = 2  # feed into grid / discharge to house
 
 
 # ==================== Limits ====================
 
 
 class BatteryLimits(BaseModel):
-    """Batterie-spezifische Limits."""
+    """Model-specific battery limits."""
 
     charge_limit: int
     discharge_limit: int
@@ -50,12 +50,12 @@ class BatteryLimits(BaseModel):
     min_power: int = 0
 
 
-# Unterstützte Batterie Modelle
+# Supported battery models
 BatteryModel = Literal[
     "solarFlow800Pro", "solarFlow800Plus", "SF2400AC", "Hub1200", "Hub2000", "Hyper2000", "AIO2400"
 ]
 
-# Modell-spezifische Limits
+# Model-specific limits
 MODEL_LIMITS: Dict[BatteryModel, BatteryLimits] = {
     "solarFlow800Pro": BatteryLimits(
         charge_limit=1000, discharge_limit=800, solar_limit=1200, min_power=20

@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 from clients.mqtt.client import MqttClient, MqttConfig
-from src.dashboard.models import AutoStatus, DeviceMode, PlanSummaryEntry
 from src.gridpythia.models import InverterMode, InverterPlan, PlanStep
 from src.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
 from src.gridpythia.status_reporter import GridPythiaStatusReporter
+from src.runtime.models import AutoStatus, DeviceMode, PlanSummaryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +35,10 @@ ApplyModeCb = Callable[
 
 _MODE_LABELS: dict[InverterMode, str] = {
     InverterMode.IDLE: "Idle",
-    InverterMode.DISCHARGE: "Entladen",
+    InverterMode.DISCHARGE: "Discharge",
     InverterMode.DISCHARGE_ZERO_FEED_IN: "Zero-Feed",
-    InverterMode.AC_CHARGE: "AC Laden",
-    InverterMode.AC_CHARGE_ZERO_FEED_IN: "AC Laden",
+    InverterMode.AC_CHARGE: "AC Charge",
+    InverterMode.AC_CHARGE_ZERO_FEED_IN: "AC Charge",
 }
 
 MAX_SUMMARY_ENTRIES = 6
@@ -87,8 +87,17 @@ def _make_entry(
     end_local = datetime.fromtimestamp(end_ts, tz=start_local.tzinfo)
 
     today_date = datetime.now().date()
+    tomorrow_date = today_date + timedelta(days=1)
     entry_date = start_local.date()
-    date_label = start_local.strftime("%a %d.%m") if entry_date != today_date else None
+
+    if entry_date == today_date:
+        date_label = None
+    elif entry_date == tomorrow_date:
+        date_label = "Tomorrow"
+    else:
+        date_label = start_local.strftime("%a")  # e.g. "Mon", "Tue"
+
+    end_next_day = end_local.date() != start_local.date()
 
     return PlanSummaryEntry(
         mode_label=_MODE_LABELS.get(step.mode, step.mode.name),
@@ -96,6 +105,7 @@ def _make_entry(
         to_time=end_local.strftime("%H:%M"),
         power_w=_plan_power_w(step, plan.dt_hours),
         date=date_label,
+        end_next_day=end_next_day,
     )
 
 
@@ -199,6 +209,9 @@ class AutoModeManager:
         # Internal state
         self._connected = False
         self._last_inv_mode: Optional[InverterMode] = None
+        self._last_charge_power_w: Optional[int] = (
+            None  # track AC charge power for change detection
+        )
         self._in_fallback: bool = False  # True when last dispatch was the no-plan fallback
         self._effective_mode_label: str = "–"
         self._plan_summary: list[PlanSummaryEntry] = []
@@ -246,13 +259,25 @@ class AutoModeManager:
 
         *apply_cb* is an async callable: ``(mode, charge_power_w, max_discharge_w) → None``
         matching :py:meth:`ControlRuntime.apply_effective_mode`.
+
+        Fallback behavior:
+        - No plan received yet: fall back to safe default.
+        - Plan exists but no step is time-active: keep current status unchanged
+          (wait for first scheduled step to become active).
         """
         now = datetime.now(tz=timezone.utc)
         self._refresh_plan_summary(now)
 
         step = self._subscriber.get_current_step(now)
         if step is None:
-            await self._apply_fallback(apply_cb)
+            # Distinguish: has a plan been received?
+            if self._subscriber.has_plan:
+                # Plan exists but no step is currently time-active.
+                # Keep the current status – don't override it until the plan activates.
+                return
+            else:
+                # No plan has ever been received → fall back to safe default.
+                await self._apply_fallback(apply_cb)
         else:
             await self._apply_step(step, apply_cb)
 
@@ -292,17 +317,28 @@ class AutoModeManager:
         )
         await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
         self._last_inv_mode = InverterMode.DISCHARGE_ZERO_FEED_IN
+        self._last_charge_power_w = None
         self._in_fallback = True
         self._effective_mode_label = "Zero-Feed (Fallback)"
 
     async def _apply_step(self, step: PlanStep, cb: ApplyModeCb) -> None:
-        """Dispatch a plan step – only calls *cb* when the mode actually changes."""
+        """Dispatch a plan step – only calls *cb* when the mode or power actually changes."""
         mode = step.mode
-        if mode == self._last_inv_mode and not self._in_fallback:
-            return  # no change (and not coming from a fallback state)
-
         plan = self._subscriber._plan  # noqa: SLF001
         dt_hours = plan.dt_hours if plan is not None else 0.25
+
+        # Pre-compute charge power for AC_CHARGE modes so we can detect power changes
+        # even when the mode itself stays the same.
+        charge_w: Optional[int] = None
+        if mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
+            charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
+            charge_w = max(100, min(3000, charge_w))
+
+        # Skip if nothing changed
+        if mode == self._last_inv_mode and not self._in_fallback:
+            if charge_w is None or charge_w == self._last_charge_power_w:
+                return  # mode and power both unchanged
+            # AC_CHARGE power changed → fall through to dispatch
 
         logger.info(
             "AutoMode plan step change: %s → %s",
@@ -321,11 +357,10 @@ class AutoModeManager:
             await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
 
         elif mode in (InverterMode.AC_CHARGE, InverterMode.AC_CHARGE_ZERO_FEED_IN):
-            charge_w = int(step.charge_ac_wh / dt_hours) if dt_hours > 0 else 400
-            charge_w = max(100, min(3000, charge_w))
             await cb(DeviceMode.AC_CHARGE, charge_w, None)
 
         self._last_inv_mode = mode
+        self._last_charge_power_w = charge_w
         self._in_fallback = False
         self._effective_mode_label = _MODE_LABELS.get(mode, mode.name)
 

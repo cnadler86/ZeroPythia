@@ -1,10 +1,10 @@
-"""Batch Runner – V4 Simulation über CSV-Dateien.
+"""Batch Runner – Simulation über CSV-Dateien.
 
-Treibt ``_V4Core`` direkt mit simulierten CSV-Zeitstempeln.
+Treibt ``_Core`` direkt mit simulierten CSV-Zeitstempeln.
 Das PT1-Batteriemodell verwendet die CSV-Timestamps, nicht die echte Systemuhr –
 die Simulation läuft daher in beliebiger Geschwindigkeit.
 
-Kein asyncio nötig: ``_V4Core.calculate()`` ist synchron.
+Kein asyncio nötig: ``_Core.calculate()`` ist synchron.
 """
 
 import logging
@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
-from src.config.zerofeed_v4 import ZeroFeedV4Config
+from src.config.zerofeed import ZeroFeedConfig
 from src.controller.phase_controller import PhaseSample
-from src.dashboard.regulators.v4_adapter import _V4Core
+from src.controller.zerofeed_regulator import _Core
 
 from .grid_simulator import PhaseRecord, clean_csv_data, load_csv
 
@@ -48,7 +48,7 @@ def _pt1(
 
 @dataclass
 class SimulationResult:
-    """Zeitreihen-Daten einer V4 Simulation."""
+    """Zeitreihen-Daten einer ZeroFeed Simulation."""
 
     csv_file: str
     duration_s: float
@@ -203,11 +203,11 @@ def compute_statistics(result: SimulationResult, target_power_w: float = 3.0) ->
 
 def run_simulation(
     records: List[PhaseRecord],
-    config: ZeroFeedV4Config,
+    config: ZeroFeedConfig,
     csv_name: str = "",
     show_progress: bool = False,
 ) -> SimulationResult:
-    """Führt eine V4 Simulation über CSV-Records durch.
+    """Führt eine ZeroFeed Simulation über CSV-Records durch.
 
     Verwendet simulierte Zeitstempel (CSV-Timestamps) für das PT1-Modell –
     keine echte Systemuhr, läuft in beliebiger Geschwindigkeit.
@@ -217,7 +217,7 @@ def run_simulation(
             csv_file=csv_name, duration_s=0.0, num_samples=0, control_phase=config.control_phase
         )
 
-    core = _V4Core(config)
+    core = _Core(config)
     ctrl_ph = config.control_phase
     dead_time = config.battery_dead_time_s
     tau = config.battery_pt1_tau_s
@@ -320,7 +320,7 @@ def run_simulation(
 
 def run_batch(
     csv_files: List[Path],
-    config: ZeroFeedV4Config,
+    config: ZeroFeedConfig,
     show_progress: bool = False,
 ) -> List["tuple[SimulationResult, Statistics]"]:
     """Simuliert mehrere CSV-Dateien mit derselben Konfiguration."""

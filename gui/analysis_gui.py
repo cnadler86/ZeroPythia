@@ -9,7 +9,6 @@ GUI für den ZeroFeed V4 Regler mit:
 """
 
 import logging
-import math
 import sys
 import tkinter as tk
 from datetime import datetime
@@ -34,8 +33,8 @@ from simulator.batch_runner import (
     run_simulation,
 )
 from simulator.grid_simulator import clean_csv_data, load_csv
-from src.config.zerofeed_v4 import ZeroFeedV4Config, config_to_flat, flat_to_config
-from src.dashboard.regulators.v4_adapter import ZeroFeedV4Regulator
+from src.config.zerofeed import ZeroFeedConfig, config_to_flat, flat_to_config
+from src.controller.zerofeed_regulator import ZeroFeedRegulator
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +51,17 @@ def _parse_value(value_str: str, schema_entry: Dict[str, Any]) -> Any:
 
 
 class ZeroFeedV4GUI:
-
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("ZeroFeed V4 Analyse")
         self.root.geometry("1440x900")
 
-        self._config: ZeroFeedV4Config = ZeroFeedV4Config()
+        self._config: ZeroFeedConfig = ZeroFeedConfig()
         self._csv_files: List[Path] = []
         self._results: List[Tuple[SimulationResult, Statistics]] = []
         self._current_result: Optional[SimulationResult] = None
         self._current_stats: Optional[Statistics] = None
-        self._schema: Dict[str, Any] = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+        self._schema: Dict[str, Any] = ZeroFeedRegulator(settings=self._config).settings_schema()
         self._param_vars: Dict[str, tk.StringVar] = {}
         self._plot_figures: Dict[str, Figure] = {}
         self._plot_canvases: Dict[str, FigureCanvasTkAgg] = {}
@@ -82,8 +80,12 @@ class ZeroFeedV4GUI:
         file_frame.pack(fill=tk.X, padx=5, pady=5)
         btn_row = ttk.Frame(file_frame)
         btn_row.pack(fill=tk.X, padx=5, pady=2)
-        ttk.Button(btn_row, text="Datei(en)...", command=self._select_files).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_row, text="Ordner...", command=self._select_folder).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_row, text="Datei(en)...", command=self._select_files).pack(
+            side=tk.LEFT, padx=2
+        )
+        ttk.Button(btn_row, text="Ordner...", command=self._select_folder).pack(
+            side=tk.LEFT, padx=2
+        )
         self._file_label = ttk.Label(file_frame, text="Keine Dateien ausgewählt")
         self._file_label.pack(fill=tk.X, padx=5, pady=2)
 
@@ -97,12 +99,16 @@ class ZeroFeedV4GUI:
         cv.configure(yscrollcommand=sb.set)
         cv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
-        cv.bind_all("<MouseWheel>", lambda e: cv.yview_scroll(int(-1*(e.delta/120)), "units"))
+        cv.bind_all("<MouseWheel>", lambda e: cv.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         action_frame = ttk.Frame(left_frame)
         action_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Button(action_frame, text="Simulieren", command=self._run_simulation).pack(fill=tk.X, pady=2)
-        ttk.Button(action_frame, text="Batch Simulieren", command=self._run_batch).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="Simulieren", command=self._run_simulation).pack(
+            fill=tk.X, pady=2
+        )
+        ttk.Button(action_frame, text="Batch Simulieren", command=self._run_batch).pack(
+            fill=tk.X, pady=2
+        )
         ttk.Button(action_frame, text="Reset", command=self._reset_params).pack(fill=tk.X, pady=2)
 
         right_frame = ttk.Frame(main_paned)
@@ -140,7 +146,9 @@ class ZeroFeedV4GUI:
             if group != current_group:
                 current_group = group
                 ttk.Separator(self._param_frame, orient="horizontal").pack(fill=tk.X, pady=4)
-                ttk.Label(self._param_frame, text=group.upper(), font=("", 9, "bold")).pack(anchor="w", padx=5)
+                ttk.Label(self._param_frame, text=group.upper(), font=("", 9, "bold")).pack(
+                    anchor="w", padx=5
+                )
             row = ttk.Frame(self._param_frame)
             row.pack(fill=tk.X, padx=5, pady=1)
             ttk.Label(row, text=entry.get("title", key), width=28, anchor="w").pack(side=tk.LEFT)
@@ -149,9 +157,13 @@ class ZeroFeedV4GUI:
             self._param_vars[key] = var
             if entry.get("type") == "boolean":
                 var.set("True" if current_val else "False")
-                ttk.Checkbutton(row, variable=var, onvalue="True", offvalue="False").pack(side=tk.RIGHT)
+                ttk.Checkbutton(row, variable=var, onvalue="True", offvalue="False").pack(
+                    side=tk.RIGHT
+                )
             elif entry.get("enum"):
-                ttk.Combobox(row, textvariable=var, values=entry["enum"], width=8, state="readonly").pack(side=tk.RIGHT)
+                ttk.Combobox(
+                    row, textvariable=var, values=entry["enum"], width=8, state="readonly"
+                ).pack(side=tk.RIGHT)
             else:
                 ttk.Entry(row, textvariable=var, width=10).pack(side=tk.RIGHT)
 
@@ -161,19 +173,21 @@ class ZeroFeedV4GUI:
             for key, var in self._param_vars.items():
                 flat[key] = _parse_value(var.get(), self._schema.get(key, {}))
             self._config = flat_to_config(flat, self._config)
-            self._schema = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+            self._schema = ZeroFeedRegulator(settings=self._config).settings_schema()
             return True
         except Exception as e:
             messagebox.showerror("Parameter-Fehler", str(e))
             return False
 
     def _reset_params(self) -> None:
-        self._config = ZeroFeedV4Config()
-        self._schema = ZeroFeedV4Regulator(settings=self._config).settings_schema()
+        self._config = ZeroFeedConfig()
+        self._schema = ZeroFeedRegulator(settings=self._config).settings_schema()
         self._populate_params()
 
     def _select_files(self) -> None:
-        files = filedialog.askopenfilenames(title="CSV-Dateien auswählen", filetypes=[("CSV", "*.csv")])
+        files = filedialog.askopenfilenames(
+            title="CSV-Dateien auswählen", filetypes=[("CSV", "*.csv")]
+        )
         if files:
             self._csv_files = [Path(f) for f in files]
             self._file_label.config(text=f"{len(self._csv_files)} Datei(en) ausgewählt")
@@ -250,7 +264,9 @@ class ZeroFeedV4GUI:
             self._plot_result(result, stats)
             mean_eff = sum(s.efficiency_pct for _, s in self._results) / len(self._results)
             mean_band = sum(s.time_in_band_pct for _, s in self._results) / len(self._results)
-            self._stats_text.insert(tk.END, f"\nGesamt: Ø Eff={mean_eff:.1f}%  Ø Band={mean_band:.1f}%\n")
+            self._stats_text.insert(
+                tk.END, f"\nGesamt: Ø Eff={mean_eff:.1f}%  Ø Band={mean_band:.1f}%\n"
+            )
 
     def _plot_result(self, result: SimulationResult, stats: Statistics) -> None:
         if not result.timestamps:
@@ -272,7 +288,7 @@ class ZeroFeedV4GUI:
         grid_vals = result.phase_values(phase)
         corr_vals = result.correction(phase)
         osc_active = result.osc_active(phase)
-        effective = [g - c for g, c in zip(grid_vals, corr_vals)]
+        effective = [g - c for g, c in zip(grid_vals, corr_vals, strict=False)]
         x = mdates.date2num(t_axis)
         self._shade_osc(ax1, t_axis, osc_active)
         self._shade_osc(ax2, t_axis, osc_active)
@@ -305,7 +321,9 @@ class ZeroFeedV4GUI:
         x = mdates.date2num(t_axis)
         self._shade_osc(ax1, t_axis, osc_active)
         self._shade_osc(ax2, t_axis, osc_active)
-        ax1.plot(x, grid_ctrl, label=f"Grid {phase} (Batterie abgezogen)", color="#1f4e79", linewidth=1.2)
+        ax1.plot(
+            x, grid_ctrl, label=f"Grid {phase} (Batterie abgezogen)", color="#1f4e79", linewidth=1.2
+        )
         ax1.plot(x, result.fb_correction, label="FB-Korrektur", color="#d97706", linewidth=1.1)
         ax1.plot(x, result.ff_sum, label="FF-Summe", color="#7c3aed", linewidth=0.9, alpha=0.7)
         ax1.axhline(y=0, color="red", linestyle="--", alpha=0.3)
@@ -314,20 +332,38 @@ class ZeroFeedV4GUI:
         ax1.legend(loc="upper right", fontsize=8)
         ax1.grid(True, alpha=0.22)
         ax2.plot(x, result.grid_total, label="Total Grid", color="#0f766e", linewidth=1.2)
-        ax2.plot(x, result.battery_output, label="Batterie (PT1)", color="#ea580c", linewidth=0.9, alpha=0.8)
+        ax2.plot(
+            x,
+            result.battery_output,
+            label="Batterie (PT1)",
+            color="#ea580c",
+            linewidth=0.9,
+            alpha=0.8,
+        )
         ax2.plot(x, result.setpoints, label="Setpoint", color="#2563eb", linewidth=1.0, alpha=0.7)
-        ax2.axhline(y=target_w, color="#15803d", linestyle="--", alpha=0.7, label=f"Ziel {target_w:.0f}W")
+        ax2.axhline(
+            y=target_w, color="#15803d", linestyle="--", alpha=0.7, label=f"Ziel {target_w:.0f}W"
+        )
         ax2.axhline(y=0, color="red", linestyle="--", alpha=0.22)
         ax2.set_ylabel("Leistung [W]")
         ax2.set_xlabel("Uhrzeit")
         ax2.legend(loc="upper right", fontsize=8)
         ax2.grid(True, alpha=0.22)
         self._format_time_axis(ax2)
-        self._bind_lower_autoscale(fig, ax1, ax2, t_axis, [result.grid_total, result.battery_output, result.setpoints], [target_w, 0.0])
+        self._bind_lower_autoscale(
+            fig,
+            ax1,
+            ax2,
+            t_axis,
+            [result.grid_total, result.battery_output, result.setpoints],
+            [target_w, 0.0],
+        )
         fig.tight_layout()
         self._plot_canvases[phase].draw()
 
-    def _plot_all_tab(self, result: SimulationResult, stats: Statistics, t_axis: List[datetime]) -> None:
+    def _plot_all_tab(
+        self, result: SimulationResult, stats: Statistics, t_axis: List[datetime]
+    ) -> None:
         fig = self._plot_figures["ALL"]
         fig.clear()
         ax1 = fig.add_subplot(3, 1, 1)
@@ -335,17 +371,29 @@ class ZeroFeedV4GUI:
         ax3 = fig.add_subplot(3, 1, 3, sharex=ax1)
         target_w = self._config.target_power_w
         x = mdates.date2num(t_axis)
-        osc_combined = [a or b or c for a, b, c in zip(result.osc_active_a, result.osc_active_b, result.osc_active_c)]
+        osc_combined = [
+            a or b or c
+            for a, b, c in zip(
+                result.osc_active_a,
+                result.osc_active_b,
+                result.osc_active_c,
+                strict=False,
+            )
+        ]
         for ax in (ax1, ax2):
             self._shade_osc(ax, t_axis, osc_combined)
         ax1.plot(x, result.phase_a, label="Phase A", alpha=0.6, linewidth=0.7)
         ax1.plot(x, result.phase_b, label="Phase B", alpha=0.6, linewidth=0.7)
         ax1.plot(x, result.phase_c, label="Phase C", alpha=0.6, linewidth=0.7)
         ax1.plot(x, result.grid_total, label="Total", color="black", linewidth=1.1)
-        ax1.axhline(y=target_w, color="green", linestyle="--", alpha=0.5, label=f"Ziel {target_w:.0f}W")
+        ax1.axhline(
+            y=target_w, color="green", linestyle="--", alpha=0.5, label=f"Ziel {target_w:.0f}W"
+        )
         ax1.axhline(y=0, color="red", linestyle="--", alpha=0.3)
         ax1.set_ylabel("Grid Power [W]")
-        ax1.set_title(f"{result.csv_file}  ·  Mean={stats.mean_grid_w:+.1f}W  Band={stats.time_in_band_pct:.0f}%  Eff={stats.efficiency_pct:.0f}%  ctrl={result.control_phase}")
+        ax1.set_title(
+            f"{result.csv_file}  ·  Mean={stats.mean_grid_w:+.1f}W  Band={stats.time_in_band_pct:.0f}%  Eff={stats.efficiency_pct:.0f}%  ctrl={result.control_phase}"
+        )
         ax1.legend(loc="upper right", fontsize=7)
         ax1.grid(True, alpha=0.22)
         ax2.plot(x, result.battery_output, label="Batterie (PT1)", color="orange", linewidth=0.9)
@@ -399,10 +447,13 @@ class ZeroFeedV4GUI:
         ax.xaxis.set_major_locator(locator)
         ax.xaxis.set_major_formatter(formatter)
 
-    def _bind_lower_autoscale(self, fig, ax_top, ax_bottom, t_axis, y_series, reference_lines) -> None:
+    def _bind_lower_autoscale(
+        self, fig, ax_top, ax_bottom, t_axis, y_series, reference_lines
+    ) -> None:
         if not t_axis or not y_series:
             return
         x_nums = mdates.date2num(t_axis)
+
         def _rescale(_ax=None) -> None:
             x_min, x_max = ax_bottom.get_xlim()
             if x_min > x_max:
@@ -418,6 +469,7 @@ class ZeroFeedV4GUI:
             pad = max(1.0, (y_max - y_min) * 0.08)
             ax_bottom.set_ylim(y_min - pad, y_max + pad)
             fig.canvas.draw_idle()
+
         ax_top.callbacks.connect("xlim_changed", _rescale)
         _rescale()
 
@@ -445,5 +497,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s %(message)s"
+    )
     main()
