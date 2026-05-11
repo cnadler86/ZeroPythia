@@ -15,10 +15,11 @@ Reference: Zendure zenSDK documentation
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, List, Literal, Protocol, Sequence, runtime_checkable
+from typing import Dict, List, Literal, Optional, Protocol, Sequence, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 # ==================== Enums ====================
 
@@ -474,3 +475,187 @@ class APIResponse(BaseModel):
     product: str = ""
     properties: Properties = Field(default_factory=Properties)
     pack_data: List[BatteryPack] = Field(default_factory=list)
+
+
+# ==================== Processed Data Models ====================
+# These models contain processed/converted data with computed fields.
+# Used by the battery abstraction layer and higher-level consumers.
+
+
+@dataclass
+class InverterEnergyCounters:
+    """Monotonically increasing energy counters (dead-reckoning from setpoints).
+
+    Values are computed by integrating the active power setpoints over time.
+    They start at 0 on program start and only count upward.
+
+    Formula:
+        discharge_wh += output_setpoint_W × Δt_h
+        charge_wh    += input_setpoint_W  × Δt_h
+    """
+
+    discharge_wh: float  # cumulative energy delivered to the house [Wh]
+    charge_wh: float  # cumulative energy drawn from the grid (AC charge) [Wh]
+
+
+class ProcessedBatteryPack(BaseModel):
+    """Processed battery-pack data with converted values.
+
+    Conversions per Zendure zenSDK documentation:
+    - maxTemp: Kelvin*10 → Celsius
+    - totalVol: centivolts → Volt
+    - batcur: 16-bit two's complement / 10 → Ampere
+    - maxVol/minVol: centivolts → Volt
+    """
+
+    serial_number: str = Field(description="Battery pack serial number")
+    pack_type: int = Field(default=0, description="Battery pack model type identifier")
+    soc_percent: int = Field(default=0, ge=0, le=100, description="Battery level 0-100 (%)")
+    state: int = Field(default=0, description="0: Stopped, 1: Running, 2: Standby, 3: Shutdown")
+    power_w: int = Field(default=0, description="Battery power in W")
+    software_version: int = Field(default=0, description="Software version")
+
+    temperature_celsius: float = Field(default=0.0, description="Temperature in °C")
+    voltage_v: float = Field(default=0.0, description="Total voltage in V")
+    current_a: float = Field(default=0.0, description="Current in A (signed)")
+    max_cell_voltage_v: float = Field(default=0.0, description="Max cell voltage in V")
+    min_cell_voltage_v: float = Field(default=0.0, description="Min cell voltage in V")
+
+    @computed_field
+    @property
+    def battery_state(self) -> BatteryState:
+        """Battery state as enum."""
+        try:
+            return BatteryState(self.state)
+        except ValueError:
+            return BatteryState.STANDBY
+
+    @computed_field
+    @property
+    def is_healthy(self) -> bool:
+        """Returns True if battery metrics are within healthy limits."""
+        if self.min_cell_voltage_v == 0:
+            return True
+        return (
+            -10 < self.temperature_celsius < 45
+            and 0.95 < self.max_cell_voltage_v / max(0.01, self.min_cell_voltage_v) < 1.05
+        )
+
+    @classmethod
+    def from_protocol(cls, pack: BatteryPackProtocol) -> "ProcessedBatteryPack":
+        """Build a ProcessedBatteryPack from raw protocol data."""
+        temp_celsius = (pack.max_temp - 2731) / 10.0 if pack.max_temp else 0.0
+        voltage_v = pack.total_vol / 100.0 if pack.total_vol else 0.0
+        batcur = pack.batcur
+        signed_current = batcur - 65536 if batcur > 32767 else batcur
+        current_a = signed_current / 10.0
+        max_cell_v = pack.max_vol / 100.0 if pack.max_vol else 0.0
+        min_cell_v = pack.min_vol / 100.0 if pack.min_vol else 0.0
+
+        return cls(
+            serial_number=pack.sn,
+            pack_type=pack.pack_type,
+            soc_percent=pack.soc_level,
+            state=pack.state,
+            power_w=pack.power,
+            software_version=pack.soft_version,
+            temperature_celsius=temp_celsius,
+            voltage_v=voltage_v,
+            current_a=current_a,
+            max_cell_voltage_v=max_cell_v,
+            min_cell_voltage_v=min_cell_v,
+        )
+
+
+class DeviceState(BaseModel):
+    """Processed device state with all relevant properties.
+
+    Converts raw API data to usable values:
+    - hyperTmp: Kelvin*10 → Celsius
+    - minSoc: 0-500 → 0-50%
+    - socSet: 700-1000 → 70-100%
+    """
+
+    serial_number: str = Field(default="", description="Device serial number")
+    product: str = Field(default="", description="Product model name")
+
+    solar_input_power: int = Field(default=0, description="Total solar input power in W")
+    solar_power_1: int = Field(default=0, description="Solar line 1 input power in W")
+    solar_power_2: int = Field(default=0, description="Solar line 2 input power in W")
+    solar_power_3: int = Field(default=0, description="Solar line 3 input power in W")
+    solar_power_4: int = Field(default=0, description="Solar line 4 input power in W")
+    grid_input_power: int = Field(default=0, description="Grid input power in W")
+    output_home_power: int = Field(default=0, description="Output power to home in W")
+    output_pack_power: int = Field(default=0, description="Output power to battery pack in W")
+    pack_input_power: int = Field(default=0, description="Battery pack input power in W")
+
+    battery_soc: int = Field(default=0, ge=0, le=100, description="Average battery SOC in %")
+    battery_state: BatteryState = Field(default=BatteryState.STANDBY, description="Battery state")
+    pack_count: int = Field(default=0, description="Number of battery packs")
+    battery_packs: List[ProcessedBatteryPack] = Field(default_factory=list)
+
+    min_soc: int = Field(default=0, ge=0, le=50, description="Min SOC in % (0-50)")
+    max_soc: int = Field(default=100, ge=70, le=100, description="Max SOC in % (70-100)")
+    input_limit: int = Field(default=0, description="AC input limit in W")
+    output_limit: int = Field(default=0, description="AC output limit in W")
+    inverse_max_power: int = Field(default=0, description="Maximum output power in W")
+
+    ac_mode: ACMode = Field(default=ACMode.OUTPUT, description="AC mode")
+    smart_mode: bool = Field(default=True, description="Smart mode active")
+    bypass_mode: bool = Field(default=False, description="Bypass mode active")
+    grid_connected: bool = Field(default=True, description="Grid connected")
+    heating_active: bool = Field(default=False, description="Heating active")
+
+    temperature_celsius: Optional[float] = Field(default=None, description="Enclosure temp in °C")
+
+    data_ready: bool = Field(default=True)
+    is_error: bool = Field(default=False)
+    remain_out_time_min: int = Field(default=0, description="Remaining discharge time in min")
+
+    @classmethod
+    def from_response(cls, response: APIResponseProtocol) -> "DeviceState":
+        """Build a DeviceState from an API response protocol object."""
+        props = response.properties
+
+        temp_celsius = None
+        if props.hyper_tmp > 0:
+            temp_celsius = (props.hyper_tmp - 2731) / 10.0
+
+        min_soc_percent = props.min_soc // 10
+        max_soc_percent = props.soc_set // 10
+
+        processed_packs = [ProcessedBatteryPack.from_protocol(pack) for pack in response.pack_data]
+
+        return cls(
+            serial_number=response.sn,
+            product=response.product,
+            solar_input_power=props.solar_input_power,
+            solar_power_1=props.solar_power_1,
+            solar_power_2=props.solar_power_2,
+            solar_power_3=props.solar_power_3,
+            solar_power_4=props.solar_power_4,
+            grid_input_power=props.grid_input_power,
+            output_home_power=props.output_home_power,
+            output_pack_power=props.output_pack_power,
+            pack_input_power=props.pack_input_power,
+            battery_soc=props.electric_level,
+            battery_state=BatteryState(props.pack_state)
+            if props.pack_state in [0, 1, 2]
+            else BatteryState.STANDBY,
+            pack_count=props.pack_num or len(processed_packs),
+            battery_packs=processed_packs,
+            min_soc=min_soc_percent,
+            max_soc=max_soc_percent,
+            input_limit=props.input_limit,
+            output_limit=props.output_limit,
+            inverse_max_power=props.inverse_max_power,
+            ac_mode=ACMode(props.ac_mode) if props.ac_mode in [1, 2] else ACMode.OUTPUT,
+            smart_mode=bool(props.smart_mode),
+            bypass_mode=bool(props.bypass),
+            grid_connected=bool(props.grid_state),
+            heating_active=bool(props.heat_state),
+            temperature_celsius=temp_celsius,
+            data_ready=bool(props.data_ready),
+            is_error=bool(props.is_error),
+            remain_out_time_min=props.remain_out_time,
+        )
