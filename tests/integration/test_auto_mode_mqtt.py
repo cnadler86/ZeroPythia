@@ -206,7 +206,7 @@ class TestPlanPayloadParsing:
     """Verify InverterPlan can parse the exact format GridPythia publishes."""
 
     def test_parse_zfi_plan(self) -> None:
-        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan
 
         payload = _make_zfi_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -220,7 +220,7 @@ class TestPlanPayloadParsing:
         assert plan.steps[0].timestamp.tzinfo is not None
 
     def test_parse_mixed_plan(self) -> None:
-        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan
 
         payload = _make_mixed_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -229,7 +229,7 @@ class TestPlanPayloadParsing:
         assert plan.steps[4].mode == InverterMode.AC_CHARGE
 
     def test_get_current_step_returns_zfi(self) -> None:
-        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan
 
         payload = _make_zfi_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -239,7 +239,7 @@ class TestPlanPayloadParsing:
         assert step.mode == InverterMode.DISCHARGE_ZERO_FEED_IN
 
     def test_plan_summary_merges_slots(self) -> None:
-        from ZeroPythia.gridpythia.models import InverterPlan
+        from ZeroPythia.gridpythia_bridge.models import InverterPlan
         from ZeroPythia.runtime.auto_mode import build_plan_summary
 
         payload = _make_mixed_plan_payload(DEVICE_ID)
@@ -342,7 +342,7 @@ class TestAutoModeManagerMqtt:
         """ZFI→IDLE→AC_CHARGE plan steps dispatch the right modes."""
         from ZeroPythia.runtime.auto_mode import AutoModeManager
         from ZeroPythia.runtime.models import DeviceMode
-        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan
 
         battery = FakeBattery()
         dispatched: list[tuple] = []

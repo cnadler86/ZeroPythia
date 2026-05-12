@@ -366,7 +366,7 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
     )
 
     # Build a plan with a ZFI step that has a different discharge_ac_wh
-    from ZeroPythia.gridpythia.models import InverterMode, InverterPlan, PlanStep  # noqa: PLC0415
+    from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan, PlanStep  # noqa: PLC0415
 
     now = datetime.now(tz=timezone.utc)
     step = PlanStep(

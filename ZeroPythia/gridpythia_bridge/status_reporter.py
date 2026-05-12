@@ -32,7 +32,7 @@ from typing import Optional
 
 from clients.mqtt.client import MqttClient
 from clients.zendure.base import BatteryManager
-from ZeroPythia.gridpythia.models import InverterMode
+from ZeroPythia.gridpythia_bridge.models import InverterMode
 
 logger = logging.getLogger(__name__)
 

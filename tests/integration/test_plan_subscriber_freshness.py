@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
-from ZeroPythia.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
+from ZeroPythia.gridpythia_bridge.plan_subscriber import GridPythiaPlanSubscriber
 
 
 class DummyMqttClient:

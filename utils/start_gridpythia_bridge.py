@@ -40,9 +40,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from clients.mqtt.client import MqttClient, MqttConfig
 from clients.zendure.base import BatteryManager
 from clients.zendure.http_client import SolarFlowAsyncClient
-from ZeroPythia.gridpythia.models import InverterMode, PlanStep
-from ZeroPythia.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
-from ZeroPythia.gridpythia.status_reporter import GridPythiaStatusReporter
+from ZeroPythia.gridpythia_bridge.models import InverterMode, PlanStep
+from ZeroPythia.gridpythia_bridge.plan_subscriber import GridPythiaPlanSubscriber
+from ZeroPythia.gridpythia_bridge.status_reporter import GridPythiaStatusReporter
 
 LOG = logging.getLogger("gridpythia_bridge")
 

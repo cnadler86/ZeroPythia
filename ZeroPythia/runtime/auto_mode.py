@@ -20,9 +20,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 from clients.mqtt.client import MqttClient, MqttConfig
-from ZeroPythia.gridpythia.models import InverterMode, InverterPlan, PlanStep
-from ZeroPythia.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
-from ZeroPythia.gridpythia.status_reporter import GridPythiaStatusReporter
+from ZeroPythia.gridpythia_bridge.models import InverterMode, InverterPlan, PlanStep
+from ZeroPythia.gridpythia_bridge.plan_subscriber import GridPythiaPlanSubscriber
+from ZeroPythia.gridpythia_bridge.status_reporter import GridPythiaStatusReporter
 from ZeroPythia.runtime.models import AutoStatus, DeviceMode, PlanSummaryEntry
 
 logger = logging.getLogger(__name__)
