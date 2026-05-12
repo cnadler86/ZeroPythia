@@ -31,16 +31,16 @@ import logging
 from typing import Optional
 
 from clients.mqtt.client import MqttClient
-from clients.zendure.base import SolarFlowBase
+from clients.zendure.base import BatteryManager
 from src.gridpythia.models import InverterMode
 
 logger = logging.getLogger(__name__)
 
 
-def _map_mode(battery: SolarFlowBase) -> InverterMode:
+def _map_mode(battery: BatteryManager) -> InverterMode:
     """Map the last-known Zendure setpoint to the closest GridPythia InverterMode.
 
-    We use the internal ``_setpoint_w`` field of ``SolarFlowBase`` as the source
+    We use the internal ``_setpoint_w`` field as the source
     of truth rather than reading the device (avoids an extra HTTP round-trip).
 
     * setpoint > 0  → discharging  → ``DISCHARGE_ZERO_FEED_IN`` (safest default)
@@ -61,7 +61,7 @@ class GridPythiaStatusReporter:
     def __init__(
         self,
         mqtt_client: MqttClient,
-        battery: SolarFlowBase,
+        battery: BatteryManager,
         device_id: str,
         topic_prefix: str = "gridpythia",
         interval_s: float = 60.0,

@@ -390,6 +390,65 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 5.0,
         "group": group,
     }
+    entries[p + "holder_min_period"] = {
+        "type": "number",
+        "title": "Holder min. period [s]",
+        "default": 1.0,
+        "minimum": 0.1,
+        "maximum": 60.0,
+        "step": 0.1,
+        "group": group,
+    }
+    entries[p + "holder_max_period"] = {
+        "type": "number",
+        "title": "Holder max. period [s]",
+        "default": 10.0,
+        "minimum": 0.1,
+        "maximum": 600.0,
+        "step": 0.1,
+        "group": group,
+    }
+    entries[p + "holder_period_variance"] = {
+        "type": "number",
+        "title": "Holder period variance",
+        "default": 1.2,
+        "minimum": 0.01,
+        "maximum": 10.0,
+        "step": 0.05,
+        "group": group,
+    }
+    entries[p + "holder_time_threshold"] = {
+        "type": "number",
+        "title": "Holder time threshold [s]",
+        "default": 0.6,
+        "minimum": 0.01,
+        "maximum": 30.0,
+        "step": 0.05,
+        "group": group,
+    }
+    entries[p + "holder_min_rising_count"] = {
+        "type": "integer",
+        "title": "Holder min. rising edges",
+        "default": 3,
+        "minimum": 2,
+        "maximum": 20,
+        "group": group,
+    }
+    entries[p + "holder_merge_mode"] = {
+        "type": "string",
+        "title": "Holder merge mode",
+        "default": "first",
+        "enum": ["first", "mean", "last"],
+        "group": group,
+    }
+    entries[p + "holder_base_load_window"] = {
+        "type": "integer",
+        "title": "Holder baseload window",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 20,
+        "group": group,
+    }
     entries[p + "predictor_enabled"] = {
         "type": "boolean",
         "title": "Predictor active (periodic loads)",
@@ -403,6 +462,74 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "minimum": 10.0,
         "maximum": 1000.0,
         "step": 10.0,
+        "group": group,
+    }
+    entries[p + "predictor_min_period"] = {
+        "type": "number",
+        "title": "Predictor min. period [s]",
+        "default": 8.0,
+        "minimum": 0.1,
+        "maximum": 600.0,
+        "step": 0.1,
+        "group": group,
+    }
+    entries[p + "predictor_max_period"] = {
+        "type": "number",
+        "title": "Predictor max. period [s]",
+        "default": 120.0,
+        "minimum": 0.1,
+        "maximum": 3600.0,
+        "step": 0.1,
+        "group": group,
+    }
+    entries[p + "predictor_period_variance"] = {
+        "type": "number",
+        "title": "Predictor period variance",
+        "default": 2.0,
+        "minimum": 0.01,
+        "maximum": 10.0,
+        "step": 0.05,
+        "group": group,
+    }
+    entries[p + "predictor_time_threshold"] = {
+        "type": "number",
+        "title": "Predictor time threshold [s]",
+        "default": 2.0,
+        "minimum": 0.01,
+        "maximum": 120.0,
+        "step": 0.05,
+        "group": group,
+    }
+    entries[p + "predictor_min_rising_count"] = {
+        "type": "integer",
+        "title": "Predictor min. rising edges",
+        "default": 3,
+        "minimum": 2,
+        "maximum": 20,
+        "group": group,
+    }
+    entries[p + "predictor_merge_mode"] = {
+        "type": "string",
+        "title": "Predictor merge mode",
+        "default": "first",
+        "enum": ["first", "mean", "last"],
+        "group": group,
+    }
+    entries[p + "predictor_base_load_window"] = {
+        "type": "integer",
+        "title": "Predictor baseload window",
+        "default": 2,
+        "minimum": 1,
+        "maximum": 20,
+        "group": group,
+    }
+    entries[p + "predictor_reaction_time"] = {
+        "type": "number",
+        "title": "Predictor reaction time [s]",
+        "default": 4.0,
+        "minimum": 0.0,
+        "maximum": 300.0,
+        "step": 0.1,
         "group": group,
     }
     return entries

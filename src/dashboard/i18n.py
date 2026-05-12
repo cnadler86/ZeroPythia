@@ -24,15 +24,14 @@ import json
 TRANSLATIONS: dict[str, dict[str, str]] = {
     "en": {
         # ── HTML placeholders ──────────────────────────────────────────────
-        "t_title": "Zendure Dashboard",
+        "t_title": "ZeroPythia",
         "t_pv": "PV",
         "t_soc": "SoC",
         "t_grid": "Grid",
         "t_load": "Load",
         "t_bat": "Bat",
         "t_config_mode": "Config",
-        "t_overview_card": "Overview &amp; Controller",
-        "t_controller": "Controller",
+        "t_overview_card": "Overview",
         "t_setpoint": "Battery setpoint",
         "t_raw_target": "Target (raw)",
         "t_ff_total": "FF total",
@@ -89,15 +88,14 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
     },
     "de": {
         # ── HTML placeholders ──────────────────────────────────────────────
-        "t_title": "Zendure Dashboard",
+        "t_title": "ZeroPythia",
         "t_pv": "PV",
         "t_soc": "SoC",
         "t_grid": "Netz",
         "t_load": "Haus",
         "t_bat": "Bat",
         "t_config_mode": "Konfig",
-        "t_overview_card": "Gesamt &amp; Regler",
-        "t_controller": "Regler",
+        "t_overview_card": "Übersicht",
         "t_setpoint": "Setpoint Batterie",
         "t_raw_target": "Ziel (roh)",
         "t_ff_total": "FF gesamt",
@@ -127,7 +125,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "t_plan_published": "Plan erstellt",
         "t_effective_label": "Aktuell effektiv",
         "t_version_prefix": "v",
-        "t_footer_project": "Zero Feed Controller",
+        "t_footer_project": "ZeroPythia",
         "t_github": "GitHub",
         "t_saved": "Gespeichert",
         # ── JS T object keys ───────────────────────────────────────────────

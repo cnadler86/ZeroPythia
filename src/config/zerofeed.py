@@ -216,6 +216,9 @@ class ZeroFeedConfig(BaseModel):
 
 def config_to_flat(cfg: ZeroFeedConfig) -> dict[str, Any]:
     """Serialize config to a flat ``{key: value}`` dict for the dashboard API."""
+    holder_defaults = BaseloadHolderSettings()
+    predictor_defaults = BaseloadPredictorSettings()
+
     result: dict[str, Any] = {
         "control_phase": cfg.control_phase,
         "target_power_w": cfg.target_power_w,
@@ -237,13 +240,68 @@ def config_to_flat(cfg: ZeroFeedConfig) -> dict[str, Any]:
             result[p + "kp"] = ph_cfg.kp
         result[p + "kp_hysteresis"] = ph_cfg.kp_hysteresis
         result[p + "hysteresis_w"] = ph_cfg.hysteresis_w
-        result[p + "holder_enabled"] = ph_cfg.osc.holder is not None
+        holder = ph_cfg.osc.holder
+        predictor = ph_cfg.osc.predictor
+
+        result[p + "holder_enabled"] = holder is not None
         result[p + "holder_min_amplitude"] = (
-            ph_cfg.osc.holder.threshold if ph_cfg.osc.holder is not None else 30.0
+            holder.threshold if holder is not None else holder_defaults.threshold
         )
-        result[p + "predictor_enabled"] = ph_cfg.osc.predictor is not None
+        result[p + "holder_min_period"] = (
+            holder.min_period if holder is not None else holder_defaults.min_period
+        )
+        result[p + "holder_max_period"] = (
+            holder.max_period if holder is not None else holder_defaults.max_period
+        )
+        result[p + "holder_period_variance"] = (
+            holder.period_variance if holder is not None else holder_defaults.period_variance
+        )
+        result[p + "holder_time_threshold"] = (
+            holder.time_threshold if holder is not None else holder_defaults.time_threshold
+        )
+        result[p + "holder_min_rising_count"] = (
+            holder.min_rising_count if holder is not None else holder_defaults.min_rising_count
+        )
+        result[p + "holder_merge_mode"] = (
+            holder.merge_mode if holder is not None else holder_defaults.merge_mode
+        )
+        result[p + "holder_base_load_window"] = (
+            holder.base_load_window if holder is not None else holder_defaults.base_load_window
+        )
+
+        result[p + "predictor_enabled"] = predictor is not None
         result[p + "predictor_min_amplitude"] = (
-            ph_cfg.osc.predictor.threshold if ph_cfg.osc.predictor is not None else 100.0
+            predictor.threshold if predictor is not None else predictor_defaults.threshold
+        )
+        result[p + "predictor_min_period"] = (
+            predictor.min_period if predictor is not None else predictor_defaults.min_period
+        )
+        result[p + "predictor_max_period"] = (
+            predictor.max_period if predictor is not None else predictor_defaults.max_period
+        )
+        result[p + "predictor_period_variance"] = (
+            predictor.period_variance
+            if predictor is not None
+            else predictor_defaults.period_variance
+        )
+        result[p + "predictor_time_threshold"] = (
+            predictor.time_threshold if predictor is not None else predictor_defaults.time_threshold
+        )
+        result[p + "predictor_min_rising_count"] = (
+            predictor.min_rising_count
+            if predictor is not None
+            else predictor_defaults.min_rising_count
+        )
+        result[p + "predictor_merge_mode"] = (
+            predictor.merge_mode if predictor is not None else predictor_defaults.merge_mode
+        )
+        result[p + "predictor_base_load_window"] = (
+            predictor.base_load_window
+            if predictor is not None
+            else predictor_defaults.base_load_window
+        )
+        result[p + "predictor_reaction_time"] = (
+            predictor.reaction_time if predictor is not None else predictor_defaults.reaction_time
         )
     return result
 
@@ -296,6 +354,13 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig
         }
 
     # ── Per-phase fields ───────────────────────────────────────────────────────
+    def _ensure_osc_dict(osc: dict[str, Any], key: str) -> dict[str, Any]:
+        current = osc.get(key)
+        if not isinstance(current, dict):
+            current = {}
+            osc[key] = current
+        return current
+
     for ph in _ALL_PHASES:
         ph_raw = raw["phases"].get(ph)
         if ph_raw is None:
@@ -322,8 +387,22 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig
                 osc["holder"] = None
         # Holder min amplitude (threshold)
         if p + "holder_min_amplitude" in data and osc.get("holder") is not None:
-            osc["holder"] = dict(osc["holder"]) if isinstance(osc["holder"], dict) else {}
-            osc["holder"]["threshold"] = data[p + "holder_min_amplitude"]
+            holder = _ensure_osc_dict(osc, "holder")
+            holder["threshold"] = data[p + "holder_min_amplitude"]
+        for src, target in (
+            ("holder_min_period", "min_period"),
+            ("holder_max_period", "max_period"),
+            ("holder_period_variance", "period_variance"),
+            ("holder_time_threshold", "time_threshold"),
+            ("holder_min_rising_count", "min_rising_count"),
+            ("holder_merge_mode", "merge_mode"),
+            ("holder_base_load_window", "base_load_window"),
+        ):
+            key = p + src
+            if key in data and osc.get("holder") is not None:
+                holder = _ensure_osc_dict(osc, "holder")
+                holder[target] = data[key]
+
         if p + "predictor_enabled" in data:
             if data[p + "predictor_enabled"]:
                 if osc.get("predictor") is None:
@@ -332,8 +411,22 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig
                 osc["predictor"] = None
         # Predictor min amplitude (threshold)
         if p + "predictor_min_amplitude" in data and osc.get("predictor") is not None:
-            osc["predictor"] = dict(osc["predictor"]) if isinstance(osc["predictor"], dict) else {}
-            osc["predictor"]["threshold"] = data[p + "predictor_min_amplitude"]
+            predictor = _ensure_osc_dict(osc, "predictor")
+            predictor["threshold"] = data[p + "predictor_min_amplitude"]
+        for src, target in (
+            ("predictor_min_period", "min_period"),
+            ("predictor_max_period", "max_period"),
+            ("predictor_period_variance", "period_variance"),
+            ("predictor_time_threshold", "time_threshold"),
+            ("predictor_min_rising_count", "min_rising_count"),
+            ("predictor_merge_mode", "merge_mode"),
+            ("predictor_base_load_window", "base_load_window"),
+            ("predictor_reaction_time", "reaction_time"),
+        ):
+            key = p + src
+            if key in data and osc.get("predictor") is not None:
+                predictor = _ensure_osc_dict(osc, "predictor")
+                predictor[target] = data[key]
 
     return ZeroFeedConfig.model_validate(raw)
 

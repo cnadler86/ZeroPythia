@@ -38,8 +38,8 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from clients.mqtt.client import MqttClient, MqttConfig
-from clients.zendure.aiozen import SolarFlowAsyncClient
-from clients.zendure.base import SolarFlowBase
+from clients.zendure.base import BatteryManager
+from clients.zendure.http_client import SolarFlowAsyncClient
 from src.gridpythia.models import InverterMode, PlanStep
 from src.gridpythia.plan_subscriber import GridPythiaPlanSubscriber
 from src.gridpythia.status_reporter import GridPythiaStatusReporter
@@ -59,7 +59,7 @@ class SimplePlanExecutor:
 
     def __init__(
         self,
-        battery: SolarFlowBase,
+        battery: BatteryManager,
         plan_subscriber: GridPythiaPlanSubscriber,
         device_id: str,
         check_interval_s: float = 60.0,

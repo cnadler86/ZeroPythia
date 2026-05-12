@@ -94,10 +94,10 @@ class ControlRuntime:
         # ── Upper SoC AC charge limit ─────────────────────────────────────────
         # high_soc_charge_limit_pct: above this SoC the AC charge power is throttled
         high_soc_charge_limit_pct: int = 90,
-        # high_soc_charge_limit_w: throttled AC charge power [W]; None = half of max_charge_w
+        # high_soc_charge_limit_w: throttled AC charge power [W];
+        #   None => half of battery max charge power (from API/HW limits)
         high_soc_charge_limit_w: Optional[int] = None,
     ) -> None:
-        self._grid_meter: GridMeterProtocol = grid_meter
         self._battery: BatteryInverterProtocol = battery
         self._sampler = RuntimeSampler(grid_meter, battery)
         self._sampling_interval = sampling_interval_s
@@ -113,7 +113,7 @@ class ControlRuntime:
         self._full_soc_resume_delay_s = full_soc_resume_delay_s
         self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
         self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
-        self._high_soc_charge_limit_w = high_soc_charge_limit_w  # None = half of max_charge_w
+        self._high_soc_charge_limit_w = high_soc_charge_limit_w
         # ZFI pause states
         self._zfi_paused_low_soc: bool = False
         self._zfi_paused_full_battery: bool = False
@@ -784,7 +784,7 @@ class ControlRuntime:
             limit_w = (
                 self._high_soc_charge_limit_w
                 if self._high_soc_charge_limit_w is not None
-                else max(50, int(base_pw) // 2)
+                else max(50, self._resolve_default_high_soc_charge_limit_w(base_pw))
             )
             if current_pw > limit_w:
                 logger.info(
@@ -798,6 +798,37 @@ class ControlRuntime:
                 applied = await self._battery.set_ac_input_limit(limit_w)
                 if applied < 0:
                     logger.error("AC charge throttle: set_ac_input_limit(%d) failed", limit_w)
+
+    def _resolve_default_high_soc_charge_limit_w(self, fallback_base_pw: int) -> int:
+        """Return default high-SoC AC charge cap.
+
+        Priority:
+          1) Half of the battery's maximum AC charge power from API/HW limits.
+          2) Fallback: half of the current requested/manual charge power.
+        """
+        max_charge_w: Optional[int] = None
+
+        # Preferred: explicit property exposed by the hardware client.
+        try:
+            prop = getattr(self._battery, "max_charge_power", None)
+            if isinstance(prop, int):
+                max_charge_w = prop
+        except Exception:
+            max_charge_w = None
+
+        # Fallback for clients that don't expose max_charge_power but keep device limits.
+        if not max_charge_w:
+            try:
+                limits = getattr(self._battery, "_limits", None)
+                charge_limit = getattr(limits, "charge_limit", None) if limits is not None else None
+                if isinstance(charge_limit, int):
+                    max_charge_w = charge_limit
+            except Exception:
+                max_charge_w = None
+
+        if max_charge_w and max_charge_w > 0:
+            return max_charge_w // 2
+        return int(fallback_base_pw) // 2
 
     async def _check_feed_in_watchdog(self, sample: "GridSample", now_mono: float) -> None:
         """Detect sustained feed-in and reset the regulator if triggered.

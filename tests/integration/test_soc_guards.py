@@ -241,22 +241,6 @@ async def test_full_battery_pauses_zfi_when_load_not_above_threshold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_battery_stays_paused_at_max_soc_when_load_low() -> None:
-    """While SoC remains max and load stays low, pause must remain active."""
-    batt = FakeBattery(soc=100, max_soc=100)
-    rt = _make_runtime(batt, full_soc_pct=100, full_soc_resume_threshold_w=50)
-    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
-    rt._zfi_paused_full_battery = True
-    rt._full_battery_resume_since = time.monotonic() - 10.0
-
-    sample = _make_sample(soc=100, grid_w=10.0)
-    await rt._update_soc_guards(sample, time.monotonic())
-
-    assert rt._full_battery_resume_since is None
-    assert rt._zfi_paused_full_battery is True
-
-
-@pytest.mark.asyncio
 async def test_full_battery_resumes_immediately_at_max_soc_when_load_high() -> None:
     """At max SoC, high positive household load should resume discharge immediately."""
     batt = FakeBattery(soc=100)

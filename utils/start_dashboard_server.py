@@ -25,7 +25,7 @@ from typing import Optional
 import uvicorn
 
 from clients.shelly.shelly import ShellyClient
-from clients.zendure.aiozen import SolarFlowAsyncClient
+from clients.zendure.http_client import SolarFlowAsyncClient
 from src.config.zerofeed import ZeroFeedConfig, load_config
 from src.controller.zerofeed_regulator import ZeroFeedRegulator
 from src.dashboard.server import create_app

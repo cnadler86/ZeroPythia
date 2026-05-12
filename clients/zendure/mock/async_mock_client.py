@@ -19,7 +19,7 @@ import random
 from time import time
 from typing import Dict, Optional
 
-from ..base import SolarFlowBase
+from ..base import BatteryManager
 from ..models import (
     MODEL_LIMITS,
     ACMode,
@@ -59,7 +59,7 @@ class SetpointState:
         self.start_input = start_input  # Input-Startwert für PT1
 
 
-class SolarFlowAsyncMockClient(SolarFlowBase):
+class SolarFlowAsyncMockClient(BatteryManager):
     """Async Mock Client für Zendure SolarFlow - Timer-basierte Simulation.
 
     Timer-Verhalten:
@@ -95,7 +95,7 @@ class SolarFlowAsyncMockClient(SolarFlowBase):
         device_ip: str = "127.0.0.1",
         model: BatteryModel = DEFAULT_MODEL,
         *,
-        initial_soc: int = 50,
+        initial_soc: int = 100,
         battery_capacity_wh: int = 1920,
         **kwargs,
     ):

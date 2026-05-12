@@ -19,6 +19,8 @@ from typing import Optional
 
 import aiohttp
 
+from src.runtime.sampler import GridMeterProtocol
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,7 +88,7 @@ def _parse_gen2_state(data: dict) -> GridState:
 # ---------------------------------------------------------------------------
 
 
-class ShellyClient:
+class ShellyClient(GridMeterProtocol):
     """Asynchronous client for Shelly 3EM (Pro) energy meters.
 
     Supports:

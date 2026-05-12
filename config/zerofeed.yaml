@@ -36,15 +36,15 @@ phases:
         merge_mode: first
         base_load_window: 3
       predictor:
-        threshold: 80.0   # Minimum amplitude [W] to confirm periodic load
-        min_period: 8.0 # Shortest detectable period [s]
-        max_period: 120.0 # Longest detectable period [s]
-        period_variance: 2.0 # Allowed jitter factor for period matching
-        time_threshold: 2.0 # Minimum duty cycle to confirm periodic load
-        min_rising_count: 3 # Minimum rising edges required to confirm periodic load
-        reaction_time: 4.0 # Lead time [s] before expected load peak – battery output reduced early
+        threshold: 100.0
+        min_period: 8.0
+        max_period: 120.0
+        period_variance: 2
+        time_threshold: 2.0
         merge_mode: first
+        min_rising_count: 3
         base_load_window: 2
+        reaction_time: 4.0
   B:
     role: feedback  # feedback = regulation (battery phase)  |  feedforward = steering
     kp_draw: 0.9 # P-gain when drawing from grid
