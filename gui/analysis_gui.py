@@ -33,8 +33,8 @@ from simulator.batch_runner import (
     run_simulation,
 )
 from simulator.grid_simulator import clean_csv_data, load_csv
-from src.config.zerofeed import ZeroFeedConfig, config_to_flat, flat_to_config
-from src.controller.zerofeed_regulator import ZeroFeedRegulator
+from ZeroPythia.config.zerofeed import ZeroFeedConfig, config_to_flat, flat_to_config
+from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
 
 logger = logging.getLogger(__name__)
 

@@ -41,7 +41,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from clients.mqtt.client import MqttClient
-from src.gridpythia.models import InverterPlan, PlanStep
+from ZeroPythia.gridpythia.models import InverterPlan, PlanStep
 
 logger = logging.getLogger(__name__)
 

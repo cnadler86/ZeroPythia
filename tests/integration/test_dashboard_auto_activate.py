@@ -81,9 +81,9 @@ async def test_html_defaults_are_correct():
     """HTML should ship with localhost:1883 and SF800Pro as pre-filled values."""
     from httpx import ASGITransport, AsyncClient
 
-    from src.controller.zerofeed_regulator import ZeroFeedRegulator
-    from src.runtime.control_runtime import ControlRuntime
-    from src.dashboard.server import create_app
+    from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+    from ZeroPythia.runtime.control_runtime import ControlRuntime
+    from ZeroPythia.dashboard.server import create_app
 
     runtime = ControlRuntime(FakeGrid(), cast(Any, FakeBattery()))
     runtime.register_regulator(ZeroFeedRegulator())
@@ -108,10 +108,10 @@ async def test_auto_activate_from_dashboard():
 
     from httpx import ASGITransport, AsyncClient
 
-    from src.runtime.models import DeviceMode
-    from src.controller.zerofeed_regulator import ZeroFeedRegulator
-    from src.runtime.control_runtime import ControlRuntime
-    from src.dashboard.server import create_app
+    from ZeroPythia.runtime.models import DeviceMode
+    from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+    from ZeroPythia.runtime.control_runtime import ControlRuntime
+    from ZeroPythia.dashboard.server import create_app
 
     battery = FakeBattery()
     runtime = ControlRuntime(

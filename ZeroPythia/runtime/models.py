@@ -1,7 +1,7 @@
 """Runtime domain models shared by control and dashboard layers.
 
 These models are owned by the runtime/control domain and can be consumed by
-UI-facing packages such as ``src.dashboard``.
+UI-facing packages such as ``ZeroPythia.dashboard``.
 """
 
 from __future__ import annotations

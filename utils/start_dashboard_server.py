@@ -26,11 +26,11 @@ import uvicorn
 
 from clients.shelly.shelly import ShellyClient
 from clients.zendure.http_client import SolarFlowAsyncClient
-from src.config.zerofeed import ZeroFeedConfig, load_config
-from src.controller.zerofeed_regulator import ZeroFeedRegulator
-from src.dashboard.server import create_app
-from src.runtime.control_runtime import ControlRuntime
-from src.runtime.models import DeviceMode
+from ZeroPythia.config.zerofeed import ZeroFeedConfig, load_config
+from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+from ZeroPythia.dashboard.server import create_app
+from ZeroPythia.runtime.control_runtime import ControlRuntime
+from ZeroPythia.runtime.models import DeviceMode
 
 _CONFIG = Path("config") / "zerofeed.yaml"
 

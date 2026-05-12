@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
-from src.config.zerofeed import ZeroFeedConfig
-from src.controller.phase_controller import PhaseSample
-from src.controller.zerofeed_regulator import _Core
+from ZeroPythia.config.zerofeed import ZeroFeedConfig
+from ZeroPythia.controller.phase_controller import PhaseSample
+from ZeroPythia.controller.zerofeed_regulator import _Core
 
 from .grid_simulator import PhaseRecord, clean_csv_data, load_csv
 

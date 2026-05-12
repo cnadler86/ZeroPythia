@@ -1,7 +1,7 @@
 """Dashboard command models and runtime model re-exports.
 
 The dashboard package owns API command payload models.
-Runtime/domain state models are defined in ``src.runtime.models`` and re-exported
+Runtime/domain state models are defined in ``ZeroPythia.runtime.models`` and re-exported
 here for a smoother migration.
 """
 
@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
-from src.runtime.models import DeviceMode
+from ZeroPythia.runtime.models import DeviceMode
 
 
 class SetModeCommand(BaseModel):

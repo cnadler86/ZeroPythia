@@ -19,7 +19,7 @@ from typing import Optional
 
 import aiohttp
 
-from src.runtime.sampler import GridMeterProtocol
+from ZeroPythia.runtime.sampler import GridMeterProtocol
 
 logger = logging.getLogger(__name__)
 

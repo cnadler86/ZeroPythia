@@ -21,7 +21,7 @@ Architecture:
         hysteresis.
 
 Configuration:
-    Full Pydantic v2 model in ``src.config.zerofeed``.
+    Full Pydantic v2 model in ``ZeroPythia.config.zerofeed``.
     ``control_phase`` selects the battery phase; any of A, B, C is supported.
     Settings persisted to YAML with comment support (ruamel.yaml).
 """
@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from src.config.zerofeed import (
+from ZeroPythia.config.zerofeed import (
     FeedbackPhaseConfig,
     FeedforwardPhaseConfig,
     ZeroFeedConfig,
@@ -44,15 +44,21 @@ from src.config.zerofeed import (
     load_config,
     save_config,
 )
-from src.controller.feedforward_steuerung import FeedforwardSteuerung, FeedforwardSteuerungSettings
-from src.controller.oscillation_detectorv2 import BaseloadHolderSettings, BaseloadPredictorSettings
-from src.controller.phase_controller import (
+from ZeroPythia.controller.feedforward_steuerung import (
+    FeedforwardSteuerung,
+    FeedforwardSteuerungSettings,
+)
+from ZeroPythia.controller.oscillation_detectorv2 import (
+    BaseloadHolderSettings,
+    BaseloadPredictorSettings,
+)
+from ZeroPythia.controller.phase_controller import (
     InverterPhaseController,
     InverterPhaseControllerSettings,
     PhaseSample,
 )
-from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
-from src.runtime.models import ControlStatus, GridSample, OscState
+from ZeroPythia.controller.regulator import BatteryInverterProtocol, RegulatorBase
+from ZeroPythia.runtime.models import ControlStatus, GridSample, OscState
 
 logger = logging.getLogger(__name__)
 

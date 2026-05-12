@@ -28,11 +28,11 @@ from typing import Optional
 import uvicorn
 
 from clients.zendure.mock.async_mock_client import SolarFlowAsyncMockClient
-from src.config.zerofeed import ZeroFeedConfig
-from src.controller.zerofeed_regulator import ZeroFeedRegulator
-from src.dashboard.server import create_app
-from src.runtime.control_runtime import ControlRuntime
-from src.runtime.models import DeviceMode
+from ZeroPythia.config.zerofeed import ZeroFeedConfig
+from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+from ZeroPythia.dashboard.server import create_app
+from ZeroPythia.runtime.control_runtime import ControlRuntime
+from ZeroPythia.runtime.models import DeviceMode
 
 LOG = logging.getLogger("start_dashboard_mock")
 

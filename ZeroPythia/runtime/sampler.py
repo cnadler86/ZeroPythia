@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Optional, Protocol
 
-from src.controller.regulator import BatteryInverterProtocol
+from ZeroPythia.controller.regulator import BatteryInverterProtocol
 
 from .models import GridSample
 
