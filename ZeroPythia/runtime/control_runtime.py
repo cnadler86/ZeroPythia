@@ -98,6 +98,12 @@ class ControlRuntime:
         # high_soc_charge_limit_w: throttled AC charge power [W];
         #   None => half of battery max charge power (from API/HW limits)
         high_soc_charge_limit_w: Optional[int] = None,
+        # ── Feed-in watchdog (sustained export detection) ──────────────────────
+        # watchdog_cycles: number of control cycles for feed-in detection
+        # trigger_time = control_interval_s * watchdog_cycles + 1 [s]
+        watchdog_cycles: int = 3,
+        # watchdog_threshold_w: grid power threshold [W] for feed-in (must be negative)
+        watchdog_threshold_w: float = -10.0,
     ) -> None:
         self._battery: BatteryInverterProtocol = battery
         self._sampler = RuntimeSampler(grid_meter, battery)
@@ -144,11 +150,12 @@ class ControlRuntime:
         # Feed-in watchdog (only active during ZFI regulation)
         self._watchdog_violation_since: Optional[float] = None
         self._watchdog_last_reset: float = float("-inf")
-        self._watchdog_trigger_s: float = 10.0
+        # Calculate trigger time from control interval and cycle count + 1s tolerance
+        self._watchdog_trigger_s: float = control_interval_s * watchdog_cycles + 1.0
         """Sustained feed-in beyond this duration [s] triggers the watchdog."""
-        self._watchdog_cooldown_s: float = 30.0
-        """Minimum interval [s] between two consecutive watchdog resets."""
-        self._watchdog_threshold_w: float = -10.0
+        self._watchdog_cooldown_s: float = 2.0 * self._watchdog_trigger_s
+        """Minimum interval [s] between two consecutive watchdog resets (2x trigger time)."""
+        self._watchdog_threshold_w: float = watchdog_threshold_w
         """Grid values below this threshold (negative = feed-in) count as a violation."""
 
         # Runtime tasks
