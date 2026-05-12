@@ -3,7 +3,6 @@ name = "ZeroPythia"
 version = "0.1.0"
 description = "Three-phase zero-feed-in battery controller with feedforward + feedback regulation for one phase inverters."
 readme = "README.md"
-license = "PolyForm Noncommercial License 1.0.0"
 license-files = ["LICENSE.md"]
 requires-python = ">=3.11"
 
