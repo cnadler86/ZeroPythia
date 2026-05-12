@@ -535,11 +535,11 @@ function render(s) {
   else if (s.mode==='auto')                document.getElementById('cfg-btn-auto')?.classList.add('active');
 
   // Pause badge
-  const paused = s.zfi_paused_low_soc || s.zfi_paused_full_battery;
+  const paused = s.zfi_state === 'paused_low_soc' || s.zfi_state === 'paused_full';
   const pauseBadge = document.getElementById('zfi-pause-badge');
   pauseBadge.style.display = paused ? '' : 'none';
-  if (s.zfi_paused_low_soc)           pauseBadge.textContent = '\u23f8 ' + T.paused_soc;
-  else if (s.zfi_paused_full_battery) pauseBadge.textContent = '\u23f8 ' + T.paused_full;
+  if (s.zfi_state === 'paused_low_soc')   pauseBadge.textContent = '\u23f8 ' + T.paused_soc;
+  else if (s.zfi_state === 'paused_full') pauseBadge.textContent = '\u23f8 ' + T.paused_full;
 
   // GridPythia-Plan als modusabhängige Begleitkarte
   const cardAuto = document.getElementById('card-auto');
@@ -629,9 +629,7 @@ function render(s) {
 
   // Status badge in overview card header
   const statusBadge = document.getElementById('ctrl-status-badge');
-  if (s.zfi_paused_low_soc) {
-    statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
-  } else if (s.zfi_paused_full_battery) {
+  if (s.zfi_state === 'paused_low_soc' || s.zfi_state === 'paused_full') {
     statusBadge.textContent = T.paused; statusBadge.className = 'badge badge-yellow';
   } else if (s.mode === 'discharge_zero_feed' || (s.mode==='auto' && c)) {
     statusBadge.textContent = T.active; statusBadge.className = 'badge badge-green';

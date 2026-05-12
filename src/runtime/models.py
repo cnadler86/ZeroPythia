@@ -21,6 +21,22 @@ class DeviceMode(str, Enum):
     AUTO = "auto"
 
 
+class ZFIState(str, Enum):
+    """Operational state of the Zero-Feed-In regulation loop.
+
+    Replaces the five separate boolean ZFI-pause flags previously held by
+    ``ControlRuntime``.  A single enum value captures the full state, making
+    transitions explicit and eliminating impossible flag combinations.
+    """
+
+    INACTIVE = "inactive"  # Not in ZFI mode (IDLE / AC_CHARGE / AUTO-idle)
+    RUNNING = "running"  # Regulator active, full power budget available
+    SOFT_LIMITED = "soft_limited"  # Regulator active, output capped (SoC hysteresis)
+    PAUSED_LOW_SOC = "paused_low_soc"  # Battery stopped: SoC too low, no PV
+    PAUSED_FULL = "paused_full"  # Battery stopped: battery fully charged
+    PAUSED_NO_GRID = "paused_no_grid"  # Regulator suspended: no Shelly / grid-meter data
+
+
 class GridSample(BaseModel):
     """One measurement snapshot from Shelly + Zendure."""
 
@@ -111,9 +127,6 @@ class DashboardState(BaseModel):
     sample: Optional[GridSample] = None
     control: Optional[ControlStatus] = None
     auto_status: Optional[AutoStatus] = None
-    zfi_paused_low_soc: bool = False
-    zfi_paused_full_battery: bool = False
-    zfi_paused_no_grid: bool = False
-    zfi_soc_limited: bool = False
+    zfi_state: ZFIState = ZFIState.INACTIVE
     zfi_soc_limit_cap_w: Optional[int] = None
     error: Optional[str] = None
