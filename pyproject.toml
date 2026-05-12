@@ -3,6 +3,8 @@ name = "ZeroPythia"
 version = "0.1.0"
 description = "Three-phase zero-feed-in battery controller with feedforward + feedback regulation for one phase inverters."
 readme = "README.md"
+license = "PolyForm Noncommercial License 1.0.0"
+license-files = ["LICENSE.md"]
 requires-python = ">=3.11"
 
 dependencies = [
@@ -37,6 +39,10 @@ build-backend = "hatchling.build"
 # from the wheel.  They are available when working with a local editable
 # install (pip install -e .) but must not be part of any release artifact.
 packages = ["clients", "ZeroPythia"]
+include = ["LICENSE.md", "NOTICE"]
+
+[tool.hatch.build.targets.sdist]
+include = ["LICENSE.md", "NOTICE", "README.md", "clients", "ZeroPythia", "config"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
