@@ -206,7 +206,7 @@ class TestPlanPayloadParsing:
     """Verify InverterPlan can parse the exact format GridPythia publishes."""
 
     def test_parse_zfi_plan(self) -> None:
-        from src.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
 
         payload = _make_zfi_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -220,7 +220,7 @@ class TestPlanPayloadParsing:
         assert plan.steps[0].timestamp.tzinfo is not None
 
     def test_parse_mixed_plan(self) -> None:
-        from src.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
 
         payload = _make_mixed_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -229,7 +229,7 @@ class TestPlanPayloadParsing:
         assert plan.steps[4].mode == InverterMode.AC_CHARGE
 
     def test_get_current_step_returns_zfi(self) -> None:
-        from src.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
 
         payload = _make_zfi_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -239,8 +239,8 @@ class TestPlanPayloadParsing:
         assert step.mode == InverterMode.DISCHARGE_ZERO_FEED_IN
 
     def test_plan_summary_merges_slots(self) -> None:
-        from src.gridpythia.models import InverterPlan
-        from src.runtime.auto_mode import build_plan_summary
+        from ZeroPythia.gridpythia.models import InverterPlan
+        from ZeroPythia.runtime.auto_mode import build_plan_summary
 
         payload = _make_mixed_plan_payload(DEVICE_ID)
         plan = InverterPlan.model_validate(payload)
@@ -261,7 +261,7 @@ class TestAutoModeManagerMqtt:
 
     async def test_plan_received_and_dispatches_zero_feed(self) -> None:
         """Publish ZFI plan → AutoModeManager should dispatch DISCHARGE_ZERO_FEED."""
-        from src.runtime.auto_mode import AutoModeManager
+        from ZeroPythia.runtime.auto_mode import AutoModeManager
 
         battery = FakeBattery()
         dispatched: list[tuple] = []
@@ -295,7 +295,7 @@ class TestAutoModeManagerMqtt:
             await manager.tick(mock_apply_cb)
 
             assert len(dispatched) >= 1
-            from src.runtime.models import DeviceMode
+            from ZeroPythia.runtime.models import DeviceMode
 
             mode, charge_w, max_dis_w = dispatched[0]
             assert mode == DeviceMode.DISCHARGE_ZERO_FEED
@@ -306,8 +306,8 @@ class TestAutoModeManagerMqtt:
 
     async def test_no_plan_falls_back_to_zero_feed(self) -> None:
         """No plan → AutoModeManager falls back to DISCHARGE_ZERO_FEED."""
-        from src.runtime.auto_mode import AutoModeManager
-        from src.runtime.models import DeviceMode
+        from ZeroPythia.runtime.auto_mode import AutoModeManager
+        from ZeroPythia.runtime.models import DeviceMode
 
         battery = FakeBattery()
         dispatched: list[tuple] = []
@@ -340,9 +340,9 @@ class TestAutoModeManagerMqtt:
 
     async def test_mixed_plan_dispatches_correct_sequence(self) -> None:
         """ZFI→IDLE→AC_CHARGE plan steps dispatch the right modes."""
-        from src.runtime.auto_mode import AutoModeManager
-        from src.runtime.models import DeviceMode
-        from src.gridpythia.models import InverterMode, InverterPlan
+        from ZeroPythia.runtime.auto_mode import AutoModeManager
+        from ZeroPythia.runtime.models import DeviceMode
+        from ZeroPythia.gridpythia.models import InverterMode, InverterPlan
 
         battery = FakeBattery()
         dispatched: list[tuple] = []
@@ -403,9 +403,9 @@ class TestControlRuntimeAutoMode:
 
     async def test_runtime_auto_mode_sets_effective_mode(self) -> None:
         """Activating AUTO → first tick should set effective DISCHARGE_ZERO_FEED."""
-        from src.runtime.auto_mode import AutoModeManager
-        from src.runtime.models import DeviceMode
-        from src.runtime.control_runtime import ControlRuntime
+        from ZeroPythia.runtime.auto_mode import AutoModeManager
+        from ZeroPythia.runtime.models import DeviceMode
+        from ZeroPythia.runtime.control_runtime import ControlRuntime
 
         battery = FakeBattery()
         grid = FakeGrid()
@@ -490,7 +490,7 @@ class TestControlRuntimeAutoMode:
         sub_client.subscribe(STATUS_TOPIC, qos=0)
         sub_client.loop_start()
 
-        from src.runtime.auto_mode import AutoModeManager
+        from ZeroPythia.runtime.auto_mode import AutoModeManager
 
         manager = AutoModeManager(
             mqtt_broker="mqtt://127.0.0.1:1883",

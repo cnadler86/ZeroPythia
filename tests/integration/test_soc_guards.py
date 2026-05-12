@@ -21,8 +21,8 @@ from typing import Any, Optional, cast
 
 import pytest
 
-from src.runtime.control_runtime import ControlRuntime
-from src.runtime.models import DeviceMode, GridSample, ZFIState
+from ZeroPythia.runtime.control_runtime import ControlRuntime
+from ZeroPythia.runtime.models import DeviceMode, GridSample, ZFIState
 
 
 # ── Minimal fakes ─────────────────────────────────────────────────────────────
@@ -347,7 +347,7 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
     """AutoModeManager must dispatch config_max_w (not discharge_ac_wh) for ZFI steps."""
     from datetime import timedelta
 
-    from src.runtime.auto_mode import AutoModeManager
+    from ZeroPythia.runtime.auto_mode import AutoModeManager
 
     dispatched: list[tuple] = []
 
@@ -366,7 +366,7 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
     )
 
     # Build a plan with a ZFI step that has a different discharge_ac_wh
-    from src.gridpythia.models import InverterMode, InverterPlan, PlanStep  # noqa: PLC0415
+    from ZeroPythia.gridpythia.models import InverterMode, InverterPlan, PlanStep  # noqa: PLC0415
 
     now = datetime.now(tz=timezone.utc)
     step = PlanStep(

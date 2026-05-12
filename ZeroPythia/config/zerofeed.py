@@ -31,7 +31,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from src.controller.oscillation_detectorv2 import BaseloadHolderSettings, BaseloadPredictorSettings
+from ZeroPythia.controller.oscillation_detectorv2 import (
+    BaseloadHolderSettings,
+    BaseloadPredictorSettings,
+)
 
 logger = logging.getLogger(__name__)
 

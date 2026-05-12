@@ -32,7 +32,7 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
 
-from src.controller.regulator import BatteryInverterProtocol, RegulatorBase
+from ZeroPythia.controller.regulator import BatteryInverterProtocol, RegulatorBase
 
 from .models import (
     AutoStatus,

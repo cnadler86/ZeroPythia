@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.controller.oscillation_detectorv2 import BaseloadPredictor, BaseloadPredictorSettings
+from ZeroPythia.controller.oscillation_detectorv2 import BaseloadPredictor, BaseloadPredictorSettings
 
 # ── Signal constants ──────────────────────────────────────────────────────────
 
