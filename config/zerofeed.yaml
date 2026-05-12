@@ -7,7 +7,8 @@ control_phase: B  # Phase with battery inverter (A, B or C)
 target_power_w: 1.0 # Desired total grid draw [W].  3 W = slight import, prevents feed-in
 min_output_w: 20 # Minimum battery output [W] (hardware limit, e.g. 20 W)
 max_output_w: 800 # Maximum battery output [W] (hardware limit, e.g. 800 W)
-watchdog_cycles: 3 # Consecutive cycles with feed-in outside hysteresis → reset affected phases
+watchdog_cycles: 3 # Number of control cycles for feed-in trigger (used by ControlRuntime watchdog)
+watchdog_threshold_w: -10.0 # Feed-in threshold [W], must be negative (ControlRuntime watchdog)
 control_interval_s: 3.0 # Control cycle interval [s]
 sampling_interval_s: 1.0 # Sampling interval [s]
 battery_dead_time_s: 1.1

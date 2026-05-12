@@ -273,13 +273,6 @@ def run_simulation(
             )
             raw_target = ff_sum + fb_correction
 
-            # Watchdog
-            last_values = {ph: phase_buf[ph][-1].value for ph in ("A", "B", "C")}
-            reset_phases = core.check_watchdog(last_values, ff_sum)
-            if reset_phases:
-                raw_target = float(config.min_output_w)
-                logger.debug("Watchdog reset: %s", reset_phases)
-
             new_sp = int(
                 round(max(float(config.min_output_w), min(float(config.max_output_w), raw_target)))
             )

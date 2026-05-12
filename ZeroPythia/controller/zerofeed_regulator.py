@@ -14,12 +14,6 @@ Architecture:
         Oscillation detection on estimated real load:
             real_load ≈ phase_grid + battery_output - ff_sum
 
-    Watchdog (cycle-based):
-        Counts consecutive control cycles with total grid feed-in outside the
-        hysteresis band.  After ``watchdog_cycles`` violations, resets only the
-        phase controllers that individually show feed-in outside their own
-        hysteresis.
-
 Configuration:
     Full Pydantic v2 model in ``ZeroPythia.config.zerofeed``.
     ``control_phase`` selects the battery phase; any of A, B, C is supported.
@@ -136,7 +130,6 @@ class _Core:
         self._cfg = cfg
         self._ff: dict[str, FeedforwardSteuerung] = {}
         self._fb: Optional[InverterPhaseController] = None
-        self._violation_count: int = 0
         self._rebuild_controllers()
 
     def _rebuild_controllers(self) -> None:
@@ -236,63 +229,10 @@ class _Core:
             effective_total_w=effective_total_w, other_corrections_w=ff_sum
         )
 
-    # ── Watchdog ──────────────────────────────────────────────────────────────
-
-    def check_watchdog(
-        self,
-        last_phase_values: dict[str, float],
-        ff_sum: float,
-    ) -> list[str]:
-        """Cycle-based watchdog.  Returns list of phase names that were reset."""
-        cfg = self._cfg
-        total = sum(last_phase_values.values())
-        max_hyst = max(ph_cfg.hysteresis_w for ph_cfg in cfg.phases.values())
-        outside_total = total < (cfg.target_power_w - max_hyst)
-
-        if not outside_total:
-            self._violation_count = 0
-            return []
-
-        self._violation_count += 1
-        if self._violation_count <= cfg.watchdog_cycles:
-            return []
-
-        reset_phases: list[str] = []
-
-        # Check each feedforward phase individually
-        for ph, ph_cfg in cfg.phases.items():
-            if isinstance(ph_cfg, FeedforwardPhaseConfig):
-                if last_phase_values.get(ph, 0.0) < -ph_cfg.hysteresis_w:
-                    self._ff[ph] = _build_ff(ph_cfg)
-                    reset_phases.append(ph)
-
-        # Check feedback phase
-        fb_cfg = cfg.phases.get(cfg.control_phase)
-        if isinstance(fb_cfg, FeedbackPhaseConfig):
-            ctrl_val = last_phase_values.get(cfg.control_phase, 0.0)
-            fb_target = cfg.target_power_w - ff_sum
-            if ctrl_val < fb_target - fb_cfg.hysteresis_w:
-                self._fb = _build_fb(fb_cfg, cfg.target_power_w)
-                reset_phases.append(cfg.control_phase)
-
-        if reset_phases:
-            self._violation_count = 0
-            logger.warning(
-                "ZeroFeed watchdog: reset phase(s) %s after %d cycles of feed-in "
-                "(total=%.1fW  threshold=%.1fW)",
-                "+".join(sorted(reset_phases)),
-                cfg.watchdog_cycles,
-                total,
-                cfg.target_power_w - max_hyst,
-            )
-
-        return reset_phases
-
     # ── Full reset ────────────────────────────────────────────────────────────
 
     def reset(self) -> None:
         self._rebuild_controllers()
-        self._violation_count = 0
 
     # ── Oscillation state ─────────────────────────────────────────────────────
 
@@ -549,7 +489,6 @@ class ZeroFeedRegulator(RegulatorBase):
 
     ``control_phase`` selects which phase carries the battery inverter.
     All other phases are controlled via feedforward steering.
-    Cycle-based watchdog resets only phases with persistent individual feed-in.
     Settings are persisted to YAML (ruamel.yaml, comments preserved).
     """
 
@@ -557,7 +496,7 @@ class ZeroFeedRegulator(RegulatorBase):
     _DESC = (
         "Configurable regulation phase (battery phase). "
         "All other phases: feedforward steering. "
-        "Cycle-based watchdog, per-phase individual settings, YAML-persistent."
+        "Per-phase individual settings, YAML-persistent."
     )
 
     def __init__(
@@ -576,7 +515,6 @@ class ZeroFeedRegulator(RegulatorBase):
         self._queue: asyncio.Queue[_Sample] = asyncio.Queue(maxsize=cfg.queue_size())
         self._current_setpoint: int = 0
         self._last_requested_setpoint: int = 0
-        self._watchdog_total: int = 0
         self._last_status: ControlStatus = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
 
         # ── PT1 battery output model ───────────────────────────────────────────
@@ -685,13 +623,6 @@ class ZeroFeedRegulator(RegulatorBase):
 
         raw_target = ff_sum + fb_correction
 
-        # Watchdog (uses last samples of each phase)
-        last_values = {ph: phase_samples[ph][-1].value for ph in ("A", "B", "C")}
-        reset_phases = self._core.check_watchdog(last_values, ff_sum)
-        if reset_phases:
-            self._watchdog_total += 1
-            raw_target = float(min_output_w)
-
         # Lower bound stays in the regulator. Upper clamping is delegated to
         # the battery implementation so hardware-specific constraints are applied
         # in one place (e.g. inverse_max_power, SoC-dependent limits).
@@ -739,7 +670,6 @@ class ZeroFeedRegulator(RegulatorBase):
             osc_a=self._core.osc_state("A"),
             osc_b=self._core.osc_state("B"),
             osc_c=self._core.osc_state("C"),
-            watchdog_resets=self._watchdog_total,
         )
 
         return self._current_setpoint if changed else None
@@ -755,7 +685,6 @@ class ZeroFeedRegulator(RegulatorBase):
                 break
         self._current_setpoint = 0
         self._last_requested_setpoint = 0
-        self._watchdog_total = 0
         self._last_status = ControlStatus(regulator_name=self._NAME, setpoint_w=0)
         self._sp_sent_at = 0.0
         self._sp_target_w = 0.0
@@ -786,14 +715,6 @@ class ZeroFeedRegulator(RegulatorBase):
                 "minimum": -50.0,
                 "maximum": 100.0,
                 "step": 1.0,
-                "group": "General",
-            },
-            "watchdog_cycles": {
-                "type": "integer",
-                "title": "Watchdog cycles",
-                "default": 3,
-                "minimum": 1,
-                "maximum": 20,
                 "group": "General",
             },
             "control_interval_s": {

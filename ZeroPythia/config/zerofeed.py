@@ -157,8 +157,14 @@ class ZeroFeedConfig(BaseModel):
     """PT1 time constant [s] for battery output ramp-up/ramp-down model."""
 
     watchdog_cycles: int = 3
-    """Consecutive control cycles with feed-in outside hysteresis before the
-    watchdog resets only the affected phase controller(s)."""
+    """Number of control cycles for sustained feed-in trigger.
+    Actual trigger time = control_interval_s * watchdog_cycles + 1 [s].
+    Used by ControlRuntime's feed-in watchdog to detect stuck regulation."""
+
+    watchdog_threshold_w: float = -10.0
+    """Grid power threshold [W] for feed-in violation (must be negative).
+    Below this value (e.g., -10 W) counts as feed-in = export.
+    Used by ControlRuntime's feed-in watchdog."""
 
     control_interval_s: float = 3.0
     """Control cycle interval [s]."""
@@ -173,7 +179,16 @@ class ZeroFeedConfig(BaseModel):
     """Per-phase controller configs keyed by phase letter ('A', 'B', 'C').
     Populated automatically with defaults for any missing phase."""
 
-    # ── Validator ─────────────────────────────────────────────────────────────
+    # ── Validators ────────────────────────────────────────────────────────────
+
+    @model_validator(mode="after")
+    def _validate_watchdog_threshold(self) -> ZeroFeedConfig:
+        """Ensure watchdog_threshold_w is negative (feed-in = negative grid power)."""
+        if self.watchdog_threshold_w >= 0:
+            raise ValueError(
+                f"watchdog_threshold_w must be negative (feed-in detection), got {self.watchdog_threshold_w}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _fill_and_validate_phases(self) -> ZeroFeedConfig:
