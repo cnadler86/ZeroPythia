@@ -33,8 +33,8 @@ from ZeroPythia.config.zerofeed import (
     FeedbackPhaseConfig,
     FeedforwardPhaseConfig,
     ZeroFeedConfig,
-    config_to_flat,
-    flat_to_config,
+    apply_config_update,
+    current_settings,
     load_config,
     save_config,
 )
@@ -267,14 +267,21 @@ class _Core:
 
 
 def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
-    """Build flat settings schema entries for one phase."""
-    p = ph_name.lower() + "_"
+    """Build nested-path settings schema entries for one phase.
+
+    Keys use dot-notation mirroring the ``ZeroFeedConfig`` model structure
+    (e.g. ``'phases.B.kp_draw'``).  Virtual boolean fields
+    ``phases.X.osc.holder_enabled`` / ``phases.X.osc.predictor_enabled``
+    map to the presence / absence of the ``holder`` / ``predictor`` sub-model.
+    """
+    base = f"phases.{ph_name}."
+    osc = base + "osc."
     is_fb = isinstance(ph_cfg, FeedbackPhaseConfig)
     group = f"Phase {ph_name} ({'Regulation' if is_fb else 'Steering'})"
     entries: dict[str, Any] = {}
 
     if is_fb:
-        entries[p + "kp_draw"] = {
+        entries[base + "kp_draw"] = {
             "type": "number",
             "title": "Kp draw",
             "default": 0.9,
@@ -283,7 +290,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
             "step": 0.05,
             "group": group,
         }
-        entries[p + "kp_feed_in"] = {
+        entries[base + "kp_feed_in"] = {
             "type": "number",
             "title": "Kp feed-in",
             "default": 1.05,
@@ -292,8 +299,14 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
             "step": 0.05,
             "group": group,
         }
+        entries[base + "feedback_enabled"] = {
+            "type": "boolean",
+            "title": "Feedback enabled",
+            "default": True,
+            "group": group,
+        }
     else:
-        entries[p + "kp"] = {
+        entries[base + "kp"] = {
             "type": "number",
             "title": "Kp",
             "default": 1.0,
@@ -303,7 +316,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
             "group": group,
         }
 
-    entries[p + "kp_hysteresis"] = {
+    entries[base + "kp_hysteresis"] = {
         "type": "number",
         "title": "Kp hysteresis",
         "default": 0.4,
@@ -312,7 +325,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.05,
         "group": group,
     }
-    entries[p + "hysteresis_w"] = {
+    entries[base + "hysteresis_w"] = {
         "type": "number",
         "title": "Hysteresis band [W]",
         "default": 5.0,
@@ -321,13 +334,14 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.5,
         "group": group,
     }
-    entries[p + "holder_enabled"] = {
+    # ── Holder ────────────────────────────────────────────────────────────────
+    entries[osc + "holder_enabled"] = {
         "type": "boolean",
         "title": "Holder active (fast oscillations)",
         "default": False,
         "group": group,
     }
-    entries[p + "holder_min_amplitude"] = {
+    entries[osc + "holder.threshold"] = {
         "type": "number",
         "title": "Holder min. amplitude [W]",
         "default": 30.0,
@@ -336,7 +350,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 5.0,
         "group": group,
     }
-    entries[p + "holder_min_period"] = {
+    entries[osc + "holder.min_period"] = {
         "type": "number",
         "title": "Holder min. period [s]",
         "default": 1.0,
@@ -345,7 +359,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.1,
         "group": group,
     }
-    entries[p + "holder_max_period"] = {
+    entries[osc + "holder.max_period"] = {
         "type": "number",
         "title": "Holder max. period [s]",
         "default": 10.0,
@@ -354,7 +368,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.1,
         "group": group,
     }
-    entries[p + "holder_period_variance"] = {
+    entries[osc + "holder.period_variance"] = {
         "type": "number",
         "title": "Holder period variance",
         "default": 1.2,
@@ -363,7 +377,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.05,
         "group": group,
     }
-    entries[p + "holder_time_threshold"] = {
+    entries[osc + "holder.time_threshold"] = {
         "type": "number",
         "title": "Holder time threshold [s]",
         "default": 0.6,
@@ -372,7 +386,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.05,
         "group": group,
     }
-    entries[p + "holder_min_rising_count"] = {
+    entries[osc + "holder.min_rising_count"] = {
         "type": "integer",
         "title": "Holder min. rising edges",
         "default": 3,
@@ -380,14 +394,14 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "maximum": 20,
         "group": group,
     }
-    entries[p + "holder_merge_mode"] = {
+    entries[osc + "holder.merge_mode"] = {
         "type": "string",
         "title": "Holder merge mode",
         "default": "first",
         "enum": ["first", "mean", "last"],
         "group": group,
     }
-    entries[p + "holder_base_load_window"] = {
+    entries[osc + "holder.base_load_window"] = {
         "type": "integer",
         "title": "Holder baseload window",
         "default": 3,
@@ -395,13 +409,14 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "maximum": 20,
         "group": group,
     }
-    entries[p + "predictor_enabled"] = {
+    # ── Predictor ─────────────────────────────────────────────────────────────
+    entries[osc + "predictor_enabled"] = {
         "type": "boolean",
         "title": "Predictor active (periodic loads)",
         "default": True,
         "group": group,
     }
-    entries[p + "predictor_min_amplitude"] = {
+    entries[osc + "predictor.threshold"] = {
         "type": "number",
         "title": "Predictor min. amplitude [W]",
         "default": 100.0,
@@ -410,7 +425,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 10.0,
         "group": group,
     }
-    entries[p + "predictor_min_period"] = {
+    entries[osc + "predictor.min_period"] = {
         "type": "number",
         "title": "Predictor min. period [s]",
         "default": 8.0,
@@ -419,7 +434,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.1,
         "group": group,
     }
-    entries[p + "predictor_max_period"] = {
+    entries[osc + "predictor.max_period"] = {
         "type": "number",
         "title": "Predictor max. period [s]",
         "default": 120.0,
@@ -428,7 +443,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.1,
         "group": group,
     }
-    entries[p + "predictor_period_variance"] = {
+    entries[osc + "predictor.period_variance"] = {
         "type": "number",
         "title": "Predictor period variance",
         "default": 2.0,
@@ -437,7 +452,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.05,
         "group": group,
     }
-    entries[p + "predictor_time_threshold"] = {
+    entries[osc + "predictor.time_threshold"] = {
         "type": "number",
         "title": "Predictor time threshold [s]",
         "default": 2.0,
@@ -446,7 +461,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "step": 0.05,
         "group": group,
     }
-    entries[p + "predictor_min_rising_count"] = {
+    entries[osc + "predictor.min_rising_count"] = {
         "type": "integer",
         "title": "Predictor min. rising edges",
         "default": 3,
@@ -454,14 +469,14 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "maximum": 20,
         "group": group,
     }
-    entries[p + "predictor_merge_mode"] = {
+    entries[osc + "predictor.merge_mode"] = {
         "type": "string",
         "title": "Predictor merge mode",
         "default": "first",
         "enum": ["first", "mean", "last"],
         "group": group,
     }
-    entries[p + "predictor_base_load_window"] = {
+    entries[osc + "predictor.base_load_window"] = {
         "type": "integer",
         "title": "Predictor baseload window",
         "default": 2,
@@ -469,7 +484,7 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
         "maximum": 20,
         "group": group,
     }
-    entries[p + "predictor_reaction_time"] = {
+    entries[osc + "predictor.reaction_time"] = {
         "type": "number",
         "title": "Predictor reaction time [s]",
         "default": 4.0,
@@ -752,11 +767,11 @@ class ZeroFeedRegulator(RegulatorBase):
         return schema
 
     def get_current_settings(self) -> dict[str, Any]:
-        return config_to_flat(self._cfg)
+        return current_settings(self._cfg)
 
     def apply_settings(self, data: dict[str, Any]) -> None:
         old_cp = self._cfg.control_phase
-        new_cfg = flat_to_config(data, self._cfg)
+        new_cfg = apply_config_update(data, self._cfg)
         self._cfg = new_cfg
         self._core = _Core(new_cfg)
         self._queue = asyncio.Queue(maxsize=new_cfg.queue_size())

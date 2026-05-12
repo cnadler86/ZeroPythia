@@ -670,6 +670,26 @@ function renderOscInline(badgeId, detId, limId, osc) {
   }
 }
 
+// ── Nested-path helpers ───────────────────────────────────────────────────
+// Schema keys use dot-notation (e.g. 'phases.B.kp_draw') mirroring the
+// Pydantic model.  These helpers read/write nested objects by that path.
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((cur, k) => (cur != null ? cur[k] : undefined), obj);
+}
+
+function setNestedValue(obj, path, value) {
+  const keys = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (cur[keys[i]] == null || typeof cur[keys[i]] !== 'object') cur[keys[i]] = {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = value;
+}
+
+// Sanitize a dot-notation key to a valid HTML id fragment (replace . with -)
+function keyToId(key) { return key.replace(/\./g, '-'); }
+
 // ── Regulator settings panel ───────────────────────────────────────────────
 async function fetchRegulators() {
   const res = await fetch('/api/regulators');
@@ -746,28 +766,28 @@ function renderConfigPanel() {
   }
 
   const phase = selectedConfigTarget;
-  const prefix = phase.toLowerCase() + '_';
+  const oscPrefix = `phases.${phase}.osc.`;
   const groupName = Object.keys(groups).find(g => g.startsWith('Phase ' + phase));
   const allPhaseFields = groupName ? (groups[groupName] || []) : [];
 
   const phaseBaseFields = allPhaseFields.filter(([key]) => {
-    if (key === prefix + 'holder_enabled') return true;
-    if (key === prefix + 'predictor_enabled') return true;
-    if (key.startsWith(prefix + 'holder_')) return false;
-    if (key.startsWith(prefix + 'predictor_')) return false;
+    if (key === oscPrefix + 'holder_enabled') return true;
+    if (key === oscPrefix + 'predictor_enabled') return true;
+    if (key.startsWith(oscPrefix + 'holder.')) return false;
+    if (key.startsWith(oscPrefix + 'predictor.')) return false;
     return true;
   });
   const phaseHolderFields = allPhaseFields.filter(([key]) => {
-    if (key === prefix + 'holder_enabled') return false;
-    return key.startsWith(prefix + 'holder_');
+    if (key === oscPrefix + 'holder_enabled') return false;
+    return key.startsWith(oscPrefix + 'holder.');
   });
   const phasePredictorFields = allPhaseFields.filter(([key]) => {
-    if (key === prefix + 'predictor_enabled') return false;
-    return key.startsWith(prefix + 'predictor_');
+    if (key === oscPrefix + 'predictor_enabled') return false;
+    return key.startsWith(oscPrefix + 'predictor.');
   });
 
-  const holderEnabled = !!reg.current_settings?.[prefix + 'holder_enabled'];
-  const predictorEnabled = !!reg.current_settings?.[prefix + 'predictor_enabled'];
+  const holderEnabled = !!getNestedValue(reg.current_settings, oscPrefix + 'holder_enabled');
+  const predictorEnabled = !!getNestedValue(reg.current_settings, oscPrefix + 'predictor_enabled');
 
   settingsFieldBuckets.phaseBase = phaseBaseFields;
   settingsFieldBuckets.phaseHolder = holderEnabled ? phaseHolderFields : [];
@@ -801,17 +821,18 @@ function fillSettingsContainer(containerId, fields, cur) {
   if (!el) return;
   if (!fields || !fields.length) { el.innerHTML = ''; return; }
   el.innerHTML = fields.map(([key, def]) => {
-    const val = cur[key] ?? def.default ?? '';
+    const val = getNestedValue(cur, key) ?? def.default ?? '';
+    const id = 's-' + keyToId(key);
     if (def.type === 'boolean') {
       return `<label style="margin-top:5px;display:flex;align-items:center;gap:5px">
-        <input type="checkbox" id="s_${key}" ${val?'checked':''} style="width:auto"> ${def.title}</label>`;
+        <input type="checkbox" id="${id}" data-key="${key}" ${val?'checked':''} style="width:auto"> ${def.title}</label>`;
     }
     if (def.type === 'string' && def.enum) {
       const opts = def.enum.map(v => `<option value="${v}" ${v===String(val)?'selected':''}>${v}</option>`).join('');
-      return `<label>${def.title}</label><select id="s_${key}">${opts}</select>`;
+      return `<label>${def.title}</label><select id="${id}" data-key="${key}">${opts}</select>`;
     }
     return `<label>${def.title}</label>
-      <input type="number" id="s_${key}" value="${val}"
+      <input type="number" id="${id}" data-key="${key}" value="${val}"
         min="${def.minimum??''}" max="${def.maximum??''}" step="${def.step??'any'}"/>`;
   }).join('');
 }
@@ -821,11 +842,13 @@ function collectSettingsForFields(fields) {
   if (!reg || !fields?.length) return null;
   const settings = {};
   fields.forEach(([key, def]) => {
-    const el = document.getElementById('s_'+key);
+    const el = document.getElementById('s-' + keyToId(key));
     if (!el) return;
-    if (def.type==='boolean') settings[key] = el.checked;
-    else if (def.type==='string') settings[key] = el.value;
-    else settings[key] = Number(el.value);
+    let value;
+    if (def.type==='boolean') value = el.checked;
+    else if (def.type==='string') value = el.value;
+    else value = Number(el.value);
+    setNestedValue(settings, key, value);
   });
   return {name: reg.name, settings};
 }

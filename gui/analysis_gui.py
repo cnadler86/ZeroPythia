@@ -33,7 +33,13 @@ from simulator.batch_runner import (
     run_simulation,
 )
 from simulator.grid_simulator import clean_csv_data, load_csv
-from ZeroPythia.config.zerofeed import ZeroFeedConfig, config_to_flat, flat_to_config
+from ZeroPythia.config.zerofeed import (
+    ZeroFeedConfig,
+    apply_config_update,
+    current_settings,
+    get_nested,
+    set_nested,
+)
 from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
 
 logger = logging.getLogger(__name__)
@@ -139,7 +145,7 @@ class ZeroFeedV4GUI:
         for w in self._param_frame.winfo_children():
             w.destroy()
         self._param_vars.clear()
-        flat = config_to_flat(self._config)
+        settings_data = current_settings(self._config)
         current_group = ""
         for key, entry in self._schema.items():
             group = entry.get("group", "")
@@ -152,7 +158,7 @@ class ZeroFeedV4GUI:
             row = ttk.Frame(self._param_frame)
             row.pack(fill=tk.X, padx=5, pady=1)
             ttk.Label(row, text=entry.get("title", key), width=28, anchor="w").pack(side=tk.LEFT)
-            current_val = flat.get(key, entry.get("default", ""))
+            current_val = get_nested(settings_data, key, entry.get("default", ""))
             var = tk.StringVar(value=str(current_val))
             self._param_vars[key] = var
             if entry.get("type") == "boolean":
@@ -169,10 +175,10 @@ class ZeroFeedV4GUI:
 
     def _apply_params(self) -> bool:
         try:
-            flat: Dict[str, Any] = {}
+            data: Dict[str, Any] = {}
             for key, var in self._param_vars.items():
-                flat[key] = _parse_value(var.get(), self._schema.get(key, {}))
-            self._config = flat_to_config(flat, self._config)
+                set_nested(data, key, _parse_value(var.get(), self._schema.get(key, {})))
+            self._config = apply_config_update(data, self._config)
             self._schema = ZeroFeedRegulator(settings=self._config).settings_schema()
             return True
         except Exception as e:

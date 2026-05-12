@@ -229,129 +229,104 @@ class ZeroFeedConfig(BaseModel):
         return self.control_phase
 
 
-# ── Flat settings bridge (for dashboard API) ──────────────────────────────────
+# ── Nested settings API (replaces former flat bridge) ─────────────────────────
 
 
-def config_to_flat(cfg: ZeroFeedConfig) -> dict[str, Any]:
-    """Serialize config to a flat ``{key: value}`` dict for the dashboard API."""
-    holder_defaults = BaseloadHolderSettings()
-    predictor_defaults = BaseloadPredictorSettings()
+def get_nested(obj: Any, path: str, default: Any = None) -> Any:
+    """Get a value from a nested dict using dot-notation path (e.g. ``'phases.B.kp_draw'``)."""
+    for key in path.split("."):
+        if not isinstance(obj, dict):
+            return default
+        obj = obj.get(key)
+        if obj is None:
+            return default
+    return obj if obj is not None else default
 
-    result: dict[str, Any] = {
-        "control_phase": cfg.control_phase,
-        "target_power_w": cfg.target_power_w,
-        "watchdog_cycles": cfg.watchdog_cycles,
-        "control_interval_s": cfg.control_interval_s,
-        "battery_dead_time_s": cfg.battery_dead_time_s,
-        "battery_pt1_tau_s": cfg.battery_pt1_tau_s,
-    }
-    for ph in _ALL_PHASES:
-        ph_cfg = cfg.phases.get(ph)
-        if ph_cfg is None:
-            continue
-        p = ph.lower() + "_"
-        if isinstance(ph_cfg, FeedbackPhaseConfig):
-            result[p + "feedback_enabled"] = ph_cfg.feedback_enabled
-            result[p + "kp_draw"] = ph_cfg.kp_draw
-            result[p + "kp_feed_in"] = ph_cfg.kp_feed_in
+
+def set_nested(d: dict[str, Any], path: str, value: Any) -> None:
+    """Set a value in a nested dict using dot-notation path."""
+    keys = path.split(".")
+    cur = d
+    for key in keys[:-1]:
+        cur = cur.setdefault(key, {})
+    cur[keys[-1]] = value
+
+
+def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
+    """Recursively merge *source* into *target* in-place."""
+    for key, value in source.items():
+        if key in target and isinstance(target[key], dict) and isinstance(value, dict):
+            _deep_merge(target[key], value)
         else:
-            result[p + "kp"] = ph_cfg.kp
-        result[p + "kp_hysteresis"] = ph_cfg.kp_hysteresis
-        result[p + "hysteresis_w"] = ph_cfg.hysteresis_w
-        holder = ph_cfg.osc.holder
-        predictor = ph_cfg.osc.predictor
-
-        result[p + "holder_enabled"] = holder is not None
-        result[p + "holder_min_amplitude"] = (
-            holder.threshold if holder is not None else holder_defaults.threshold
-        )
-        result[p + "holder_min_period"] = (
-            holder.min_period if holder is not None else holder_defaults.min_period
-        )
-        result[p + "holder_max_period"] = (
-            holder.max_period if holder is not None else holder_defaults.max_period
-        )
-        result[p + "holder_period_variance"] = (
-            holder.period_variance if holder is not None else holder_defaults.period_variance
-        )
-        result[p + "holder_time_threshold"] = (
-            holder.time_threshold if holder is not None else holder_defaults.time_threshold
-        )
-        result[p + "holder_min_rising_count"] = (
-            holder.min_rising_count if holder is not None else holder_defaults.min_rising_count
-        )
-        result[p + "holder_merge_mode"] = (
-            holder.merge_mode if holder is not None else holder_defaults.merge_mode
-        )
-        result[p + "holder_base_load_window"] = (
-            holder.base_load_window if holder is not None else holder_defaults.base_load_window
-        )
-
-        result[p + "predictor_enabled"] = predictor is not None
-        result[p + "predictor_min_amplitude"] = (
-            predictor.threshold if predictor is not None else predictor_defaults.threshold
-        )
-        result[p + "predictor_min_period"] = (
-            predictor.min_period if predictor is not None else predictor_defaults.min_period
-        )
-        result[p + "predictor_max_period"] = (
-            predictor.max_period if predictor is not None else predictor_defaults.max_period
-        )
-        result[p + "predictor_period_variance"] = (
-            predictor.period_variance
-            if predictor is not None
-            else predictor_defaults.period_variance
-        )
-        result[p + "predictor_time_threshold"] = (
-            predictor.time_threshold if predictor is not None else predictor_defaults.time_threshold
-        )
-        result[p + "predictor_min_rising_count"] = (
-            predictor.min_rising_count
-            if predictor is not None
-            else predictor_defaults.min_rising_count
-        )
-        result[p + "predictor_merge_mode"] = (
-            predictor.merge_mode if predictor is not None else predictor_defaults.merge_mode
-        )
-        result[p + "predictor_base_load_window"] = (
-            predictor.base_load_window
-            if predictor is not None
-            else predictor_defaults.base_load_window
-        )
-        result[p + "predictor_reaction_time"] = (
-            predictor.reaction_time if predictor is not None else predictor_defaults.reaction_time
-        )
-    return result
+            target[key] = value
 
 
-def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig:
-    """Apply a flat settings dict on top of an existing config, return new validated config.
+def _strip_virtual_osc_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Remove virtual ``holder_enabled`` / ``predictor_enabled`` fields from a nested dict.
 
-    If ``control_phase`` changes, the roles of the involved phases are swapped;
-    existing per-phase tuning values are preserved where the role is unchanged.
+    These fields are added by :func:`current_settings` for UI convenience.
+    Before merging back into the Pydantic model they must be converted:
+
+    - ``holder_enabled=True``  → ensure ``holder`` is a dict (defaults will fill the rest)
+    - ``holder_enabled=False`` → ``holder=None`` (disabled)
     """
+    import copy
+
+    d = copy.deepcopy(data)
+    for ph in _ALL_PHASES:
+        osc = d.get("phases", {}).get(ph, {}).get("osc")
+        if not isinstance(osc, dict):
+            continue
+        for field in ("holder", "predictor"):
+            enabled = osc.pop(f"{field}_enabled", None)
+            if enabled is True and osc.get(field) is None:
+                osc[field] = {}
+            elif enabled is False:
+                osc[field] = None
+    return d
+
+
+def current_settings(cfg: ZeroFeedConfig) -> dict[str, Any]:
+    """Return the config as a nested dict for the settings API.
+
+    Uses :meth:`~pydantic.BaseModel.model_dump` directly.  Adds virtual
+    ``holder_enabled`` / ``predictor_enabled`` boolean fields to each phase's
+    ``osc`` dict so the dashboard can render enable/disable checkboxes without
+    needing to inspect ``null`` vs. object itself.
+    """
+    d = cfg.model_dump()
+    for ph in _ALL_PHASES:
+        osc = d.get("phases", {}).get(ph, {}).get("osc")
+        if isinstance(osc, dict):
+            osc["holder_enabled"] = osc.get("holder") is not None
+            osc["predictor_enabled"] = osc.get("predictor") is not None
+    return d
+
+
+def apply_config_update(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig:
+    """Apply a (possibly partial) nested settings dict on top of *base*.
+
+    Uses :meth:`~pydantic.BaseModel.model_dump` + deep-merge +
+    :meth:`~pydantic.BaseModel.model_validate` – no manual field mapping needed.
+
+    Handles ``control_phase`` role swap: if ``data["control_phase"]`` differs
+    from the current phase the old regulation phase switches to feedforward and
+    the new one switches to feedback, preserving shared tuning values.
+
+    Virtual ``holder_enabled`` / ``predictor_enabled`` fields (added by
+    :func:`current_settings`) are accepted and converted before validation.
+    """
+    old_cp = base.control_phase
+    new_cp = str(data.get("control_phase", old_cp))
+
     raw = base.model_dump()
 
-    # ── Global fields ──────────────────────────────────────────────────────────
-    for key in (
-        "target_power_w",
-        "watchdog_cycles",
-        "control_interval_s",
-        "sampling_interval_s",
-        "battery_dead_time_s",
-        "battery_pt1_tau_s",
-    ):
-        if key in data:
-            raw[key] = data[key]
-
-    # ── control_phase change → swap roles ─────────────────────────────────────
-    new_cp = str(data.get("control_phase", raw["control_phase"]))
-    old_cp = raw["control_phase"]
+    # ── Control phase swap ────────────────────────────────────────────────────
     if new_cp != old_cp and new_cp in _ALL_PHASES:
         raw["control_phase"] = new_cp
         phases = raw["phases"]
-        # Old feedback → feedforward (keep osc, drop fb-specific keys)
-        old_fb = phases.get(old_cp, {})
+
+        old_fb = phases[old_cp]
         phases[old_cp] = {
             "role": "feedforward",
             "kp": 1.0,
@@ -359,8 +334,8 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig
             "hysteresis_w": old_fb.get("hysteresis_w", 10.0),
             "osc": old_fb.get("osc", {}),
         }
-        # New feedback ← feedforward (keep osc, add fb-specific keys with defaults)
-        new_fb = phases.get(new_cp, {})
+
+        new_fb = phases[new_cp]
         phases[new_cp] = {
             "role": "feedback",
             "kp_draw": 0.9,
@@ -371,80 +346,9 @@ def flat_to_config(data: dict[str, Any], base: ZeroFeedConfig) -> ZeroFeedConfig
             "osc": new_fb.get("osc", {}),
         }
 
-    # ── Per-phase fields ───────────────────────────────────────────────────────
-    def _ensure_osc_dict(osc: dict[str, Any], key: str) -> dict[str, Any]:
-        current = osc.get(key)
-        if not isinstance(current, dict):
-            current = {}
-            osc[key] = current
-        return current
-
-    for ph in _ALL_PHASES:
-        ph_raw = raw["phases"].get(ph)
-        if ph_raw is None:
-            continue
-        p = ph.lower() + "_"
-        role = ph_raw.get("role", "feedforward")
-        if role == "feedback":
-            for field in ("kp_draw", "kp_feed_in", "feedback_enabled"):
-                if p + field in data:
-                    ph_raw[field] = data[p + field]
-        else:
-            if p + "kp" in data:
-                ph_raw["kp"] = data[p + "kp"]
-        for field in ("kp_hysteresis", "hysteresis_w"):
-            if p + field in data:
-                ph_raw[field] = data[p + field]
-        osc = ph_raw.setdefault("osc", {})
-        if p + "holder_enabled" in data:
-            if data[p + "holder_enabled"]:
-                # Enable: keep existing settings or use defaults
-                if osc.get("holder") is None:
-                    osc["holder"] = {}  # triggers BaseloadHolderSettings defaults
-            else:
-                osc["holder"] = None
-        # Holder min amplitude (threshold)
-        if p + "holder_min_amplitude" in data and osc.get("holder") is not None:
-            holder = _ensure_osc_dict(osc, "holder")
-            holder["threshold"] = data[p + "holder_min_amplitude"]
-        for src, target in (
-            ("holder_min_period", "min_period"),
-            ("holder_max_period", "max_period"),
-            ("holder_period_variance", "period_variance"),
-            ("holder_time_threshold", "time_threshold"),
-            ("holder_min_rising_count", "min_rising_count"),
-            ("holder_merge_mode", "merge_mode"),
-            ("holder_base_load_window", "base_load_window"),
-        ):
-            key = p + src
-            if key in data and osc.get("holder") is not None:
-                holder = _ensure_osc_dict(osc, "holder")
-                holder[target] = data[key]
-
-        if p + "predictor_enabled" in data:
-            if data[p + "predictor_enabled"]:
-                if osc.get("predictor") is None:
-                    osc["predictor"] = {}  # triggers BaseloadPredictorSettings defaults
-            else:
-                osc["predictor"] = None
-        # Predictor min amplitude (threshold)
-        if p + "predictor_min_amplitude" in data and osc.get("predictor") is not None:
-            predictor = _ensure_osc_dict(osc, "predictor")
-            predictor["threshold"] = data[p + "predictor_min_amplitude"]
-        for src, target in (
-            ("predictor_min_period", "min_period"),
-            ("predictor_max_period", "max_period"),
-            ("predictor_period_variance", "period_variance"),
-            ("predictor_time_threshold", "time_threshold"),
-            ("predictor_min_rising_count", "min_rising_count"),
-            ("predictor_merge_mode", "merge_mode"),
-            ("predictor_base_load_window", "base_load_window"),
-            ("predictor_reaction_time", "reaction_time"),
-        ):
-            key = p + src
-            if key in data and osc.get("predictor") is not None:
-                predictor = _ensure_osc_dict(osc, "predictor")
-                predictor[target] = data[key]
+    # ── Deep-merge and validate ───────────────────────────────────────────────
+    clean = _strip_virtual_osc_fields(data)
+    _deep_merge(raw, clean)
 
     return ZeroFeedConfig.model_validate(raw)
 
