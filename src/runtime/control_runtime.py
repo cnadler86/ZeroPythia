@@ -40,6 +40,7 @@ from .models import (
     DeviceMode,
     GridSample,
     RegulatorInfo,
+    ZFIState,
 )
 from .sampler import GridMeterProtocol, RuntimeSampler
 
@@ -114,19 +115,9 @@ class ControlRuntime:
         self._full_soc_resume_threshold_w = full_soc_resume_threshold_w
         self._high_soc_charge_limit_pct = high_soc_charge_limit_pct
         self._high_soc_charge_limit_w = high_soc_charge_limit_w
-        # ZFI pause states
-        self._zfi_paused_low_soc: bool = False
-        self._zfi_paused_full_battery: bool = False
-        self._full_battery_resume_since: Optional[float] = (
-            None  # monotonic ts when threshold first met
-        )
-        # ZFI no-grid fallback: Shelly data unavailable
-        self._zfi_paused_no_grid: bool = False
-        # ZFI soft-limit: SOC in hysteresis, output capped at PV power
-        self._zfi_soc_limited: bool = False
+        # ZFI state machine – single source of truth for discharge-pause logic
+        self._zfi_state: ZFIState = ZFIState.INACTIVE
         self._zfi_soc_limit_cap_w: int = 0
-        # ZFI soft-limit but report as IDLE to MQTT: SoC closer to min_soc than to resume threshold
-        self._zfi_soc_limited_report_idle: bool = False
         # Regulator registry
         self._regulators: dict[str, RegulatorBase] = {}
         self._active_regulator: Optional[RegulatorBase] = None
@@ -263,12 +254,9 @@ class ControlRuntime:
                 pw = self._min_discharge_w  # device minimum as sensible default
             self._charge_power_w = pw
             self._ac_charge_requested_power_w = pw
-            # Clear all ZFI transient states
-            self._zfi_paused_low_soc = False
-            self._zfi_paused_full_battery = False
-            self._zfi_soc_limited = False
+            # Clear ZFI state
+            self._zfi_state = ZFIState.INACTIVE
             self._zfi_soc_limit_cap_w = 0
-            self._zfi_soc_limited_report_idle = False
             if self._active_regulator:
                 self._active_regulator.reset()
             setpoint = await self._battery.start_charge()
@@ -279,12 +267,9 @@ class ControlRuntime:
 
         elif mode == DeviceMode.IDLE:
             self._ac_charge_requested_power_w = None
-            # Clear all ZFI transient states
-            self._zfi_paused_low_soc = False
-            self._zfi_paused_full_battery = False
-            self._zfi_soc_limited = False
+            # Clear ZFI state
+            self._zfi_state = ZFIState.INACTIVE
             self._zfi_soc_limit_cap_w = 0
-            self._zfi_soc_limited_report_idle = False
             if self._active_regulator:
                 self._active_regulator.reset()
             await self._battery.stop()
@@ -292,13 +277,16 @@ class ControlRuntime:
         elif mode == DeviceMode.DISCHARGE_ZERO_FEED:
             self._charge_power_w = None
             self._ac_charge_requested_power_w = None
+            self._zfi_state = ZFIState.RUNNING
+            self._zfi_soc_limit_cap_w = 0
             if self._active_regulator:
                 self._active_regulator.reset()
-            # The regulator loop will start the battery on its first compute_setpoint call.
             await self._battery.start_discharge()
 
         elif mode == DeviceMode.AUTO:
             self._ac_charge_requested_power_w = None
+            self._zfi_state = ZFIState.INACTIVE
+            self._zfi_soc_limit_cap_w = 0
             # AUTO: don't touch the battery yet – the AutoModeManager drives it
             if self._active_regulator:
                 self._active_regulator.reset()
@@ -318,17 +306,10 @@ class ControlRuntime:
             self._max_discharge_w = max_discharge_w
 
         if mode == DeviceMode.AC_CHARGE:
-            # AC charging is always permitted – it fills the battery, so the
-            # low-SoC ZFI pause is no longer relevant.  Clear all ZFI pause/limit
-            # flags so the dashboard reflects the actual state and the guards do
-            # not re-interfere on the next tick.
-            self._zfi_paused_low_soc = False
-            self._zfi_paused_full_battery = False
-            self._zfi_paused_no_grid = False
-            self._zfi_soc_limited = False
+            # Clear ZFI state – AC charging fills the battery, so any prior
+            # pause/limit state is no longer relevant.
+            self._zfi_state = ZFIState.INACTIVE
             self._zfi_soc_limit_cap_w = 0
-            self._zfi_soc_limited_report_idle = False
-            self._full_battery_resume_since = None
             # Explicit power wins; fall back to runtime minimum (never silently
             # resurrect a stale high-power setpoint via "pw = value or old").
             pw = charge_power_w if charge_power_w is not None else self._min_discharge_w
@@ -346,6 +327,8 @@ class ControlRuntime:
 
         elif mode == DeviceMode.IDLE:
             self._ac_charge_requested_power_w = None
+            self._zfi_state = ZFIState.INACTIVE
+            self._zfi_soc_limit_cap_w = 0
             if self._active_regulator:
                 self._active_regulator.reset()
             await self._battery.stop()
@@ -355,14 +338,11 @@ class ControlRuntime:
             self._ac_charge_requested_power_w = None
             if self._auto_effective_mode != DeviceMode.DISCHARGE_ZERO_FEED:
                 # Only reset/restart when actually switching into this mode.
-                # Respect the low-SoC guard: if the pause is active, keep the
-                # battery stopped instead of starting a (suppressed) discharge.
                 if self._active_regulator:
                     self._active_regulator.reset()
-                if self._zfi_paused_low_soc:
-                    await self._battery.stop()
-                else:
-                    await self._battery.start_discharge()
+                self._zfi_state = ZFIState.RUNNING
+                self._zfi_soc_limit_cap_w = 0
+                await self._battery.start_discharge()
 
         self._auto_effective_mode = mode
 
@@ -435,49 +415,42 @@ class ControlRuntime:
                 # 1. Sample hardware
                 sample = await self._sampler.read()
 
-                # 2. SoC-based guard logic (updates _zfi_paused_low_soc / _zfi_paused_full_battery)
+                # 2. SoC-based ZFI state machine
                 if sample is not None:
                     await self._update_soc_guards(sample, time.monotonic())
 
-                # 3. Derive whether ZFI regulation is actually active (mode + not paused)
-                _discharge_mode = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
+                # 3. No-grid fallback: no Shelly data while in ZFI mode
+                _in_zfi = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
                     self._mode == DeviceMode.AUTO
                     and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
                 )
-                _zfi_suppressed = (
-                    self._zfi_paused_low_soc
-                    or self._zfi_paused_full_battery
-                    or self._zfi_paused_no_grid
-                )
-                _discharge_active = _discharge_mode and not _zfi_suppressed
-
-                # 3b. Shelly/grid-meter fallback: no valid data → hold at min_discharge_w
-                if _discharge_mode:
-                    if sample is None and not self._zfi_paused_no_grid:
+                if _in_zfi:
+                    if sample is None and self._zfi_state != ZFIState.PAUSED_NO_GRID:
                         logger.warning(
-                            "ZFI: Shelly data unavailable – entering no-grid fallback "
+                            "ZFI: Shelly data unavailable – no-grid fallback "
                             "(battery held at %d W)",
                             self._min_discharge_w,
                         )
-                        self._zfi_paused_no_grid = True
+                        self._zfi_state = ZFIState.PAUSED_NO_GRID
                         if self._active_regulator:
                             self._active_regulator.reset()
                         await self._battery.start_discharge()
-                        _discharge_active = False  # regulator suspended
-                    elif sample is not None and self._zfi_paused_no_grid:
+                    elif sample is not None and self._zfi_state == ZFIState.PAUSED_NO_GRID:
                         logger.info("ZFI: Shelly data restored – resuming zero-feed regulation")
-                        self._zfi_paused_no_grid = False
+                        self._zfi_state = ZFIState.RUNNING
                         if self._active_regulator:
                             self._active_regulator.reset()
                         await self._battery.start_discharge()
-                        # Recalculate; now data is available so no longer suppressed
-                        _zfi_suppressed = self._zfi_paused_low_soc or self._zfi_paused_full_battery
-                        _discharge_active = _discharge_mode and not _zfi_suppressed
-                elif self._zfi_paused_no_grid:
-                    # Left ZFI mode (e.g. switched to AC_CHARGE/IDLE) – clear flag
-                    self._zfi_paused_no_grid = False
+                        # Re-run SoC guards so this tick's sample is fully evaluated
+                        await self._update_soc_guards(sample, time.monotonic())
+                elif self._zfi_state == ZFIState.PAUSED_NO_GRID:
+                    # Left ZFI mode while in no-grid fallback – clean up
+                    self._zfi_state = ZFIState.INACTIVE
 
-                # 4. Forward sample to regulator (only when actively regulating)
+                # 4. Discharge-active: regulator runs only in RUNNING or SOFT_LIMITED
+                _discharge_active = self._zfi_state in (ZFIState.RUNNING, ZFIState.SOFT_LIMITED)
+
+                # 4a. Forward sample to regulator
                 if sample is not None and _discharge_active and self._active_regulator is not None:
                     await self._active_regulator.add_sample(sample)
 
@@ -492,10 +465,11 @@ class ControlRuntime:
                 if _due:
                     # 5a. Regulator setpoint (only when discharge active + regulator present)
                     if _discharge_active and self._active_regulator is not None:
-                        # Apply SOC-based soft-limit cap when in hysteresis zone
+                        # Apply soft-limit cap when in SoC hysteresis zone
                         effective_max_w = (
                             min(self._max_discharge_w, self._zfi_soc_limit_cap_w)
-                            if self._zfi_soc_limited and self._zfi_soc_limit_cap_w > 0
+                            if self._zfi_state == ZFIState.SOFT_LIMITED
+                            and self._zfi_soc_limit_cap_w > 0
                             else self._max_discharge_w
                         )
                         try:
@@ -563,42 +537,30 @@ class ControlRuntime:
             )
 
     async def _update_soc_guards(self, sample: "GridSample", now_mono: float) -> None:
-        """Update ZFI pause/limit flags based on current SoC, PV power, and grid.
+        """ZFI state machine: transition _zfi_state from SoC, PV, and grid data.
 
-        Low-SoC soft-bypass (NEW)
-        -------------------------
-        Within the hysteresis band [min_soc, min_soc + hysteresis):
+        Called every tick when a valid sample is available.  All ZFI pause and
+        soft-limit logic is expressed as explicit state transitions; there are no
+        separate boolean flags.
 
-        * **Full pause** – SoC ≤ min_soc AND no PV available:
-          Stop battery output completely.  Resumes to soft-limit as soon as
-          SoC rises above min_soc OR PV becomes available.
+        State diagram (simplified)
+        --------------------------
+        INACTIVE ←→ (set by set_mode / apply_effective_mode)
 
-        * **Soft-limit** – in hysteresis zone (SoC > min_soc OR PV available):
-          ZFI regulator still runs but max_output_w is capped at
-          ``max(min_discharge_w, min(solar_input_w, max_discharge_w))``.
-          The battery can only discharge up to what PV currently produces,
-          ensuring the battery slowly charges from PV surplus rather than
-          drawing from the grid.  If solar_input_w == 0 the cap equals
-          min_discharge_w (minimum discharge only).
+        RUNNING → SOFT_LIMITED    when SoC ≤ min_soc, PV available
+        RUNNING → PAUSED_LOW_SOC  when SoC ≤ min_soc, no PV
+        RUNNING → PAUSED_FULL     when SoC ≥ max_soc, low household load
 
-        * **Full resume** – SoC ≥ min_soc + hysteresis:
-          Remove the cap and run ZFI at full power.
+        SOFT_LIMITED → RUNNING        when SoC ≥ min_soc + hysteresis
+        SOFT_LIMITED → PAUSED_LOW_SOC when SoC ≤ min_soc, PV disappears
 
-        Full-battery rest
-        -----------------
-        * Enter rest when SoC >= device max_soc.
-        * Resume when total_grid_w >= full_soc_resume_threshold_w has been
-          sustained for full_soc_resume_delay_s seconds.
-        * Leaving ZFI mode (AC charge / IDLE) also clears the rest flag.
+        PAUSED_LOW_SOC → RUNNING      when SoC ≥ min_soc + hysteresis
+        PAUSED_LOW_SOC → SOFT_LIMITED when SoC > min_soc OR PV appears
+
+        PAUSED_FULL → RUNNING when SoC < max_soc OR household load > threshold
+
+        PAUSED_NO_GRID transitions are handled in the main loop.
         """
-        soc = sample.soc_percent
-        solar_w = float(sample.solar_input_w or 0.0)
-
-        _discharge_mode = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
-            self._mode == DeviceMode.AUTO
-            and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
-        )
-
         # Guard: limits must be initialised (start() calls _init_soc_limits)
         if (
             self._min_soc_pct is None
@@ -607,165 +569,149 @@ class ControlRuntime:
         ):
             return
 
-        # ── Low-SoC soft-bypass ───────────────────────────────────────────────
-        if soc is not None:
-            # Calculate midpoint of hysteresis band: if SoC <= midpoint, report as IDLE to MQTT
-            soc_midpoint = self._min_soc_pct + self._min_soc_hysteresis_pct / 2
+        in_zfi = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
+            self._mode == DeviceMode.AUTO
+            and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
+        )
 
-            if self._zfi_paused_low_soc:
-                # Currently in full pause – check whether we can leave it
+        if not in_zfi:
+            # Leaving ZFI mode → reset state
+            if self._zfi_state != ZFIState.INACTIVE:
+                self._zfi_state = ZFIState.INACTIVE
+                self._zfi_soc_limit_cap_w = 0
+            return
+
+        # PAUSED_NO_GRID is managed by the main loop; skip SoC transitions for it.
+        if self._zfi_state == ZFIState.PAUSED_NO_GRID:
+            return
+
+        # Auto-initialise: if we're in ZFI mode but state is still INACTIVE (e.g.
+        # when _mode was set directly without going through set_mode()), start RUNNING.
+        if self._zfi_state == ZFIState.INACTIVE:
+            self._zfi_state = ZFIState.RUNNING
+
+        soc = sample.soc_percent
+        solar_w = float(sample.solar_input_w or 0.0)
+
+        # ── Low-SoC state machine ─────────────────────────────────────────────
+        if soc is not None:
+            if self._zfi_state == ZFIState.PAUSED_LOW_SOC:
                 if soc >= self._min_soc_resume_pct:
-                    # Directly to full resume (hysteresis exceeded)
                     logger.info(
-                        "ZFI fully resumed from full pause: SoC %d%% >= %d%%",
+                        "ZFI resumed: SoC %d%% >= resume threshold %d%%",
                         soc,
                         self._min_soc_resume_pct,
                     )
-                    self._zfi_paused_low_soc = False
-                    self._zfi_soc_limited = False
+                    self._zfi_state = ZFIState.RUNNING
                     self._zfi_soc_limit_cap_w = 0
-                    if _discharge_mode:
-                        if self._active_regulator:
-                            self._active_regulator.reset()
-                        await self._battery.start_discharge()
-
+                    if self._active_regulator:
+                        self._active_regulator.reset()
+                    await self._battery.start_discharge()
                 elif soc > self._min_soc_pct or solar_w > 0:
-                    # SoC rose above min_soc OR PV appeared → enter soft-limit
                     cap = max(self._min_discharge_w, min(int(solar_w), self._max_discharge_w))
                     logger.info(
-                        "ZFI soft-limit (from full pause): SoC %d%% or solar %.0fW → cap %dW",
+                        "ZFI soft-limit (from pause): SoC %d%%, solar %.0fW → cap %dW",
                         soc,
                         solar_w,
                         cap,
                     )
-                    self._zfi_paused_low_soc = False
-                    self._zfi_soc_limited = True
+                    self._zfi_state = ZFIState.SOFT_LIMITED
                     self._zfi_soc_limit_cap_w = cap
-                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
-                    if _discharge_mode:
-                        if self._active_regulator:
-                            self._active_regulator.reset()
-                        await self._battery.start_discharge()
+                    if self._active_regulator:
+                        self._active_regulator.reset()
+                    await self._battery.start_discharge()
+                # else: still fully paused – no action
 
-            elif self._zfi_soc_limited:
-                # Currently in soft-limit – check for transitions
+            elif self._zfi_state == ZFIState.SOFT_LIMITED:
                 if soc >= self._min_soc_resume_pct:
-                    # Fully exit soft-limit
                     logger.info(
                         "ZFI soft-limit ended: SoC %d%% >= %d%%",
                         soc,
                         self._min_soc_resume_pct,
                     )
-                    self._zfi_soc_limited = False
+                    self._zfi_state = ZFIState.RUNNING
                     self._zfi_soc_limit_cap_w = 0
-                    self._zfi_soc_limited_report_idle = False
-                    if _discharge_mode and self._active_regulator:
+                    if self._active_regulator:
                         self._active_regulator.reset()
-                    if _discharge_mode:
-                        await self._battery.start_discharge()
-
+                    # Battery is already running – no start_discharge() needed
                 elif soc <= self._min_soc_pct and solar_w <= 0:
-                    # Dropped to min_soc without PV → escalate to full pause
                     logger.info(
-                        "ZFI full pause (from soft-limit): SoC %d%% <= min %d%% and no PV",
+                        "ZFI full pause (from soft-limit): SoC %d%% <= min %d%%, no PV",
                         soc,
                         self._min_soc_pct,
                     )
-                    self._zfi_soc_limited = False
+                    self._zfi_state = ZFIState.PAUSED_LOW_SOC
                     self._zfi_soc_limit_cap_w = 0
-                    self._zfi_soc_limited_report_idle = False
-                    self._zfi_paused_low_soc = True
-                    if _discharge_mode:
-                        await self._battery.stop()
-
+                    await self._battery.stop()
                 else:
-                    # Still in hysteresis – update cap based on current PV and report status
-                    cap = max(self._min_discharge_w, min(int(solar_w), self._max_discharge_w))
-                    self._zfi_soc_limit_cap_w = cap
-                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
+                    # Still in hysteresis – refresh cap
+                    self._zfi_soc_limit_cap_w = max(
+                        self._min_discharge_w, min(int(solar_w), self._max_discharge_w)
+                    )
 
-            else:
-                # Currently normal – check if we should enter hysteresis handling
+            elif self._zfi_state == ZFIState.RUNNING:
                 if soc <= self._min_soc_pct and solar_w <= 0:
-                    # At or below min_soc with no PV → full pause
                     logger.info(
-                        "ZFI full pause: SoC %d%% <= min %d%% and no PV",
+                        "ZFI full pause: SoC %d%% <= min %d%%, no PV",
                         soc,
                         self._min_soc_pct,
                     )
-                    self._zfi_paused_low_soc = True
-                    if _discharge_mode:
-                        await self._battery.stop()
-
+                    self._zfi_state = ZFIState.PAUSED_LOW_SOC
+                    await self._battery.stop()
                 elif soc <= self._min_soc_pct:
-                    # At or below min_soc with PV available → soft-limit
                     cap = max(self._min_discharge_w, min(int(solar_w), self._max_discharge_w))
                     logger.info(
-                        "ZFI soft-limit: SoC %d%% reached min_soc [%d%%] → cap %dW",
+                        "ZFI soft-limit: SoC %d%% reached min %d%%, cap %dW",
                         soc,
                         self._min_soc_pct,
                         cap,
                     )
-                    self._zfi_soc_limited = True
+                    self._zfi_state = ZFIState.SOFT_LIMITED
                     self._zfi_soc_limit_cap_w = cap
-                    self._zfi_soc_limited_report_idle = soc <= soc_midpoint
+                    # Battery already running – no start_discharge() needed
 
-        # ── Full-battery rest (only relevant in ZFI modes) ───────────────────
-        if not _discharge_mode:
-            # Not in a ZFI mode → clear all ZFI-transient states entirely
-            if self._zfi_paused_full_battery:
-                self._zfi_paused_full_battery = False
-                self._full_battery_resume_since = None
-            if self._zfi_soc_limited:
-                self._zfi_soc_limited = False
-                self._zfi_soc_limit_cap_w = 0
-                self._zfi_soc_limited_report_idle = False
+        # ── Full-battery guard (skip when in a low-SoC pause) ────────────────
+        if self._zfi_state == ZFIState.PAUSED_LOW_SOC:
             return
 
-        household_load_w = sample.total_grid_w
-
-        if soc is not None and soc >= self._full_soc_pct:
-            if household_load_w > self._full_soc_resume_threshold_w:
-                if self._zfi_paused_full_battery:
-                    logger.info(
-                        "ZFI full-battery pause ended: SoC %d%% at max, "
-                        "household load %.0fW > %.0fW",
-                        soc,
-                        household_load_w,
-                        self._full_soc_resume_threshold_w,
-                    )
-                    self._zfi_paused_full_battery = False
-                    self._full_battery_resume_since = None
-                    if self._active_regulator is not None:
-                        self._active_regulator.reset()
-                    await self._battery.start_discharge()
-            else:
-                if not self._zfi_paused_full_battery:
-                    logger.info(
-                        "ZFI full-battery pause: SoC %d%% >= hardware maximum %d%% and "
-                        "household load %.0fW <= %.0fW",
-                        soc,
-                        self._full_soc_pct,
-                        household_load_w,
-                        self._full_soc_resume_threshold_w,
-                    )
-                    self._zfi_paused_full_battery = True
-                    self._full_battery_resume_since = None
-                    await self._battery.stop()
+        if soc is not None:
+            household_w = sample.total_grid_w
+            if soc >= self._full_soc_pct:
+                if household_w > self._full_soc_resume_threshold_w:
+                    if self._zfi_state == ZFIState.PAUSED_FULL:
+                        logger.info(
+                            "ZFI full-battery pause ended: SoC %d%% at max, "
+                            "load %.0fW > threshold %.0fW",
+                            soc,
+                            household_w,
+                            self._full_soc_resume_threshold_w,
+                        )
+                        self._zfi_state = ZFIState.RUNNING
+                        if self._active_regulator is not None:
+                            self._active_regulator.reset()
+                        await self._battery.start_discharge()
                 else:
-                    self._full_battery_resume_since = None
-
-        elif self._zfi_paused_full_battery:
-            logger.info(
-                "ZFI full-battery pause ended: SoC %s%% < hardware maximum %d%%",
-                soc,
-                self._full_soc_pct,
-            )
-            self._zfi_paused_full_battery = False
-            self._full_battery_resume_since = None
-            if self._active_regulator is not None:
-                self._active_regulator.reset()
-            await self._battery.start_discharge()
+                    if self._zfi_state != ZFIState.PAUSED_FULL:
+                        logger.info(
+                            "ZFI full-battery pause: SoC %d%% >= max %d%%, "
+                            "load %.0fW <= threshold %.0fW",
+                            soc,
+                            self._full_soc_pct,
+                            household_w,
+                            self._full_soc_resume_threshold_w,
+                        )
+                        self._zfi_state = ZFIState.PAUSED_FULL
+                        await self._battery.stop()
+            elif self._zfi_state == ZFIState.PAUSED_FULL:
+                logger.info(
+                    "ZFI full-battery pause ended: SoC %s%% < max %d%%",
+                    soc,
+                    self._full_soc_pct,
+                )
+                self._zfi_state = ZFIState.RUNNING
+                if self._active_regulator is not None:
+                    self._active_regulator.reset()
+                await self._battery.start_discharge()
 
     async def _apply_high_soc_charge_limit(self, sample: "GridSample") -> None:
         """Reduce AC charge power when SoC exceeds the configured upper threshold."""
@@ -896,11 +842,10 @@ class ControlRuntime:
             sample=sample,
             control=control,
             auto_status=auto_status,
-            zfi_paused_low_soc=self._zfi_paused_low_soc,
-            zfi_paused_full_battery=self._zfi_paused_full_battery,
-            zfi_paused_no_grid=self._zfi_paused_no_grid,
-            zfi_soc_limited=self._zfi_soc_limited,
-            zfi_soc_limit_cap_w=self._zfi_soc_limit_cap_w if self._zfi_soc_limited else None,
+            zfi_state=self._zfi_state,
+            zfi_soc_limit_cap_w=self._zfi_soc_limit_cap_w
+            if self._zfi_state == ZFIState.SOFT_LIMITED
+            else None,
         )
 
     async def _broadcast(self) -> None:

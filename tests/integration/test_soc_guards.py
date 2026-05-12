@@ -3,14 +3,14 @@
 Tests run without a real MQTT broker or hardware – pure in-process logic.
 
 Covers:
-* test_zfi_pauses_at_min_soc          – low SoC → ZFI is suppressed, battery stopped
-* test_zfi_resumes_after_hysteresis   – SoC rises above (min + hysteresis) → ZFI active again
-* test_zfi_no_premature_resume        – SoC between min and min+hysteresis → still paused
-* test_full_battery_pauses_zfi        – SoC=100 → ZFI enters rest, battery stopped
-* test_full_battery_resumes_after_30s – grid draw > threshold for 30s → ZFI wakes up
-* test_full_battery_timer_resets      – grid draw stops, timer resets
-* test_high_soc_charge_limit          – SoC > 90% reduces AC charge to half
-* test_zfi_plan_step_uses_config_max  – AutoModeManager dispatches config_max_w for ZFI
+* test_zfi_pauses_at_min_soc                          – low SoC → ZFI paused, battery stopped
+* test_zfi_resumes_after_hysteresis                   – SoC rises above (min + hysteresis) → ZFI running
+* test_zfi_no_premature_resume                        – SoC in hysteresis → soft-limit
+* test_full_battery_pauses_zfi                        – SoC=100, low load → ZFI paused_full
+* test_full_battery_resumes_immediately_at_max_soc    – SoC=100, high load → ZFI running
+* test_full_battery_rest_cleared_when_not_in_zfi_mode – AC_CHARGE mode → ZFI inactive
+* test_high_soc_charge_limit                          – SoC > 90% reduces AC charge to half
+* test_zfi_plan_step_uses_config_max                  – AutoModeManager dispatches config_max_w for ZFI
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from typing import Any, Optional, cast
 import pytest
 
 from src.runtime.control_runtime import ControlRuntime
-from src.runtime.models import DeviceMode, GridSample
+from src.runtime.models import DeviceMode, GridSample, ZFIState
 
 
 # ── Minimal fakes ─────────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ async def test_zfi_pauses_at_min_soc() -> None:
     sample = _make_sample(soc=15)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_low_soc is True
+    assert rt._zfi_state == ZFIState.PAUSED_LOW_SOC
     assert ("stop", None) in batt.commands
 
 
@@ -193,15 +193,14 @@ async def test_zfi_no_premature_resume() -> None:
     batt = FakeBattery(soc=18)
     rt = _make_runtime(batt, min_soc_pct=15, min_soc_hysteresis_pct=5)
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
-    rt._zfi_paused_low_soc = True  # already in full pause
+    rt._zfi_state = ZFIState.PAUSED_LOW_SOC  # already in full pause
 
     sample = _make_sample(soc=18)
     await rt._update_soc_guards(sample, time.monotonic())
 
     # SoC 18 > min 15 → transition to soft-limit (NOT staying in full pause,
     # and NOT a full resume either – power is capped at min_discharge_w)
-    assert rt._zfi_paused_low_soc is False
-    assert rt._zfi_soc_limited is True
+    assert rt._zfi_state == ZFIState.SOFT_LIMITED
     assert ("discharge", None) in batt.commands  # soft-limit restarts at min_power
 
 
@@ -213,12 +212,12 @@ async def test_zfi_resumes_after_hysteresis() -> None:
     reg = FakeRegulator()
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
     rt._active_regulator = cast(Any, reg)
-    rt._zfi_paused_low_soc = True  # was paused
+    rt._zfi_state = ZFIState.PAUSED_LOW_SOC  # was paused
 
     sample = _make_sample(soc=20)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_low_soc is False
+    assert rt._zfi_state == ZFIState.RUNNING
     assert reg.reset_calls == 1
     assert ("discharge", None) in batt.commands
 
@@ -236,7 +235,7 @@ async def test_full_battery_pauses_zfi_when_load_not_above_threshold() -> None:
     sample = _make_sample(soc=100, grid_w=30.0)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_full_battery is True
+    assert rt._zfi_state == ZFIState.PAUSED_FULL
     assert ("stop", None) in batt.commands
 
 
@@ -252,14 +251,12 @@ async def test_full_battery_resumes_immediately_at_max_soc_when_load_high() -> N
     reg = FakeRegulator()
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
     rt._active_regulator = cast(Any, reg)
-    rt._zfi_paused_full_battery = True
-    rt._full_battery_resume_since = time.monotonic() - 5.0
+    rt._zfi_state = ZFIState.PAUSED_FULL
 
     sample = _make_sample(soc=100, grid_w=150.0)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_full_battery is False
-    assert rt._full_battery_resume_since is None
+    assert rt._zfi_state == ZFIState.RUNNING
     assert reg.reset_calls == 1
     assert ("discharge", None) in batt.commands
 
@@ -270,14 +267,12 @@ async def test_full_battery_rest_cleared_when_not_in_zfi_mode() -> None:
     batt = FakeBattery(soc=100)
     rt = _make_runtime(batt, full_soc_pct=100)
     rt._mode = DeviceMode.AC_CHARGE  # NOT ZFI
-    rt._zfi_paused_full_battery = True
-    rt._full_battery_resume_since = time.monotonic() - 10.0
+    rt._zfi_state = ZFIState.PAUSED_FULL
 
     sample = _make_sample(soc=100)
     await rt._update_soc_guards(sample, time.monotonic())
 
-    assert rt._zfi_paused_full_battery is False
-    assert rt._full_battery_resume_since is None
+    assert rt._zfi_state == ZFIState.INACTIVE
 
 
 # ── Test: Upper SoC AC charge limit ───────────────────────────────────────────
