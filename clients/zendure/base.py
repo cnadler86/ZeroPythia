@@ -18,13 +18,15 @@ import logging
 from time import time
 from typing import Optional
 
+from src.controller.regulator import BatteryInverterProtocol
+
 from .aiozen import SolarFlowBattery
 from .models import ACMode
 
 logger = logging.getLogger(__name__)
 
 
-class BatteryManager(SolarFlowBattery):
+class BatteryManager(SolarFlowBattery, BatteryInverterProtocol):
     """Mode management layer on top of SolarFlowBattery.
 
     Adds:

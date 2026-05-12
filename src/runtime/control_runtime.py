@@ -98,7 +98,6 @@ class ControlRuntime:
         #   None => half of battery max charge power (from API/HW limits)
         high_soc_charge_limit_w: Optional[int] = None,
     ) -> None:
-        self._grid_meter: GridMeterProtocol = grid_meter
         self._battery: BatteryInverterProtocol = battery
         self._sampler = RuntimeSampler(grid_meter, battery)
         self._sampling_interval = sampling_interval_s
