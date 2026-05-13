@@ -272,7 +272,10 @@ echo "======================================================================="
 echo "  Installing Python dependencies (uv sync --no-dev)"
 echo "======================================================================="
 
-runuser -u "$SERVICE_USER" -- "$UV_BIN" sync --no-dev --project "$INSTALL_DIR"
+UV_CACHE_DIR="${INSTALL_DIR}/.uv-cache"
+mkdir -p "$UV_CACHE_DIR"
+chown "${SERVICE_USER}:${SERVICE_GROUP}" "$UV_CACHE_DIR"
+runuser -u "$SERVICE_USER" -- env UV_CACHE_DIR="$UV_CACHE_DIR" "$UV_BIN" sync --no-dev --project "$INSTALL_DIR"
 ok "Dependencies installed into $INSTALL_DIR/.venv"
 
 # Re-fix permissions after uv sync (uv may create files as root or service user)
