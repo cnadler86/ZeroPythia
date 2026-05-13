@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 
 dependencies = [
     "aiohttp>=3.13.4",
-    "fastapi[standard]>=0.100.0",
+    "fastapi>=0.100.0",
     "gitpython>=3.1",
     "paho-mqtt>=2.1.0",
     "pydantic>=2.12.5",
@@ -28,18 +28,6 @@ dev = [
 
 [project.urls]
 Repository = "https://github.com/cnadler86/ZeroPythia"
-
-# ── Package index configuration ────────────────────────────────────────────────
-# piwheels provides pre-built ARM wheels; PyPI is kept as fallback for packages
-# not available there. uv already prefers wheels over sdists by default.
-[[tool.uv.index]]
-name = "piwheels"
-url = "https://www.piwheels.org/simple"
-default = true
-
-[[tool.uv.index]]
-name = "pypi"
-url = "https://pypi.org/simple"
 
 [build-system]
 requires = ["hatchling"]

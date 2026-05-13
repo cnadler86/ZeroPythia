@@ -275,6 +275,23 @@ echo "======================================================================="
 UV_CACHE_DIR="/var/cache/zeropythia-uv"
 mkdir -p "$UV_CACHE_DIR"
 chown "${SERVICE_USER}:${SERVICE_GROUP}" "$UV_CACHE_DIR"
+
+# ── Configure uv to prefer piwheels (pre-built ARM wheels) ───────────────────
+mkdir -p /etc/uv
+cat > /etc/uv/uv.toml << 'EOF'
+[[index]]
+name = "piwheels"
+url = "https://www.piwheels.org/simple"
+default = true
+
+[[index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+index-strategy = "first-index"
+EOF
+ok "uv configured to prefer piwheels (ARM pre-built wheels)"
+
 runuser -u "$SERVICE_USER" -- env UV_CACHE_DIR="$UV_CACHE_DIR" "$UV_BIN" sync --no-dev --project "$INSTALL_DIR"
 ok "Dependencies installed into $INSTALL_DIR/.venv"
 
