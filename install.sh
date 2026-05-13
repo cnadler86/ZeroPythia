@@ -31,6 +31,7 @@
 #
 
 set -euo pipefail
+export GIT_TERMINAL_PROMPT=0   # prevent git from hanging on credential prompts
 
 # ── Colour helpers ─────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
