@@ -239,7 +239,7 @@ else
         CLONE_ARGS+=(--branch "$REF_BRANCH")
     fi
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone "${CLONE_ARGS[@]}" "$REPO_URL" "$INSTALL_DIR"
+    git clone -c credential.helper= "${CLONE_ARGS[@]}" "$REPO_URL" "$INSTALL_DIR"
     ok "Cloned $REPO_URL → $INSTALL_DIR ($REF_DESC)"
 fi
 
