@@ -166,13 +166,13 @@ echo "  Device ID           : $DEVICE_ID"
 echo "  Auto mode           : ${AUTO_FLAG:+enabled}${AUTO_FLAG:-disabled}"
 echo ""
 
-read -rp "Continue with installation? (y/N) " REPLY
-echo
 if [[ "${YES:-false}" == "true" ]]; then
-    REPLY="y"
-    echo "y  (auto-accepted)"
+    echo "(auto-accepted)"
+else
+    read -rp "Continue with installation? (y/N) " REPLY
+    echo
+    [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 fi
-[[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 
 # ── Create group and service user ─────────────────────────────────────────────
 echo ""
