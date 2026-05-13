@@ -33,10 +33,11 @@ from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
 from ZeroPythia.dashboard.server import create_app
 from ZeroPythia.runtime.control_runtime import ControlRuntime
 from ZeroPythia.runtime.models import DeviceMode
+from ZeroPythia.services.updater import AutoUpdater, UpdateMode
 
 _CONFIG = Path("config") / "zerofeed.yaml"
 
-LOG = logging.getLogger("main")
+logger = logging.getLogger(__name__)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -74,6 +75,20 @@ async def run(
             min_discharge_w=yaml_cfg.min_output_w,
         )
 
+        # ── Auto-updater ──────────────────────────────────────────────────────
+        if yaml_cfg.update.mode is not UpdateMode.OFF:
+            updater = AutoUpdater(
+                mode=yaml_cfg.update.mode,
+                branch=yaml_cfg.update.branch,
+                remote=yaml_cfg.update.remote,
+            )
+            runtime.attach_updater(updater)
+            logger.info(
+                "Auto-updater enabled (mode=%s, branch=%s)",
+                yaml_cfg.update.mode.value,
+                yaml_cfg.update.branch,
+            )
+
         # ── Register regulators ───────────────────────────────────────────────
 
         # ── Regulator ──────────────────────────────────────────────────────
@@ -89,7 +104,7 @@ async def run(
                 topic_prefix=topic_prefix,
                 status_interval_s=status_interval_s,
             )
-            LOG.info("Auto mode started (device_id=%s, broker=%s)", device_id, mqtt_broker)
+            logger.info("Auto mode started (device_id=%s, broker=%s)", device_id, mqtt_broker)
         else:
             mode_map = {
                 "idle": DeviceMode.IDLE,
@@ -98,7 +113,7 @@ async def run(
             await runtime.set_mode(mode_map.get(initial_mode, DeviceMode.IDLE))
             await runtime.start()
 
-        LOG.info("ControlRuntime started")
+        logger.info("ControlRuntime started")
 
         # ── Start HTTP server ─────────────────────────────────────────────────
         lang = yaml_cfg.language
@@ -112,14 +127,14 @@ async def run(
         )
         server = uvicorn.Server(config)
 
-        LOG.info("Dashboard available at http://%s:%d", host, port)
+        logger.info("Dashboard available at http://%s:%d", host, port)
 
         try:
             await server.serve()
         except asyncio.CancelledError:
             pass
         finally:
-            LOG.info("Shutting down dashboard…")
+            logger.info("Shutting down dashboard…")
             server.should_exit = True
             if runtime._auto_manager is not None:
                 await runtime.disable_auto_mode()
@@ -189,7 +204,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
         )
     except KeyboardInterrupt:
-        LOG.info("Stopped by user")
+        logger.info("Stopped by user")
 
 
 if __name__ == "__main__":

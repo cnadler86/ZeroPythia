@@ -75,8 +75,9 @@ class GridPythiaStatusReporter:
     async def run(self) -> None:
         """Run the reporter loop until cancelled."""
         logger.info(
-            "status_reporter_started",
-            extra={"topic": self._topic, "interval_s": self._interval_s},
+            "status_reporter_started: topic=%s interval_s=%.0f",
+            self._topic,
+            self._interval_s,
         )
         try:
             while True:
@@ -85,35 +86,28 @@ class GridPythiaStatusReporter:
         except asyncio.CancelledError:
             pass
         finally:
-            logger.info("status_reporter_stopped", extra={"device_id": self._device_id})
+            logger.info("status_reporter_stopped: device_id=%s", self._device_id)
 
     async def _report_once(self) -> None:
         """Read SoC from device and publish status."""
         try:
             soc: Optional[int] = await self._battery.get_battery_soc()
         except Exception as exc:
-            logger.warning(
-                "status_reporter_soc_error",
-                extra={"device_id": self._device_id, "error": str(exc)},
-            )
+            logger.warning("status_reporter_soc_error: device_id=%s error=%s", self._device_id, exc)
             return
 
         if soc is None:
-            logger.debug("status_reporter_soc_none", extra={"device_id": self._device_id})
+            logger.debug("status_reporter_soc_none: device_id=%s", self._device_id)
             return
 
         mode = _map_mode(self._battery)
         payload = {"soc": float(soc), "mode": int(mode)}
 
         if not self._mqtt.is_connected:
-            logger.debug(
-                "status_reporter_mqtt_not_connected",
-                extra={"device_id": self._device_id},
-            )
+            logger.debug("status_reporter_mqtt_not_connected: device_id=%s", self._device_id)
             return
 
         self._mqtt.publish(self._topic, payload)
         logger.debug(
-            "status_reported",
-            extra={"device_id": self._device_id, "soc": soc, "mode": mode.name},
+            "status_reported: device_id=%s soc=%s mode=%s", self._device_id, soc, mode.name
         )

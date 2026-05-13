@@ -30,9 +30,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from ZeroPythia.controller.regulator import BatteryInverterProtocol, RegulatorBase
+
+if TYPE_CHECKING:
+    from ZeroPythia.services.updater import AutoUpdater
 
 from .models import (
     AutoStatus,
@@ -161,10 +164,16 @@ class ControlRuntime:
         # Runtime tasks
         self._running = False
         self._main_task: Optional[asyncio.Task] = None
+        self._update_task: Optional[asyncio.Task] = None
+        self._updater: Optional[AutoUpdater] = None
 
     def attach_auto_mode_manager(self, manager: Any) -> None:
         """Register the AutoModeManager used when mode==AUTO."""
         self._auto_manager = manager
+
+    def attach_updater(self, updater: "AutoUpdater") -> None:
+        """Register an AutoUpdater instance to drive periodic update checks."""
+        self._updater = updater
 
     async def enable_auto_mode(
         self,
@@ -391,6 +400,8 @@ class ControlRuntime:
         await self._init_soc_limits()
         self._running = True
         self._main_task = asyncio.create_task(self._main_loop(), name="control-runtime")
+        if self._updater is not None:
+            self._update_task = asyncio.create_task(self._update_check_loop(), name="update-check")
         logger.info(
             "ControlRuntime started (sample=%.1fs  control=%.1fs  min_soc=%s%%  max_soc=%s%%)",
             self._sampling_interval,
@@ -407,6 +418,12 @@ class ControlRuntime:
             self._main_task.cancel()
             try:
                 await self._main_task
+            except asyncio.CancelledError:
+                pass
+        if self._update_task:
+            self._update_task.cancel()
+            try:
+                await self._update_task
             except asyncio.CancelledError:
                 pass
         logger.info("ControlRuntime stopped")
@@ -521,6 +538,33 @@ class ControlRuntime:
             pass
         except Exception:
             logger.exception("ControlRuntime main loop crashed")
+
+    # ── Auto-update background task ───────────────────────────────────────────
+
+    def _is_in_idle_state(self) -> bool:
+        """Return True when the system is effectively idle (safe to restart)."""
+        if self._mode == DeviceMode.IDLE:
+            return True
+        if self._mode == DeviceMode.AUTO and self._auto_effective_mode == DeviceMode.IDLE:
+            return True
+        return False
+
+    async def _update_check_loop(self) -> None:
+        """Periodically check for updates; apply only when the system is idle."""
+        _CHECK_INTERVAL_S = 15 * 60  # poll every 15 min; updater rate-limits to 1×/day
+
+        try:
+            # Initial delay so startup is not stressed by an immediate fetch.
+            await asyncio.sleep(60)
+            while self._running:
+                if self._updater is not None and self._is_in_idle_state():
+                    try:
+                        await self._updater.check_and_update()
+                    except Exception:  # noqa: BLE001
+                        logger.exception("update check failed")
+                await asyncio.sleep(_CHECK_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
 
     # ── Helpers ───────────────────────────────────────────────────────────────
     async def _init_soc_limits(self) -> None:

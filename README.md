@@ -39,13 +39,19 @@ There are three entry points, each for a different use case:
 pip install -e .
 ```
 
+or
+
+```bash
+uv sync
+```
+
 ### 2. Start the dashboard (real hardware)
 
 ```bash
 python main.py --shelly 192.168.178.77 --zendure 192.168.178.140
 ```
 
-Then open **http://127.0.0.1:8765** in your browser.
+Then open **<http://127.0.0.1:8765>** in your browser.
 
 For LAN access from other devices:
 
