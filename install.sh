@@ -272,7 +272,7 @@ echo "======================================================================="
 echo "  Installing Python dependencies (uv sync --no-dev)"
 echo "======================================================================="
 
-UV_CACHE_DIR="${INSTALL_DIR}/.uv-cache"
+UV_CACHE_DIR="/var/cache/zeropythia-uv"
 mkdir -p "$UV_CACHE_DIR"
 chown "${SERVICE_USER}:${SERVICE_GROUP}" "$UV_CACHE_DIR"
 runuser -u "$SERVICE_USER" -- env UV_CACHE_DIR="$UV_CACHE_DIR" "$UV_BIN" sync --no-dev --project "$INSTALL_DIR"
