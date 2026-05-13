@@ -86,7 +86,8 @@ while [[ $# -gt 0 ]]; do
         --zendure)     ZENDURE_IP="$2";                      shift 2 ;;
         --mqtt-broker) MQTT_BROKER="$2";                     shift 2 ;;
         --device-id)   DEVICE_ID="$2";                       shift 2 ;;
-        --auto)        AUTO_FLAG=" --auto";                  shift   ;;
+        --auto)        AUTO_FLAG=" --auto"; YES=true;          shift   ;;
+        -y|--yes)      YES=true;                              shift   ;;
         -h|--help)     usage ;;
         *) err "Unknown option: $1"; echo "Run with --help for usage."; exit 1 ;;
     esac
@@ -167,6 +168,10 @@ echo ""
 
 read -rp "Continue with installation? (y/N) " REPLY
 echo
+if [[ "${YES:-false}" == "true" ]]; then
+    REPLY="y"
+    echo "y  (auto-accepted)"
+fi
 [[ "$REPLY" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
 
 # ── Create group and service user ─────────────────────────────────────────────
