@@ -17,13 +17,13 @@ The combination means the controller can react quickly to load changes on all ph
 
 ---
 
-## Startup Scripts
+## Entry Points
 
 There are three entry points, each for a different use case:
 
 | Script | Purpose |
 | --- | --- |
-| `utils/start_dashboard_server.py` | Full operation with real Shelly + Zendure hardware |
+| `main.py` | Full operation with real Shelly + Zendure hardware (dashboard + controller) |
 | `utils/start_dashboard_mock.py` | Local testing without any real devices |
 | `utils/start_gridpythia_bridge.py` | GridPythia plan executor only, no dashboard |
 
@@ -42,7 +42,7 @@ pip install -e .
 ### 2. Start the dashboard (real hardware)
 
 ```bash
-python utils/start_dashboard_server.py --shelly 192.168.178.77 --zendure 192.168.178.140
+python main.py --shelly 192.168.178.77 --zendure 192.168.178.140
 ```
 
 Then open **http://127.0.0.1:8765** in your browser.
@@ -50,22 +50,23 @@ Then open **http://127.0.0.1:8765** in your browser.
 For LAN access from other devices:
 
 ```bash
-python utils/start_dashboard_server.py --shelly 192.168.178.77 --zendure 192.168.178.140 --host 0.0.0.0
+python main.py --shelly 192.168.178.77 --zendure 192.168.178.140 --host 0.0.0.0
 ```
 
-### 3. All CLI options for the dashboard server
+Device limits, control intervals, and other parameters are configured in `config/zerofeed.yaml` and can be adjusted via the dashboard.
+
+### 3. All CLI options
 
 ```text
 --shelly IP           Shelly 3EM IP address          (default: 192.168.178.77)
 --zendure IP          Zendure SolarFlow IP address    (default: 192.168.178.140)
 --host HOST           Server bind address             (default: 127.0.0.1)
 --port PORT           HTTP port                       (default: 8765)
---max-output W        Maximum battery discharge       (default: 800 W)
---min-discharge W     Minimum battery output          (default: 20 W)
---control-interval S  Control cycle interval          (default: 3.0 s)
 --initial-mode        idle | zero_feed                (default: idle)
 --mqtt-broker URL     MQTT broker URL for auto mode   (default: mqtt://localhost:1883)
 --device-id ID        Inverter device ID              (default: SF800Pro)
+--topic-prefix STR    MQTT topic prefix               (default: gridpythia)
+--status-interval S   Seconds between status reports  (default: 60.0)
 --auto                Start immediately in AUTO mode
 --verbose             Enable debug logging
 ```
@@ -74,7 +75,7 @@ python utils/start_dashboard_server.py --shelly 192.168.178.77 --zendure 192.168
 
 If a GridPythia MQTT broker is available, the controller can follow an optimized schedule automatically:
 
-```bash
+```bashmain
 python utils/start_dashboard_server.py \
   --shelly 192.168.178.77 \
   --zendure 192.168.178.140 \
