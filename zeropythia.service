@@ -1,0 +1,31 @@
+[Unit]
+Description=ZeroPythia – Three-phase zero-feed-in battery controller
+Documentation=https://github.com/cnadler86/ZeroPythia
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zeropythia
+Group=pythia
+WorkingDirectory={{WORKING_DIR}}
+ExecStart={{PYTHON_BIN}} main.py {{EXTRA_ARGS}}
+
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+
+# Logging via systemd journal
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zeropythia
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{WORKING_DIR}}
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
