@@ -14,6 +14,17 @@ sampling_interval_s: 1.0 # Sampling interval [s]
 battery_dead_time_s: 1.1
 battery_pt1_tau_s: 0.5
 
+# Auto-update via Git
+# mode: off | release | master
+#   off     – no automatic updates
+#   release – update when a new semver release tag is available
+#   master  – update when the remote master branch has new commits
+# Updates are only applied when the system is idle (not discharging / charging).
+update:
+  mode: "master"     # Change to 'release' or 'master' to enable
+  branch: master  # Remote branch to track (used when mode=master)
+  remote: origin  # Name of the git remote
+
 # Per-phase controller settings
 phases:
 

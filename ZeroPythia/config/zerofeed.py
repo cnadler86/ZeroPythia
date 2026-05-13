@@ -35,8 +35,28 @@ from ZeroPythia.controller.oscillation_detectorv2 import (
     BaseloadHolderSettings,
     BaseloadPredictorSettings,
 )
+from ZeroPythia.services.updater import UpdateMode
 
 logger = logging.getLogger(__name__)
+
+
+# ── Update config ─────────────────────────────────────────────────────────────
+
+
+class UpdateConfig(BaseModel):
+    """Auto-update settings embedded in ZeroFeedConfig."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    mode: UpdateMode = UpdateMode.OFF
+    """Update policy: off | release | master."""
+
+    branch: str = "master"
+    """Remote branch to track when mode=master."""
+
+    remote: str = "origin"
+    """Name of the git remote."""
+
 
 # ── Oscillation detector config ───────────────────────────────────────────────
 
@@ -174,6 +194,9 @@ class ZeroFeedConfig(BaseModel):
 
     language: str = "en"
     """Dashboard UI language.  Supported: 'en' (English), 'de' (German)."""
+
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
+    """Auto-update settings.  Disabled by default (mode=off)."""
 
     phases: dict[str, PhaseConfig] = Field(default_factory=dict)
     """Per-phase controller configs keyed by phase letter ('A', 'B', 'C').
@@ -552,7 +575,7 @@ def load_config(path: Path) -> Optional[ZeroFeedConfig]:
             return None
         return ZeroFeedConfig.model_validate(raw)
     except Exception as exc:
-        logger.warning("ZeroFeed config: Fehler beim Laden von %s: %s", path, exc)
+        logger.warning("ZeroFeed config: failed to load %s: %s", path, exc)
     return None
 
 
@@ -584,7 +607,7 @@ def save_config(
                 data = _build_commented_map(cfg)
         except Exception as exc:
             logger.warning(
-                "ZeroFeed config: Fehler beim Lesen für In-Place-Update (%s): %s", path, exc
+                "ZeroFeed config: failed to read for in-place update (%s): %s", path, exc
             )
             data = _build_commented_map(cfg)
     elif path.exists() and phase_changed:
@@ -606,7 +629,7 @@ def save_config(
             _update_inplace(data, top_level_dump)
         except Exception as exc:
             logger.warning(
-                "ZeroFeed config: Fehler beim Lesen für Phase-Swap-Update (%s): %s", path, exc
+                "ZeroFeed config: failed to read for phase-swap update (%s): %s", path, exc
             )
             data = _build_commented_map(cfg)
     else:
@@ -618,6 +641,6 @@ def save_config(
         stream = StringIO()
         y.dump(data, stream)
         path.write_text(stream.getvalue(), encoding="utf-8")
-        logger.info("ZeroFeed config: gespeichert → %s", path)
+        logger.info("ZeroFeed config: saved to %s", path)
     except Exception as exc:
-        logger.error("ZeroFeed config: Fehler beim Speichern (%s): %s", path, exc)
+        logger.error("ZeroFeed config: failed to save (%s): %s", path, exc)

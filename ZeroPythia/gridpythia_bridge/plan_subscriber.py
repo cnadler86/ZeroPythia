@@ -74,10 +74,7 @@ class GridPythiaPlanSubscriber:
     def register(self) -> None:
         """Register the MQTT callback.  Must be called before ``mqtt_client.start()``."""
         self._mqtt.subscribe(self._topic, self._on_message)
-        logger.info(
-            "plan_subscriber_registered",
-            extra={"topic": self._topic},
-        )
+        logger.info("plan_subscriber_registered: topic=%s", self._topic)
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -103,11 +100,9 @@ class GridPythiaPlanSubscriber:
             last_end_ts = last.timestamp.astimezone(timezone.utc).timestamp() + plan.dt_hours * 3600
             if now.timestamp() > last_end_ts + self._stale_after_s:
                 logger.debug(
-                    "plan_stale",
-                    extra={
-                        "device_id": self._device_id,
-                        "last_end": last.timestamp.isoformat(),
-                    },
+                    "plan_stale: device_id=%s last_end=%s",
+                    self._device_id,
+                    last.timestamp.isoformat(),
                 )
                 return None
 
@@ -125,32 +120,25 @@ class GridPythiaPlanSubscriber:
         try:
             plan = InverterPlan.model_validate(payload)
         except ValidationError as exc:
-            logger.warning(
-                "plan_subscriber_parse_error",
-                extra={"topic": topic, "error": str(exc)},
-            )
+            logger.warning("plan_subscriber_parse_error: topic=%s error=%s", topic, exc)
             return
 
         steps = len(plan.steps)
         logger.info(
-            "plan_received",
-            extra={
-                "device_id": plan.device_id,
-                "steps": steps,
-                "published_at": plan.published_at.isoformat(),
-            },
+            "plan_received: device_id=%s steps=%d published_at=%s",
+            plan.device_id,
+            steps,
+            plan.published_at.isoformat(),
         )
 
         with self._lock:
             current = self._plan
             if current is not None and plan.published_at < current.published_at:
                 logger.info(
-                    "plan_ignored_older",
-                    extra={
-                        "device_id": self._device_id,
-                        "incoming_published_at": plan.published_at.isoformat(),
-                        "current_published_at": current.published_at.isoformat(),
-                    },
+                    "plan_ignored_older: device_id=%s incoming=%s current=%s",
+                    self._device_id,
+                    plan.published_at.isoformat(),
+                    current.published_at.isoformat(),
                 )
                 return
             self._plan = plan

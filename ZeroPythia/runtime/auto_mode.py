@@ -223,16 +223,13 @@ class AutoModeManager:
         """Start the MQTT connection (call before the asyncio event loop runs tick)."""
         self._mqtt_client.start()
         self._connected = True
-        logger.info(
-            "AutoModeManager started",
-            extra={"device_id": self._device_id},
-        )
+        logger.info("AutoModeManager started (device_id=%s)", self._device_id)
 
     def stop(self) -> None:
         """Stop MQTT and cancel the status reporter task."""
         self._mqtt_client.stop()
         self._connected = False
-        logger.info("AutoModeManager stopped", extra={"device_id": self._device_id})
+        logger.info("AutoModeManager stopped (device_id=%s)", self._device_id)
 
     async def start_reporter_task(self) -> None:
         """Start the status reporter as an asyncio task (call after event loop is running)."""
@@ -312,8 +309,8 @@ class AutoModeManager:
         if self._last_inv_mode == InverterMode.DISCHARGE_ZERO_FEED_IN and self._in_fallback:
             return  # already in fallback, nothing changed
         logger.info(
-            "AutoMode: no plan active, falling back to DISCHARGE_ZERO_FEED",
-            extra={"device_id": self._device_id},
+            "AutoMode: no plan active, falling back to DISCHARGE_ZERO_FEED (device_id=%s)",
+            self._device_id,
         )
         await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
         self._last_inv_mode = InverterMode.DISCHARGE_ZERO_FEED_IN
@@ -341,10 +338,10 @@ class AutoModeManager:
             # AC_CHARGE power changed → fall through to dispatch
 
         logger.info(
-            "AutoMode plan step change: %s → %s",
+            "AutoMode plan step change: %s → %s (device_id=%s)",
             self._last_inv_mode,
             mode.name,
-            extra={"device_id": self._device_id},
+            self._device_id,
         )
 
         if mode == InverterMode.IDLE:
