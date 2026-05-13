@@ -31,31 +31,31 @@ There are three entry points, each for a different use case:
 
 ## Quick Start
 
-**Requirements:** Python 3.11 or newer.
+**Requirements:** Python 3.11 or newer and [uv](https://docs.astral.sh/uv/).
 
 ### 1. Install dependencies
 
 ```bash
+# Recommended (uv)
+uv sync --no-dev
+
+# Alternative (pip)
 pip install -e .
-```
-
-or
-
-```bash
-uv sync
 ```
 
 ### 2. Start the dashboard (real hardware)
 
 ```bash
+. .venv/bin/activate
 python main.py --shelly 192.168.178.77 --zendure 192.168.178.140
 ```
 
 Then open **<http://127.0.0.1:8765>** in your browser.
 
-For LAN access from other devices:
+For LAN access from other devices, bind to 0.0.0.0 or to the respective IP of your device:
 
 ```bash
+. .venv/bin/activate
 python main.py --shelly 192.168.178.77 --zendure 192.168.178.140 --host 0.0.0.0
 ```
 
@@ -229,6 +229,106 @@ Each phase has two optional detectors under `phases.X.osc`:
 - **`predictor`** — detects periodic loads with a known cycle time (e.g. washing machine, dishwasher). Adds a `reaction_time` look-ahead so the battery output is reduced just before the expected load peak.
 
 Either detector can be disabled by setting it to `null` in the YAML.
+
+---
+
+## Auto-Update
+
+ZeroPythia can update itself automatically from Git. The updater is configured in `config/zerofeed.yaml` under the `update` key:
+
+```yaml
+update:
+  mode: "master"   # off | release | master
+  branch: master   # remote branch to track (used when mode=master)
+  remote: origin   # git remote name
+```
+
+| Mode | Behaviour |
+| --- | --- |
+| `off` | No automatic updates |
+| `release` | Updates when a new semver release tag appears on the remote |
+| `master` | Updates when the remote branch has new commits |
+
+Updates are checked at most **once per day** (UTC). When an update is available the updater:
+
+1. Pulls/checks out the new ref.
+2. Runs `uv sync --no-dev` to synchronise the virtual environment.
+3. Sends `SIGTERM` to itself so systemd can restart the service with the new code.
+
+> **Note:** Updates are only applied while the system is idle (not discharging or charging). When running as a systemd service, `Restart=on-failure` ensures the process comes back up automatically after the self-restart.
+
+---
+
+## Running as a systemd Service
+
+The repository ships ready-to-use install and uninstall scripts for Linux systems running systemd (e.g. Raspberry Pi OS, Debian, Ubuntu).
+
+### Prerequisites
+
+- Python 3.11 or newer and [uv](https://docs.astral.sh/uv/) installed:
+  ```bash
+  # Official uv installer (Linux/macOS)
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- A `.venv` inside the project directory (the install script creates it automatically if missing):
+  ```bash
+  uv sync --no-dev
+  ```
+- `sudo` access on the target machine.
+- Network connectivity (the service waits for `network-online.target` before starting).
+
+### Install
+
+```bash
+# Minimal – use all defaults
+sudo ./install.sh
+
+# With explicit device IPs and port
+sudo ./install.sh --shelly 192.168.1.50 --zendure 192.168.1.60 --host 0.0.0.0 --port 8765
+
+# Start immediately in AUTO mode (GridPythia integration)
+sudo ./install.sh --auto --mqtt-broker mqtt://192.168.1.5:1883 --device-id SF800Pro
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-H` / `--host` | `0.0.0.0` | Dashboard bind address |
+| `-p` / `--port` | `8765` | Dashboard TCP port |
+| `--shelly` | `192.168.178.77` | Shelly 3EM IP address |
+| `--zendure` | `192.168.178.140` | Zendure SolarFlow IP address |
+| `--mqtt-broker` | `mqtt://localhost:1883` | MQTT broker URL |
+| `--device-id` | `SF800Pro` | Zendure device ID |
+| `--auto` | *(flag)* | Start immediately in AUTO mode |
+
+The script will:
+
+1. Create a system group `pythia` and a dedicated system user `zeropythia` (no login, no home directory).
+2. Add the installing user to the `pythia` group so project files remain editable.
+3. Set ownership to `zeropythia:pythia` with `setgid` directories (new files inherit the group automatically).
+4. Install `/etc/systemd/system/zeropythia.service` and enable + start the service.
+
+> **After installation**, log out and back in once so the `pythia` group membership takes effect in your shell.
+
+### Uninstall
+
+```bash
+# Remove the service only (application files are kept)
+sudo ./uninstall.sh
+
+# Also remove the 'zeropythia' system user
+# (the 'pythia' group is removed only when no other members remain)
+sudo ./uninstall.sh --remove-user
+```
+
+### Useful commands
+
+```bash
+sudo systemctl status  zeropythia
+sudo journalctl -u zeropythia -f
+sudo systemctl restart zeropythia
+sudo systemctl stop    zeropythia
+sudo systemctl disable zeropythia
+```
 
 ---
 
