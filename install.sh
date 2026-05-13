@@ -10,7 +10,7 @@
 # Source selection (mutually exclusive; defaults to the branch of this script):
 #       --branch  BRANCH   Git branch to check out        (default: auto-detect)
 #       --tag     TAG      Release tag to check out        (e.g. v1.2.3)
-#       --repo    URL      Repository URL                  (default: https://github.com/cnadler86/zendure_zero_feed.git)
+#       --repo    URL      Repository URL                  (default: https://github.com/cnadler86/ZeroPythia.git)
 #       --install-dir DIR  Install destination             (default: /opt/zeropythia)
 #
 # Hardware / runtime:
@@ -43,7 +43,8 @@ SERVICE_NAME="zeropythia"
 SERVICE_FILE="${SERVICE_NAME}.service"
 SERVICE_USER="zeropythia"
 SERVICE_GROUP="pythia"
-DEFAULT_REPO="https://github.com/cnadler86/zendure_zero_feed.git"
+DEFAULT_REPO="https://github.com/cnadler86/ZeroPythia.git"
+DEFAULT_BRANCH="master"
 DEFAULT_INSTALL_DIR="/opt/zeropythia"
 
 # Auto-detect current branch from the directory this script lives in
@@ -58,7 +59,7 @@ fi
 # ── Defaults ──────────────────────────────────────────────────────────────────
 REPO_URL="$DEFAULT_REPO"
 INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-REF_BRANCH="${_detected_branch}"
+REF_BRANCH="${_detected_branch:-$DEFAULT_BRANCH}"
 REF_TAG=""
 HOST="0.0.0.0"
 PORT="8765"
