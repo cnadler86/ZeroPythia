@@ -11,7 +11,7 @@ Group=pythia
 WorkingDirectory={{WORKING_DIR}}
 ExecStart={{PYTHON_BIN}} main.py {{EXTRA_ARGS}}
 
-Restart=on-failure
+Restart=always
 RestartSec=10
 TimeoutStopSec=30
 
