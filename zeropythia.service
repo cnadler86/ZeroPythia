@@ -24,8 +24,9 @@ SyslogIdentifier=zeropythia
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths={{WORKING_DIR}}
+ReadWritePaths={{WORKING_DIR}} /var/cache/zeropythia-uv
 ProtectHome=true
+Environment=UV_CACHE_DIR=/var/cache/zeropythia-uv
 
 [Install]
 WantedBy=multi-user.target
