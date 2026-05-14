@@ -141,11 +141,22 @@ def create_app(runtime: ControlRuntime, *, lang: str = "en") -> FastAPI:
                 "background_color": "#0f1117",
                 "theme_color": "#0f1117",
                 "icons": [
+                    {"src": "/logo.jpeg", "sizes": "512x512", "type": "image/jpeg", "purpose": "any maskable"},
                     {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
                 ],
             },
             headers={"Content-Type": "application/manifest+json"},
         )
+
+    @app.get("/logo.jpeg", include_in_schema=False)
+    async def app_logo():
+        from fastapi.responses import FileResponse
+
+        logo_path = Path(__file__).parent.parent.parent / "IMG_5693.jpeg"
+        if logo_path.exists():
+            return FileResponse(str(logo_path), media_type="image/jpeg")
+        from fastapi.responses import Response
+        return Response(status_code=404)
 
     @app.get("/icon.svg", include_in_schema=False)
     async def app_icon():

@@ -1,5 +1,7 @@
 # ZeroPythia
 
+<img src="IMG_5693.jpeg" alt="ZeroPythia Logo" width="120" align="right"/>
+
 **Three-phase zero-feed-in battery controller with feedforward + feedback regulation for single-phase inverters.**
 
 ZeroPythia keeps your home from exporting energy to the grid by continuously controlling a Zendure SolarFlow battery storage unit. It reads all three grid phases via a Shelly energy meter and computes the battery setpoint in real time. An optional integration with [GridPythia](https://github.com/cnadler86/EOS2) lets an external energy optimizer schedule charge and discharge slots instead.
