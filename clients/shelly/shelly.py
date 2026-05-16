@@ -180,7 +180,7 @@ class ShellyClient(GridMeterProtocol):
                 response.raise_for_status()
                 return await response.json()
         except Exception as e:
-            logger.error("Shelly Gen1 error: %s", e)
+            logger.debug("Shelly Gen1 error: %s", e)
             return None
 
     async def _fetch_gen2_raw(self) -> Optional[dict]:
@@ -191,7 +191,7 @@ class ShellyClient(GridMeterProtocol):
                 response.raise_for_status()
                 return await response.json()
         except Exception as e:
-            logger.error("Shelly Gen2 error: %s", e)
+            logger.debug("Shelly Gen2 error: %s", e)
             return None
 
     async def _fetch_raw(self, use_cache: bool = True) -> Optional[tuple[int, dict]]:
@@ -225,7 +225,7 @@ class ShellyClient(GridMeterProtocol):
 
         # Fetch failed – use stale data if still within timeout
         if self._raw_cache is not None and (now - self._cache_timestamp) < self._stale_timeout:
-            logger.warning("Shelly: using stale data (%.1f s old)", now - self._cache_timestamp)
+            logger.debug("Shelly: using stale data (%.1f s old)", now - self._cache_timestamp)
             return gen, self._raw_cache
 
         return None
