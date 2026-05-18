@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 from ZeroPythia.controller.regulator import BatteryInverterProtocol, RegulatorBase
@@ -53,6 +54,80 @@ logger: logging.Logger = logging.getLogger(__name__)
 # ── Type alias ────────────────────────────────────────────────────────────────
 
 StateCallback = Callable[[DashboardState], Awaitable[None]]
+
+
+# ── Bypass resume guard ───────────────────────────────────────────────────────
+
+
+class BypassResumeGuard:
+    """Rolling-window guard for the full-battery bypass → discharge transition.
+
+    When the battery is at 100 % SoC the inverter enters *bypass mode*: solar PV
+    flows directly to the household load without passing through the battery.
+    Starting a zero-feed discharge in this state can cause rapid toggling:
+
+    1. Battery starts discharging.
+    2. Solar + battery together over-supply the load → ZFI reduces battery to 0.
+    3. Inverter returns to bypass.
+    4. Repeat.
+
+    The guard collects a rolling window of (theoretical_setpoint, solar) samples
+    while the ZFI is paused due to a full battery.  It only signals *safe to
+    start* when **all** samples in the window satisfy:
+
+        theoretical_setpoint  >  max_solar_in_window  +  safety_offset_w
+
+    where ``theoretical_setpoint = total_grid_w + solar_input_w`` (≈ household
+    consumption when the battery is stopped).
+
+    Window duration
+    ---------------
+    The window is derived automatically from the oscillation-holder settings
+    registered in the active regulator:
+
+        window_s = max_period_across_holders × max_min_rising_count + 1 s
+
+    This guarantees the guard covers at least one full oscillation detection
+    cycle, making it very unlikely that a newly started discharge will
+    immediately re-trigger the bypass/discharge oscillation.
+    """
+
+    def __init__(self, window_s: float, safety_offset_w: float) -> None:
+        #: Duration of the rolling observation window [s].
+        self.window_s = window_s
+        #: The theoretical battery setpoint must exceed ``max_solar + safety_offset_w``
+        #: for every sample in the window before discharge is allowed.
+        self.safety_offset_w = safety_offset_w
+        # (timestamp, theoretical_setpoint_w, solar_w)
+        self._buf: deque[tuple[float, float, float]] = deque()
+
+    def add_sample(self, ts: float, theoretical_setpoint_w: float, solar_w: float) -> None:
+        """Append a new measurement and evict samples older than *window_s*."""
+        self._buf.append((ts, theoretical_setpoint_w, solar_w))
+        cutoff = ts - self.window_s
+        while self._buf and self._buf[0][0] < cutoff:
+            self._buf.popleft()
+
+    def is_safe_to_start(self, now: float) -> bool:
+        """Check if the guard conditions are satisfied for the current window.
+
+        Return *True* when the full guard window is populated and the
+        solar-vs-demand condition is satisfied for every sample.
+
+        The window is considered *full* when the span from the oldest buffered
+        sample to *now* is at least ``window_s`` seconds.
+        """
+        if len(self._buf) < 2:
+            return False
+        if now - self._buf[0][0] < self.window_s:
+            return False  # window not yet filled
+        solar_max = max(s[2] for s in self._buf)
+        required = solar_max + self.safety_offset_w
+        return all(s[1] > required for s in self._buf)
+
+    def reset(self) -> None:
+        """Clear the sample buffer (called on state transitions)."""
+        self._buf.clear()
 
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
@@ -107,6 +182,12 @@ class ControlRuntime:
         watchdog_cycles: int = 3,
         # watchdog_threshold_w: grid power threshold [W] for feed-in (must be negative)
         watchdog_threshold_w: float = -10.0,
+        # ── Bypass resume guard ────────────────────────────────────────────────
+        # bypass_resume_safety_offset_w: when resuming from a full-battery pause the
+        #   theoretical battery setpoint must exceed max(solar_in_window) + offset [W]
+        #   for the entire guard window before ZFI is allowed to start discharging.
+        #   This prevents bypass/discharge toggling when solar production is high.
+        bypass_resume_safety_offset_w: float = 30.0,
     ) -> None:
         self._battery: BatteryInverterProtocol = battery
         self._sampler = RuntimeSampler(grid_meter, battery)
@@ -160,6 +241,15 @@ class ControlRuntime:
         """Minimum interval [s] between two consecutive watchdog resets (2x trigger time)."""
         self._watchdog_threshold_w: float = watchdog_threshold_w
         """Grid values below this threshold (negative = feed-in) count as a violation."""
+
+        # ── Bypass resume guard ────────────────────────────────────────────────
+        # Window is initially set to a conservative default (25 s).
+        # register_regulator() updates it automatically from the oscillation-holder
+        # settings of the first registered regulator.
+        self._bypass_guard: BypassResumeGuard = BypassResumeGuard(
+            window_s=25.0,
+            safety_offset_w=bypass_resume_safety_offset_w,
+        )
 
         # Runtime tasks
         self._running = False
@@ -220,6 +310,27 @@ class ControlRuntime:
         if self._active_regulator is None:
             self._active_regulator = regulator
             logger.info("Default regulator: %s", regulator.name)
+            # Derive bypass guard window from this regulator's oscillation config.
+            self._reconfigure_bypass_guard(regulator)
+
+    def _reconfigure_bypass_guard(self, regulator: RegulatorBase) -> None:
+        """Update bypass guard window from *regulator*'s oscillation-holder configs.
+
+        Calls ``regulator.bypass_resume_window_s()`` if the method exists; falls
+        back to the current window otherwise (preserves the existing value).
+        """
+        window_fn = getattr(regulator, "bypass_resume_window_s", None)
+        if callable(window_fn):
+            window_s: float = window_fn()
+            self._bypass_guard = BypassResumeGuard(
+                window_s=window_s,
+                safety_offset_w=self._bypass_guard.safety_offset_w,
+            )
+            logger.info(
+                "Bypass resume guard window: %.1f s (from regulator %s)",
+                window_s,
+                regulator.name,
+            )
 
     def list_regulators(self) -> list[RegulatorInfo]:
         """Return metadata for all registered regulators."""
@@ -371,6 +482,7 @@ class ControlRuntime:
         self._active_regulator = reg
         logger.info("Active regulator → %s", name)
         self._update_state()
+        self._reconfigure_bypass_guard(reg)
 
     async def update_regulator_settings(self, name: str, data: dict[str, Any]) -> None:
         """Apply settings to a (possibly non-active) regulator."""
@@ -378,6 +490,10 @@ class ControlRuntime:
             raise ValueError(f"Unknown regulator: {name!r}")
         self._regulators[name].apply_settings(data)
         logger.info("Settings updated for regulator %s", name)
+        # Recompute bypass guard window when the active regulator's config changes
+        # (oscillation holder max_period / min_rising_count may have been updated).
+        if self._regulators[name] is self._active_regulator:
+            self._reconfigure_bypass_guard(self._regulators[name])
 
     # ── State access ──────────────────────────────────────────────────────────
 
@@ -728,38 +844,55 @@ class ControlRuntime:
         if soc is not None:
             household_w = sample.total_grid_w
             if soc >= self._full_soc_pct:
-                if household_w > self._full_soc_resume_threshold_w:
-                    if self._zfi_state == ZFIState.PAUSED_FULL:
+                if self._zfi_state == ZFIState.PAUSED_FULL:
+                    # Already paused – feed the bypass guard and check if resuming is safe.
+                    # Theoretical battery setpoint ≈ household consumption:
+                    #   total_grid_w + solar_input_w   (solar goes directly to load in bypass)
+                    solar_w = float(sample.solar_input_w or 0.0)
+                    theoretical_sp_w = household_w + solar_w
+                    self._bypass_guard.add_sample(sample.timestamp, theoretical_sp_w, solar_w)
+
+                    if self._bypass_guard.is_safe_to_start(sample.timestamp):
+                        # Guard cleared: demand has consistently exceeded solar + offset
+                        # for the full observation window → safe to start discharging.
                         logger.info(
-                            "ZFI full-battery pause ended: SoC %d%% at max, "
-                            "load %.0fW > threshold %.0fW",
-                            soc,
-                            household_w,
-                            self._full_soc_resume_threshold_w,
+                            "ZFI full-battery pause ended: bypass guard cleared "
+                            "(window=%.0fs, all setpoints > solar_max+%.0fW)",
+                            self._bypass_guard.window_s,
+                            self._bypass_guard.safety_offset_w,
                         )
                         self._zfi_state = ZFIState.RUNNING
+                        self._bypass_guard.reset()
                         if self._active_regulator is not None:
                             self._active_regulator.reset()
                         await self._battery.start_discharge()
                 else:
-                    if self._zfi_state != ZFIState.PAUSED_FULL:
+                    # Running (RUNNING / SOFT_LIMITED) at max SoC – enter pause when load is low.
+                    if household_w <= self._full_soc_resume_threshold_w:
                         logger.info(
                             "ZFI full-battery pause: SoC %d%% >= max %d%%, "
-                            "load %.0fW <= threshold %.0fW",
+                            "load %.0fW <= threshold %.0fW – bypass guard started "
+                            "(window=%.0fs, offset=%.0fW)",
                             soc,
                             self._full_soc_pct,
                             household_w,
                             self._full_soc_resume_threshold_w,
+                            self._bypass_guard.window_s,
+                            self._bypass_guard.safety_offset_w,
                         )
                         self._zfi_state = ZFIState.PAUSED_FULL
+                        # Reset guard so a clean observation window starts from now.
+                        self._bypass_guard.reset()
                         await self._battery.stop()
             elif self._zfi_state == ZFIState.PAUSED_FULL:
+                # SoC dropped below max → bypass mode ended → resume immediately.
                 logger.info(
                     "ZFI full-battery pause ended: SoC %s%% < max %d%%",
                     soc,
                     self._full_soc_pct,
                 )
                 self._zfi_state = ZFIState.RUNNING
+                self._bypass_guard.reset()
                 if self._active_regulator is not None:
                     self._active_regulator.reset()
                 await self._battery.start_discharge()

@@ -26,6 +26,37 @@ update:
   remote: origin  # Name of the git remote
 
 # Per-phase controller settings
+# ────────────────────────────────────────────────────────────────────────────
+# Bypass resume guard (full-battery bypass → discharge anti-toggling)
+# ────────────────────────────────────────────────────────────────────────────
+# Problem: when the battery is at 100 % SoC the inverter enters bypass mode
+# (solar PV flows directly to the load).  Starting discharge in this state
+# can cause rapid toggling: battery starts → solar+battery over-supply →
+# ZFI pulls battery back to 0 → inverter returns to bypass → repeat.
+#
+# Solution: before allowing discharge to start the runtime checks that, over
+# a rolling observation window, the *theoretical battery setpoint* (≈ household
+# consumption = total_grid_w + solar_input_w) has *always* exceeded
+#   max(solar_in_window) + bypass_resume_safety_offset_w
+#
+# The observation window duration is NOT user-configurable; it is derived
+# automatically from the oscillation-holder settings of the active regulator:
+#
+#   window_s = max( holder.max_period ) × max( holder.min_rising_count ) + 1 s
+#
+# Example with default holder config (max_period=8 s, min_rising_count=3):
+#   window_s = 8 × 3 + 1 = 25 s
+#
+# This ensures the guard covers at least one full oscillation-detection cycle,
+# making it very unlikely that a newly started discharge will re-trigger the
+# bypass/discharge toggling pattern.
+#
+# The only user-tunable parameter is the safety offset, passed as
+# bypass_resume_safety_offset_w to ControlRuntime (default: 30 W).
+# It can be adjusted in main.py or left at the default.
+#
+# Tuning the holder settings (max_period, min_rising_count below) also
+# implicitly changes the bypass guard window – no separate config is needed.
 phases:
 
 # Phase A (Steering – no battery inverter)
@@ -40,7 +71,7 @@ phases:
       holder:
         threshold: 15.0  # Minimum amplitude [W] to confirm oscillation
         min_period: 1.0 # Shortest detectable period [s]
-        max_period: 10.0 # Longest detectable period [s]
+        max_period: 8.0 # Longest detectable period [s]
         period_variance: 1.2 # Allowed jitter factor for period matching
         time_threshold: 0.6 # Minimum duty cycle (0..1) – fraction of cycle the load must be active
         min_rising_count: 3 # Minimum rising edges required to confirm oscillation
@@ -70,7 +101,7 @@ phases:
       holder:
         threshold: 30.0  # Minimum amplitude [W] to confirm oscillation
         min_period: 1.0 # Shortest detectable period [s]
-        max_period: 10.0 # Longest detectable period [s]
+        max_period: 8.0 # Longest detectable period [s]
         period_variance: 1.2 # Allowed jitter factor for period matching
         time_threshold: 0.6 # Minimum duty cycle (0..1) – fraction of cycle the load must be active
         min_rising_count: 3 # Minimum rising edges required to confirm oscillation
@@ -98,7 +129,7 @@ phases:
       holder:
         threshold: 15.0  # Minimum amplitude [W] to confirm oscillation
         min_period: 1.0 # Shortest detectable period [s]
-        max_period: 10.0 # Longest detectable period [s]
+        max_period: 8.0 # Longest detectable period [s]
         period_variance: 1.2 # Allowed jitter factor for period matching
         time_threshold: 0.6 # Minimum duty cycle (0..1) – fraction of cycle the load must be active
         min_rising_count: 3 # Minimum rising edges required to confirm oscillation

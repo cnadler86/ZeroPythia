@@ -7,10 +7,15 @@ Covers:
 * test_zfi_resumes_after_hysteresis                   – SoC rises above (min + hysteresis) → ZFI running
 * test_zfi_no_premature_resume                        – SoC in hysteresis → soft-limit
 * test_full_battery_pauses_zfi                        – SoC=100, low load → ZFI paused_full
-* test_full_battery_resumes_immediately_at_max_soc    – SoC=100, high load → ZFI running
+* test_full_battery_resumes_after_guard_window        – guard window filled with high load → ZFI running
 * test_full_battery_rest_cleared_when_not_in_zfi_mode – AC_CHARGE mode → ZFI inactive
 * test_high_soc_charge_limit                          – SoC > 90% reduces AC charge to half
 * test_zfi_plan_step_uses_config_max                  – AutoModeManager dispatches config_max_w for ZFI
+* test_bypass_guard_blocks_resume_during_high_solar   – solar high, setpoints below required → stays paused
+* test_bypass_guard_allows_resume_when_solar_zero     – no solar, high load → guard clears quickly
+* test_bypass_guard_blocked_by_solar_spike            – a solar spike raises the required bar
+* test_bypass_guard_reset_on_soc_drop                 – SoC < max → bypass guard reset, immediate resume
+* test_bypass_resume_window_s_from_holder_config      – window derived from holder max_period * min_rising
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ from typing import Any, Optional, cast
 
 import pytest
 
-from ZeroPythia.runtime.control_runtime import ControlRuntime
+from ZeroPythia.runtime.control_runtime import BypassResumeGuard, ControlRuntime
 from ZeroPythia.runtime.models import DeviceMode, GridSample, ZFIState
 
 
@@ -129,17 +134,20 @@ def _make_sample(
     grid_w: float = 100.0,
     battery_output_w: float = 0.0,
     charge_input_w: Optional[float] = None,
+    solar_input_w: Optional[float] = None,
+    timestamp: Optional[float] = None,
 ) -> GridSample:
     total = grid_w
     split = total / 3
     return GridSample(
-        timestamp=time.time(),
+        timestamp=timestamp if timestamp is not None else time.time(),
         phase_a_w=split,
         phase_b_w=split,
         phase_c_w=split,
         battery_output_w=battery_output_w,
         soc_percent=soc,
         charge_input_w=charge_input_w,
+        solar_input_w=solar_input_w,
     )
 
 
@@ -153,6 +161,8 @@ def _make_runtime(
     full_soc_resume_threshold_w: int = 50,
     high_soc_charge_limit_pct: int = 90,
     high_soc_charge_limit_w: Optional[int] = None,
+    bypass_resume_safety_offset_w: float = 30.0,
+    bypass_resume_window_s: float = 5.0,  # short window for tests
 ) -> ControlRuntime:
     rt = ControlRuntime(
         FakeGrid(),
@@ -162,11 +172,17 @@ def _make_runtime(
         full_soc_resume_threshold_w=full_soc_resume_threshold_w,
         high_soc_charge_limit_pct=high_soc_charge_limit_pct,
         high_soc_charge_limit_w=high_soc_charge_limit_w,
+        bypass_resume_safety_offset_w=bypass_resume_safety_offset_w,
     )
     # Inject hardware SoC limits directly (avoids async start() in unit tests)
     rt._min_soc_pct = min_soc_pct
     rt._full_soc_pct = full_soc_pct
     rt._min_soc_resume_pct = min_soc_pct + min_soc_hysteresis_pct
+    # Use a short window for tests so we don't need wall-clock delays
+    rt._bypass_guard = BypassResumeGuard(
+        window_s=bypass_resume_window_s,
+        safety_offset_w=bypass_resume_safety_offset_w,
+    )
     return rt
 
 
@@ -240,21 +256,31 @@ async def test_full_battery_pauses_zfi_when_load_not_above_threshold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_battery_resumes_immediately_at_max_soc_when_load_high() -> None:
-    """At max SoC, high positive household load should resume discharge immediately."""
+async def test_full_battery_resumes_after_guard_window_with_high_load() -> None:
+    """After the bypass guard window fills with consistently high load (no solar),
+    ZFI should resume even though SoC is still at max."""
     batt = FakeBattery(soc=100)
+    # window_s=5 → need 5 s of consistent samples; safety_offset=30 → load must be > 30 W
     rt = _make_runtime(
         batt,
         full_soc_pct=100,
         full_soc_resume_threshold_w=50,
+        bypass_resume_safety_offset_w=30.0,
+        bypass_resume_window_s=5.0,
     )
     reg = FakeRegulator()
     rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
     rt._active_regulator = cast(Any, reg)
     rt._zfi_state = ZFIState.PAUSED_FULL
 
-    sample = _make_sample(soc=100, grid_w=150.0)
-    await rt._update_soc_guards(sample, time.monotonic())
+    # Send 6 samples spanning 6 s, each with high load and no solar.
+    # theoretical_sp = grid(150) + solar(0) = 150 W  > solar_max(0) + offset(30) = 30 W → passes.
+    base_ts = 1000.0
+    for i in range(6):
+        sample = _make_sample(
+            soc=100, grid_w=150.0, solar_input_w=0.0, timestamp=base_ts + i
+        )
+        await rt._update_soc_guards(sample, time.monotonic())
 
     assert rt._zfi_state == ZFIState.RUNNING
     assert reg.reset_calls == 1
@@ -397,3 +423,206 @@ async def test_zfi_plan_step_uses_config_max_w() -> None:
         f"Expected config_max_w={config_max_w}, got {max_dis_w}. "
         "ZFI step must not use discharge_ac_wh."
     )
+
+
+# ── Tests: BypassResumeGuard unit tests ──────────────────────────────────────
+
+
+def test_bypass_guard_not_ready_before_window_full() -> None:
+    """Guard must not clear before the observation window is fully populated."""
+    guard = BypassResumeGuard(window_s=10.0, safety_offset_w=30.0)
+    base = 1000.0
+    # Add samples for only 5 s (window = 10 s → not full)
+    for i in range(6):
+        guard.add_sample(base + i, theoretical_setpoint_w=300.0, solar_w=50.0)
+    assert not guard.is_safe_to_start(base + 5)
+
+
+def test_bypass_guard_clears_after_full_window_no_solar() -> None:
+    """Guard must clear once the window is full and all setpoints exceed offset."""
+    guard = BypassResumeGuard(window_s=5.0, safety_offset_w=30.0)
+    base = 1000.0
+    # solar = 0 → required = 0 + 30 = 30 W; theoretical_sp = 150 W → all pass
+    for i in range(6):
+        guard.add_sample(base + i, theoretical_setpoint_w=150.0, solar_w=0.0)
+    assert guard.is_safe_to_start(base + 5)
+
+
+def test_bypass_guard_blocks_when_setpoint_below_required() -> None:
+    """Guard must stay blocked if any sample fails the solar+offset condition."""
+    guard = BypassResumeGuard(window_s=5.0, safety_offset_w=30.0)
+    base = 1000.0
+    # solar_max = 200 W → required = 230 W; theoretical_sp = 220 W → fails
+    for i in range(6):
+        guard.add_sample(base + i, theoretical_setpoint_w=220.0, solar_w=200.0)
+    assert not guard.is_safe_to_start(base + 5)
+
+
+def test_bypass_guard_reset_clears_buffer() -> None:
+    """After reset() the guard must not be ready regardless of previous samples."""
+    guard = BypassResumeGuard(window_s=5.0, safety_offset_w=30.0)
+    base = 1000.0
+    for i in range(6):
+        guard.add_sample(base + i, theoretical_setpoint_w=300.0, solar_w=0.0)
+    assert guard.is_safe_to_start(base + 5)
+    guard.reset()
+    assert not guard.is_safe_to_start(base + 5)
+
+
+def test_bypass_guard_solar_spike_raises_required_bar() -> None:
+    """A high solar sample in the window raises solar_max, potentially blocking resume."""
+    guard = BypassResumeGuard(window_s=5.0, safety_offset_w=30.0)
+    base = 1000.0
+    # First 5 samples: solar=50, theoretical_sp=200 (200 > 50+30=80 ✓)
+    for i in range(5):
+        guard.add_sample(base + i, theoretical_setpoint_w=200.0, solar_w=50.0)
+    # 6th sample: solar spike to 250 W → solar_max=250 → required=280 W; sp=200 < 280 → fails
+    guard.add_sample(base + 5, theoretical_setpoint_w=200.0, solar_w=250.0)
+    assert not guard.is_safe_to_start(base + 5)
+
+
+# ── Tests: Bypass guard integration with ControlRuntime ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bypass_guard_blocks_resume_during_high_solar() -> None:
+    """When solar is high and setpoints are insufficient, PAUSED_FULL must be maintained."""
+    batt = FakeBattery(soc=100)
+    # safety_offset=30, window=5s; solar=180W → required=210W; theoretical_sp=200W (grid=20+solar=180) → fails
+    rt = _make_runtime(
+        batt,
+        full_soc_pct=100,
+        bypass_resume_safety_offset_w=30.0,
+        bypass_resume_window_s=5.0,
+    )
+    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
+    rt._zfi_state = ZFIState.PAUSED_FULL
+
+    base_ts = 1000.0
+    for i in range(6):
+        # grid=20W, solar=180W → theoretical_sp=200W < 210W required
+        sample = _make_sample(
+            soc=100, grid_w=20.0, solar_input_w=180.0, timestamp=base_ts + i
+        )
+        await rt._update_soc_guards(sample, time.monotonic())
+
+    # Guard never cleared → still paused
+    assert rt._zfi_state == ZFIState.PAUSED_FULL
+    assert ("discharge", None) not in batt.commands
+
+
+@pytest.mark.asyncio
+async def test_bypass_guard_allows_resume_when_load_clearly_exceeds_solar() -> None:
+    """With sufficient demand above solar + offset, guard clears and ZFI resumes."""
+    batt = FakeBattery(soc=100)
+    rt = _make_runtime(
+        batt,
+        full_soc_pct=100,
+        bypass_resume_safety_offset_w=30.0,
+        bypass_resume_window_s=5.0,
+    )
+    reg = FakeRegulator()
+    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
+    rt._active_regulator = cast(Any, reg)
+    rt._zfi_state = ZFIState.PAUSED_FULL
+
+    base_ts = 1000.0
+    for i in range(6):
+        # grid=100W, solar=150W → theoretical_sp=250W > 150+30=180W required → passes
+        sample = _make_sample(
+            soc=100, grid_w=100.0, solar_input_w=150.0, timestamp=base_ts + i
+        )
+        await rt._update_soc_guards(sample, time.monotonic())
+
+    assert rt._zfi_state == ZFIState.RUNNING
+    assert reg.reset_calls == 1
+    assert ("discharge", None) in batt.commands
+
+
+@pytest.mark.asyncio
+async def test_bypass_guard_reset_on_soc_drop_below_max() -> None:
+    """When SoC drops below max, bypass guard resets and ZFI resumes immediately."""
+    batt = FakeBattery(soc=99)
+    rt = _make_runtime(batt, full_soc_pct=100, bypass_resume_window_s=5.0)
+    reg = FakeRegulator()
+    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
+    rt._active_regulator = cast(Any, reg)
+    rt._zfi_state = ZFIState.PAUSED_FULL
+
+    # Single sample at SoC=99 (below max=100) → bypass ended → immediate resume
+    sample = _make_sample(soc=99, grid_w=100.0, solar_input_w=50.0, timestamp=1000.0)
+    await rt._update_soc_guards(sample, time.monotonic())
+
+    assert rt._zfi_state == ZFIState.RUNNING
+    assert ("discharge", None) in batt.commands
+    # Guard must have been reset
+    assert len(rt._bypass_guard._buf) == 0
+
+
+@pytest.mark.asyncio
+async def test_bypass_guard_entry_resets_guard_on_fresh_pause() -> None:
+    """Transitioning to PAUSED_FULL resets the guard so a clean window starts."""
+    batt = FakeBattery(soc=100)
+    rt = _make_runtime(
+        batt,
+        full_soc_pct=100,
+        full_soc_resume_threshold_w=50,
+        bypass_resume_safety_offset_w=30.0,
+        bypass_resume_window_s=5.0,
+    )
+    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
+    rt._zfi_state = ZFIState.RUNNING  # currently running
+
+    # Pre-populate guard with old "good" samples
+    for i in range(10):
+        rt._bypass_guard.add_sample(900.0 + i, 300.0, 0.0)
+
+    # Now send a low-load sample that triggers pause
+    sample = _make_sample(soc=100, grid_w=20.0, solar_input_w=10.0, timestamp=1000.0)
+    await rt._update_soc_guards(sample, time.monotonic())
+
+    assert rt._zfi_state == ZFIState.PAUSED_FULL
+    # Guard must have been reset – old stale samples are gone
+    assert len(rt._bypass_guard._buf) == 0
+
+
+# ── Test: bypass_resume_window_s() from ZeroFeedRegulator ────────────────────
+
+
+def test_bypass_resume_window_s_from_holder_config() -> None:
+    """Window must equal max_period * min_rising_count + 1 from all holder configs."""
+    from ZeroPythia.config.zerofeed import ZeroFeedConfig
+    from ZeroPythia.controller.oscillation_detectorv2 import BaseloadHolderSettings
+    from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+
+    cfg = ZeroFeedConfig()
+    # Set holder for phase A: max_period=8, min_rising_count=3 → 8*3+1=25
+    from ZeroPythia.config.zerofeed import FeedforwardPhaseConfig, OscillationConfig
+
+    cfg.phases["A"] = FeedforwardPhaseConfig(
+        osc=OscillationConfig(
+            holder=BaseloadHolderSettings(max_period=8.0, min_rising_count=3),
+        )
+    )
+    # Set holder for phase C: max_period=10, min_rising_count=2 → 10*2+1=21 (not max)
+    cfg.phases["C"] = FeedforwardPhaseConfig(
+        osc=OscillationConfig(
+            holder=BaseloadHolderSettings(max_period=10.0, min_rising_count=2),
+        )
+    )
+    reg = ZeroFeedRegulator(settings=cfg)
+    # max_period=10, max_min_rising_count=3 → 10*3+1=31
+    assert reg.bypass_resume_window_s() == pytest.approx(31.0)
+
+
+def test_bypass_resume_window_s_fallback_when_no_holders() -> None:
+    """Without any holder configs the window defaults to 25 s."""
+    from ZeroPythia.config.zerofeed import ZeroFeedConfig
+    from ZeroPythia.controller.zerofeed_regulator import ZeroFeedRegulator
+
+    cfg = ZeroFeedConfig()
+    # Disable all holders
+    for ph_cfg in cfg.phases.values():
+        ph_cfg.osc.holder = None
+    reg = ZeroFeedRegulator(settings=cfg)
+    assert reg.bypass_resume_window_s() == pytest.approx(25.0)

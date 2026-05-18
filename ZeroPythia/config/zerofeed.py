@@ -67,6 +67,20 @@ class OscillationConfig(BaseModel):
     ``holder``    – ``None`` disables the holder;  a ``BaseloadHolderSettings``
                     object enables it with those parameters.
     ``predictor`` – same pattern; defaults to enabled with standard settings.
+
+    Bypass resume guard
+    -------------------
+    The ``holder`` settings of *all* phases are also used to derive the
+    observation window of the **bypass resume guard** in ``ControlRuntime``.
+    The guard prevents bypass/discharge toggling when the battery is at 100 %
+    SoC and solar production is high.
+
+    Window formula::
+
+        window_s = max(holder.max_period) × max(holder.min_rising_count) + 1 s
+
+    Increasing ``max_period`` or ``min_rising_count`` therefore lengthens the
+    guard window and makes the bypass→discharge transition more conservative.
     """
 
     model_config = ConfigDict(validate_assignment=True)

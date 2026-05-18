@@ -689,6 +689,37 @@ class ZeroFeedRegulator(RegulatorBase):
 
         return self._current_setpoint if changed else None
 
+    # ── Bypass guard window ───────────────────────────────────────────────────
+
+    def bypass_resume_window_s(self) -> float:
+        """Compute the bypass → discharge safety window from oscillation-holder configs.
+
+        Formula:
+            window = max_period_across_holders × max_min_rising_count_across_holders + 1 s
+
+        Rationale
+        ---------
+        ``max_period`` is the longest oscillation period a holder can detect.
+        ``min_rising_count`` is the number of rising edges required to confirm
+        an oscillation.  The product gives the minimum time span the holder needs
+        to observe before it can flag an oscillation; adding 1 s provides a small
+        buffer.  If we wait this long *before* starting discharge we can be
+        confident that the discharge will not immediately re-trigger the
+        bypass/discharge toggling pattern.
+
+        Falls back to 25.0 s when no holders are configured.
+        """
+        holders = [
+            ph_cfg.osc.holder
+            for ph_cfg in self._cfg.phases.values()
+            if ph_cfg.osc.holder is not None
+        ]
+        if not holders:
+            return 25.0
+        max_period = max(h.max_period for h in holders)
+        max_rising_count = max(h.min_rising_count for h in holders)
+        return max_period * max_rising_count + 1.0
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def reset(self) -> None:

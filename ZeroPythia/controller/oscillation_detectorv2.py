@@ -484,7 +484,28 @@ class BaseloadPredictor(OscillationDetector):
 
 @dataclass
 class BaseloadHolderSettings(OscillationDetectorSettings):
-    """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+    """Settings for BaseloadHolder – fast short-cycle oscillation detection.
+
+    Typical use: suppress battery output spikes caused by short on/off load
+    cycles (e.g. fridge compressor, heat pump fan) with periods of 1–10 s.
+
+    Bypass resume guard
+    -------------------
+    These settings *also* drive the **bypass resume guard** in
+    ``ControlRuntime``.  When the battery is at 100 % SoC (bypass mode) and
+    solar production is high, starting discharge can cause rapid
+    bypass/discharge toggling.  The guard prevents this by requiring that
+    household demand has consistently exceeded solar + a safety offset for
+    a full *observation window* before discharge is allowed.
+
+    The window is computed as::
+
+        window_s = max_period × min_rising_count + 1 s
+
+    across all configured holders.  Increasing ``max_period`` or
+    ``min_rising_count`` therefore makes the bypass → discharge transition
+    more conservative (longer confirmation window).
+    """
 
     threshold: float = 30
     min_period: float = 1.0
