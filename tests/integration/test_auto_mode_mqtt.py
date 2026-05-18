@@ -53,6 +53,8 @@ class FakeBattery:
         self.last_command: Optional[str] = None
         self.last_power: Optional[int] = None
         self.soc = 75
+        self.max_charge_power: Optional[int] = None
+        self.max_discharge_power: Optional[int] = None
 
     async def get_ac_output_power(self) -> int:
         return 200

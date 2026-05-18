@@ -52,6 +52,8 @@ class FakeBattery:
         self._min_soc = min_soc
         self._max_soc = max_soc
         self.commands: list[tuple[str, Optional[int]]] = []
+        self.max_charge_power: Optional[int] = None
+        self.max_discharge_power: Optional[int] = None
 
     async def get_ac_output_power(self) -> int:
         return 200

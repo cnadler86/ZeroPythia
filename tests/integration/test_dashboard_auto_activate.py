@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import pytest
 
@@ -37,6 +37,8 @@ class FakeGrid:
 
 class FakeBattery:
     _setpoint_w = 200
+    max_charge_power: Optional[int] = None
+    max_discharge_power: Optional[int] = None
 
     async def get_ac_output_power(self):
         return 200

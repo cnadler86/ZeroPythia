@@ -316,12 +316,11 @@ class ControlRuntime:
     def _reconfigure_bypass_guard(self, regulator: RegulatorBase) -> None:
         """Update bypass guard window from *regulator*'s oscillation-holder configs.
 
-        Calls ``regulator.bypass_resume_window_s()`` if the method exists; falls
-        back to the current window otherwise (preserves the existing value).
+        Calls ``regulator.bypass_resume_window_s()``; if it returns ``None``
+        the current guard window is preserved (no change).
         """
-        window_fn = getattr(regulator, "bypass_resume_window_s", None)
-        if callable(window_fn):
-            window_s: float = window_fn()
+        window_s = regulator.bypass_resume_window_s()
+        if window_s is not None:
             self._bypass_guard = BypassResumeGuard(
                 window_s=window_s,
                 safety_offset_w=self._bypass_guard.safety_offset_w,
@@ -936,27 +935,9 @@ class ControlRuntime:
           1) Half of the battery's maximum AC charge power from API/HW limits.
           2) Fallback: half of the current requested/manual charge power.
         """
-        max_charge_w: Optional[int] = None
+        max_charge_w = self._battery.max_charge_power
 
-        # Preferred: explicit property exposed by the hardware client.
-        try:
-            prop = getattr(self._battery, "max_charge_power", None)
-            if isinstance(prop, int):
-                max_charge_w = prop
-        except Exception:
-            max_charge_w = None
-
-        # Fallback for clients that don't expose max_charge_power but keep device limits.
-        if not max_charge_w:
-            try:
-                limits = getattr(self._battery, "_limits", None)
-                charge_limit = getattr(limits, "charge_limit", None) if limits is not None else None
-                if isinstance(charge_limit, int):
-                    max_charge_w = charge_limit
-            except Exception:
-                max_charge_w = None
-
-        if max_charge_w and max_charge_w > 0:
+        if max_charge_w is not None and max_charge_w > 0:
             return max_charge_w // 2
         return int(fallback_base_pw) // 2
 
