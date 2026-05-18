@@ -37,20 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class PhaseControllerSettings:
-    """Settings for the feedforward phase controller (phases without inverter)."""
-
-    kp: float = 1.0
-    """Gain: 1.0 = full compensation of grid draw"""
-
-    hysteresis_w: float = 8.0
-    """Hysteresis band in watts – damped control within this zone"""
-
-    kp_hysteresis: float = 0.3
-    """Damped Kp inside the hysteresis band"""
-
-
-@dataclass
 class InverterPhaseControllerSettings:
     """Settings for the feedback phase controller (phase with inverter)."""
 
@@ -80,12 +66,6 @@ class PhaseSample:
 
     timestamp: float
     value: float
-
-
-def _sample_values(samples: Optional[list[PhaseSample]]) -> list[float]:
-    if not samples:
-        return []
-    return [sample.value for sample in samples]
 
 
 # ── Oscillation helpers ───────────────────────────────────────────────────────
@@ -130,94 +110,6 @@ class _OscillationMixin:
         if limits:
             logger.debug("get_osc_limit: active limits=%s → %.0fW", limits, min(limits))
         return min(limits) if limits else float("inf")
-
-
-# ── PhaseController (feedforward, without inverter) ──────────────────────────
-
-
-class PhaseController(_OscillationMixin):
-    """Controller for a phase WITHOUT inverter.
-
-    Encapsulates: preprocessor, P-regulator, oscillation detectors.
-
-    Input:  phase power from the energy meter (positive = grid draw).
-    Output: correction = desired battery compensation for this phase.
-
-    Feedforward: no stability risk, because the battery does not affect
-    this phase (battery is connected to a different phase).
-    """
-
-    def __init__(
-        self,
-        settings: PhaseControllerSettings,
-        holder_settings: Optional[BaseloadHolderSettings] = None,
-        predictor_settings: Optional[BaseloadPredictorSettings] = None,
-    ):
-        self.settings = settings
-        self.preprocessor = HysteresisPreprocessor(hysteresis=settings.hysteresis_w)
-        self.holder = BaseloadHolder(holder_settings) if holder_settings else None
-        self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
-        self._last_output: float = 0.0
-        self._last_controller_output: float = 0.0
-        self._last_osc_limit: float = float("inf")
-
-    def calculate(
-        self,
-        phase_power_w: list[float],
-        target_power_w: float,
-        osc_samples: Optional[list[PhaseSample]] = None,
-    ) -> float:
-        """Compute the correction value (feedforward compensation).
-
-        Args:
-            phase_power_w: Latest samples for this phase.
-                Positive = grid draw, negative = feed-in.
-
-        Returns:
-            Correction value (already capped by oscillation limit).
-        """
-        osc_limit = self.get_osc_limit(osc_samples)
-        self._last_osc_limit = osc_limit
-
-        if not phase_power_w:
-            self._last_output = min(self._last_output, osc_limit)
-            return self._last_output
-
-        filtered = self.preprocessor.process(phase_power_w)
-        if filtered is None:
-            self._last_output = min(self._last_output, osc_limit)
-            return self._last_output
-
-        # Feedforward: compensate grid draw above target
-        error = filtered - target_power_w
-        if abs(error) < self.settings.hysteresis_w:
-            compensation = self.settings.kp_hysteresis * error
-        else:
-            compensation = self.settings.kp * error
-
-        # Anti-export guard: positive correction must not exceed current
-        # available draw above the target for this phase.
-        current_phase = phase_power_w[-1]
-        max_positive_correction = max(current_phase - target_power_w, 0.0)
-
-        # Apply oscillation limit and anti-export guard
-        correction = min(compensation, osc_limit, max_positive_correction)
-        self._last_controller_output = compensation
-        self._last_output = correction
-
-        return correction
-
-    @property
-    def last_output(self) -> float:
-        return self._last_output
-
-    @property
-    def last_controller_output(self) -> float:
-        return self._last_controller_output
-
-    @property
-    def last_osc_limit(self) -> float:
-        return self._last_osc_limit
 
 
 # ── InverterPhaseController (feedback, with inverter) ─────────────────────────

@@ -25,7 +25,7 @@ from .oscillation_detectorv2 import (
     BaseloadPredictor,
     BaseloadPredictorSettings,
 )
-from .phase_controller import PhaseSample
+from .phase_controller import PhaseSample, _OscillationMixin
 from .pre_processor import HysteresisPreprocessor
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class FeedforwardSteuerungSettings:
 # ── Feedforward control ───────────────────────────────────────────────────────
 
 
-class FeedforwardSteuerung:
+class FeedforwardSteuerung(_OscillationMixin):
     """P-controller for a phase without inverter.
 
     Computes a battery demand to bring the grid draw of this phase to 0 W.
@@ -82,39 +82,6 @@ class FeedforwardSteuerung:
         self._last_raw_output: float = 0.0
         self._last_osc_limit: float = float("inf")
 
-    # ── Oscillation ───────────────────────────────────────────────────
-
-    @property
-    def is_oscillating(self) -> bool:
-        """True if at least one oscillation detector is active."""
-        return (self.holder is not None and self.holder.is_oscillating) or (
-            self.predictor is not None and self.predictor.is_oscillating
-        )
-
-    def feed_osc_samples(self, samples: Optional[list[PhaseSample]] = None) -> float:
-        """Feed oscillation detectors with new samples and return the active limit.
-
-        Only positive values (grid draw) are passed to the detectors –
-        feed-in is not an indicator of load oscillation.
-
-        Returns:
-            Active oscillation limit in watts (float('inf') when no detector is active).
-        """
-        if samples:
-            for sample in samples:
-                if sample.value > 0:
-                    if self.holder:
-                        self.holder.add_sample(sample.value, sample.timestamp)
-                    if self.predictor:
-                        self.predictor.add_sample(sample.value, sample.timestamp)
-
-        limits: list[float] = []
-        if self.holder and self.holder.is_oscillating:
-            limits.append(self.holder.get_limit())
-        if self.predictor and self.predictor.is_oscillating:
-            limits.append(self.predictor.get_limit())
-        return min(limits) if limits else float("inf")
-
     # ── Control calculation ───────────────────────────────────────────
 
     def calculate(
@@ -139,7 +106,7 @@ class FeedforwardSteuerung:
         Returns:
             Battery demand in watts. Always >= 0, already capped by osc limit.
         """
-        osc_limit = self.feed_osc_samples(osc_samples)
+        osc_limit = self.get_osc_limit(osc_samples)
         self._last_osc_limit = osc_limit
 
         if not phase_power_w:

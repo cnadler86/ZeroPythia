@@ -42,10 +42,6 @@ from ZeroPythia.controller.feedforward_steuerung import (
     FeedforwardSteuerung,
     FeedforwardSteuerungSettings,
 )
-from ZeroPythia.controller.oscillation_detectorv2 import (
-    BaseloadHolderSettings,
-    BaseloadPredictorSettings,
-)
 from ZeroPythia.controller.phase_controller import (
     InverterPhaseController,
     InverterPhaseControllerSettings,
@@ -60,16 +56,6 @@ logger = logging.getLogger(__name__)
 # ── Controller builder helpers ────────────────────────────────────────────────
 
 
-def _make_holder(osc) -> Optional[BaseloadHolderSettings]:
-    """Return the holder settings, or None if disabled."""
-    return osc.holder
-
-
-def _make_predictor(osc) -> Optional[BaseloadPredictorSettings]:
-    """Return the predictor settings, or None if disabled."""
-    return osc.predictor
-
-
 def _build_ff(ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
     return FeedforwardSteuerung(
         settings=FeedforwardSteuerungSettings(
@@ -77,8 +63,8 @@ def _build_ff(ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
             kp_hysteresis=ph_cfg.kp_hysteresis,
             hysteresis_w=ph_cfg.hysteresis_w,
         ),
-        holder_settings=_make_holder(ph_cfg.osc),
-        predictor_settings=_make_predictor(ph_cfg.osc),
+        holder_settings=ph_cfg.osc.holder,
+        predictor_settings=ph_cfg.osc.predictor,
     )
 
 
@@ -92,8 +78,8 @@ def _build_fb(ph_cfg: FeedbackPhaseConfig, target_power_w: float) -> InverterPha
             target_power_w=target_power_w,
             feedback_enabled=ph_cfg.feedback_enabled,
         ),
-        holder_settings=_make_holder(ph_cfg.osc),
-        predictor_settings=_make_predictor(ph_cfg.osc),
+        holder_settings=ph_cfg.osc.holder,
+        predictor_settings=ph_cfg.osc.predictor,
     )
 
 

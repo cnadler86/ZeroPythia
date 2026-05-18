@@ -333,18 +333,16 @@ class ControlRuntime:
 
     def list_regulators(self) -> list[RegulatorInfo]:
         """Return metadata for all registered regulators."""
-        result = []
-        for reg in self._regulators.values():
-            result.append(
-                RegulatorInfo(
-                    name=reg.name,
-                    description=reg.description,
-                    is_active=(reg is self._active_regulator),
-                    settings_schema=reg.settings_schema(),
-                    current_settings=reg.get_current_settings(),
-                )
+        return [
+            RegulatorInfo(
+                name=reg.name,
+                description=reg.description,
+                is_active=(reg is self._active_regulator),
+                settings_schema=reg.settings_schema(),
+                current_settings=reg.get_current_settings(),
             )
-        return result
+            for reg in self._regulators.values()
+        ]
 
     # ── Mode / regulator control ──────────────────────────────────────────────
 
