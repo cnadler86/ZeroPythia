@@ -21,6 +21,8 @@ dependencies = [
 dev = [
     "httpx",
     "matplotlib",
+    "pytest",
+    "pytest-asyncio",
     "ruff",
     "tqdm",
     "ty",
