@@ -9,6 +9,7 @@ All high-level methods are inherited from BatteryManager → SolarFlowBattery.
 """
 
 import asyncio
+import json
 import logging
 from typing import Dict, Optional
 
@@ -124,6 +125,9 @@ class SolarFlowAsyncClient(BatteryManager):
                     return False
 
             payload = self._prepare_properties_payload(properties, smart_mode)
+            payload_size = len(json.dumps(payload).encode())
+            if payload_size > 512:
+                raise ValueError(f"Payload size {payload_size} exceeds 512 bytes limit")
             prop_keys = list(properties.keys())
             logger.debug(
                 "POST %s sn=%s props=%s",

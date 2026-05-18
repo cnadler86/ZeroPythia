@@ -339,6 +339,8 @@ class Properties(BaseModel):
     solar_power_2: int = Field(default=0, description="Solar line 2 input power in W")
     solar_power_3: int = Field(default=0, description="Solar line 3 input power in W")
     solar_power_4: int = Field(default=0, description="Solar line 4 input power in W")
+    solar_power_5: Optional[int] = Field(default=None, description="Solar line 5 input power in W")
+    solar_power_6: Optional[int] = Field(default=None, description="Solar line 6 input power in W")
 
     # ==================== Bypass & Reverse - Read-Only ====================
 
@@ -367,7 +369,9 @@ class Properties(BaseModel):
 
     # ==================== Voltage & Monitoring - Read-Only ====================
 
-    bat_volt: int = Field(default=0, description="Battery voltage")
+    bat_volt: int = Field(
+        default=0, description="Battery voltage (0.01V units; divide by 100 for V)"
+    )
     soc_limit: int = Field(
         default=0, description="0: Normal, 1: Charge limit reached, 2: Discharge limit reached"
     )
@@ -418,6 +422,24 @@ class Properties(BaseModel):
 
     rssi: int = Field(default=0, description="WiFi signal strength (RSSI)")
     is_error: int = Field(default=0, description="Error flag: 0=No error, 1=Error")
+
+    # ==================== Device-specific optional (not all models) ====================
+
+    fan_switch: Optional[int] = Field(default=None, description="Fan state: 0=off, 1=on (RO)")
+    ac_coupling_state: Optional[int] = Field(
+        default=None,
+        description="AC Coupling bitfield: Bit0=input present (auto-cleared), Bit1=AC input flag, Bit2=overload, Bit3=excess power",
+    )
+    dry_node_state: Optional[int] = Field(
+        default=None,
+        description="Dry contact status (1=Connected, 0=Disconnected; may be reversed per wiring)",
+    )
+    fm_volt: Optional[int] = Field(
+        default=None, alias="FMVolt", description="Voltage activation value"
+    )
+    bat_cal_time: Optional[int] = Field(
+        default=None, description="Battery calibration time in minutes (RW)"
+    )
 
 
 class BatteryPack(BaseModel):
@@ -546,7 +568,7 @@ class ProcessedBatteryPack(BaseModel):
         """Build a ProcessedBatteryPack from raw protocol data."""
         temp_celsius = (pack.max_temp - 2731) / 10.0 if pack.max_temp else 0.0
         voltage_v = pack.total_vol / 100.0 if pack.total_vol else 0.0
-        batcur = pack.batcur
+        batcur = pack.batcur & 0xFFFF  # mask to uint16 (defensive against oversized JSON ints)
         signed_current = batcur - 65536 if batcur > 32767 else batcur
         current_a = signed_current / 10.0
         max_cell_v = pack.max_vol / 100.0 if pack.max_vol else 0.0
