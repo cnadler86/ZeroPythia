@@ -220,3 +220,87 @@ class TestBaseloadPredictorGetLimit:
             f"Bug regression: with min_high_time={SHORT_HIGH} s < reaction_time={REACTION} s "
             f"the rising-edge sample must still return inf, got {limit}"
         )
+
+
+# ── Fundamental backfill tests ─────────────────────────────────────────────────────────────────
+
+
+class TestBaseloadPredictorFundamental:
+    """Tests for the first detection cycle using backfilled falling edges.
+
+    Signal design (same constants as above):
+      - Rising edges at t=0, 30, 60  (3rd edge triggers detection, min_rising_count=3)
+      - Falling edges backfilled from edge detector: t=10, 40
+      - min_high_time = 10 s  →  predicted_falling after 3rd rise = 60+10 = 70
+      - reaction_time = 4.0 s →  reaction window = [66, 70)
+
+    These tests verify that – after the backfill fix – the predictor can react
+    already in the FIRST high phase after detection, not only from the second one.
+    """
+
+    REACTION_TIME: float = 4.0
+
+    def _build(self) -> BaseloadPredictor:
+        """Feed 2 full cycles then the single rising-edge sample that triggers detection."""
+        pred = _make_predictor(reaction_time=self.REACTION_TIME)
+        _feed_cycle(pred, t_rising=0.0)
+        _feed_cycle(pred, t_rising=PERIOD_S)
+        # 3rd rising edge only – triggers oscillation detection + backfill
+        pred.add_sample(HIGH_W, 2 * PERIOD_S)
+        return pred
+
+    # ── Precondition ─────────────────────────────────────────────────────────
+
+    def test_is_oscillating_after_third_rising_edge(self) -> None:
+        pred = self._build()
+        assert pred.is_oscillating
+
+    def test_falling_times_backfilled(self) -> None:
+        """After detection, _falling_times must contain the pre-detection falling edges."""
+        pred = self._build()
+        assert len(pred._falling_times) >= 2, (
+            f"Expected at least 2 backfilled falling edges, got {pred._falling_times}"
+        )
+
+    # ── 3rd rising edge: no limit ─────────────────────────────────────────────
+
+    def test_limit_inf_at_third_rising_edge(self) -> None:
+        """At the exact moment of the 3rd rising edge, limit must be inf."""
+        pred = self._build()
+        # _current_timestamp == last_rising → rising-edge guard must return inf
+        assert pred._phase == "high"
+        assert pred.get_limit() == float("inf"), (
+            "Expected inf at the 3rd rising-edge sample (first detection moment)"
+        )
+
+    # ── Before reaction window: no limit ─────────────────────────────────────
+
+    def test_limit_inf_before_reaction_window(self) -> None:
+        """Sample at predicted_falling - reaction_time - 1.5 s → still inf."""
+        pred = self._build()
+        # predicted_falling = 2*30 + 10 = 70, window_start = 70 - 4 = 66
+        # t = 70 - 4 - 1.5 = 64.5
+        t_before = 2 * PERIOD_S + HIGH_DURATION_S - self.REACTION_TIME - 1.5  # 64.5
+        pred.add_sample(HIGH_W, t_before)
+        assert pred._phase == "high"
+        assert pred.get_limit() == float("inf"), (
+            f"Expected inf at t={t_before} (reaction window starts at 66)"
+        )
+
+    # ── Inside reaction window: base_load limit ───────────────────────────────
+
+    def test_limit_base_load_in_reaction_window(self) -> None:
+        """Sample at predicted_falling - reaction_time + 0.5 s → base_load."""
+        pred = self._build()
+        # predicted_falling = 70, window_start = 66
+        # t = 70 - 4 + 0.5 = 66.5
+        t_inside = 2 * PERIOD_S + HIGH_DURATION_S - self.REACTION_TIME + 0.5  # 66.5
+        pred.add_sample(HIGH_W, t_inside)
+        assert pred._phase == "high"
+        limit = pred.get_limit()
+        assert limit < float("inf"), (
+            f"Expected base_load limit at t={t_inside} (inside reaction window), got inf"
+        )
+        assert limit == pytest.approx(BASE_W, rel=0.5), (
+            f"Expected limit ≈ {BASE_W} W (base load), got {limit} W"
+        )

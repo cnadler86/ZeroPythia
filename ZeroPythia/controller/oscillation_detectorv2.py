@@ -282,6 +282,10 @@ class OscillationDetector:
                     # Edge fits - add it and update
                     self._rising_times.append(last_rising)
                     self._rising_times_set.add(last_rising)
+                    # Trim to keep only (min_rising_count + 1) recent entries
+                    while len(self._rising_times) > self.min_rising_count + 1:
+                        oldest = self._rising_times.pop(0)
+                        self._rising_times_set.discard(oldest)
                     # Recalculate period from recent edges
                     recent_times = self._rising_times[-self.min_rising_count :]
                     if len(recent_times) >= 2:
@@ -328,6 +332,8 @@ class OscillationDetector:
             "Oscillation started with period %s",
             self.rising_period,
         )
+        # Backfill falling edges that were detected before oscillation was confirmed
+        self._update_falling_edges()
 
     def _update_falling_edges(self) -> None:
         if self.is_oscillating:
@@ -337,6 +343,10 @@ class OscillationDetector:
                 if edge not in self._falling_times_set:
                     self._falling_times.append(edge)
                     self._falling_times_set.add(edge)
+                    # Trim to keep only (min_rising_count + 1) recent entries
+                    while len(self._falling_times) > self.min_rising_count + 1:
+                        oldest = self._falling_times.pop(0)
+                        self._falling_times_set.discard(oldest)
 
     def get_min_rising_falling_time(self) -> float | None:
         """Get the minimum time between rising and falling edges since oscillation started.
@@ -442,6 +452,9 @@ class BaseloadPredictor(OscillationDetector):
         self.reaction_time = settings.reaction_time
 
     def get_limit(self) -> float:
+        if not self.is_oscillating:
+            return float("inf")
+
         # In low phase, always return base load
         if self._phase == "low":
             return self.base_load or self._last_value
@@ -457,7 +470,12 @@ class BaseloadPredictor(OscillationDetector):
             # (_current_timestamp == last_rising) so normal regulation can respond.
             if self._current_timestamp > last_rising:
                 expected_falling_time = last_rising + min_high_time
-                if self._current_timestamp >= expected_falling_time - self.reaction_time:
+                # Apply limit only when inside the reaction window AND the predicted
+                # falling edge is still in the future (guards against reaction_time >= min_high_time).
+                if (
+                    self._current_timestamp >= expected_falling_time - self.reaction_time
+                    and expected_falling_time > self._current_timestamp
+                ):
                     return self.base_load or self._last_value
 
         # No predictor limit – normal regulation
