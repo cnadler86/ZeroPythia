@@ -243,8 +243,13 @@ class BatteryManager(SolarFlowBattery, BatteryInverterProtocol):
                 logger.warning("start_discharge: setpoint %dW not confirmed in API", target)
         else:
             ok = await self._set_properties(props, smart_mode=True)
-            if ok and not await self._await_setpoint_confirmed(target, is_charge=False):
-                logger.warning("start_discharge: setpoint %dW not confirmed", target)
+            if ok:
+                if not await self._await_setpoint_confirmed(target, is_charge=False):
+                    logger.warning("start_discharge: setpoint %dW not confirmed", target)
+                if not await self._await_power_settled(target, is_charge=False):
+                    logger.warning(
+                        "start_discharge: inverter did not settle at %dW – proceeding", target
+                    )
 
         if not ok:
             logger.error("start_discharge: hardware error – command failed")
