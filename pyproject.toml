@@ -1,6 +1,6 @@
 [project]
 name = "ZeroPythia"
-version = "0.1.0"
+version = "0.1.1"
 description = "Three-phase zero-feed-in battery controller with feedforward + feedback regulation for one phase inverters."
 readme = "README.md"
 license-files = ["LICENSE.md"]
