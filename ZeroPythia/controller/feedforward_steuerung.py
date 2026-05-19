@@ -73,11 +73,22 @@ class FeedforwardSteuerung(_OscillationMixin):
         settings: FeedforwardSteuerungSettings,
         holder_settings: Optional[BaseloadHolderSettings] = None,
         predictor_settings: Optional[BaseloadPredictorSettings] = None,
+        phase_label: str | None = None,
     ):
         self.settings = settings
+        self._phase_label = phase_label or "?"
+        self._osc_log_label = f"FF phase={self._phase_label}"
         self.preprocessor = HysteresisPreprocessor(hysteresis=settings.hysteresis_w)
-        self.holder = BaseloadHolder(holder_settings) if holder_settings else None
-        self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
+        self.holder = (
+            BaseloadHolder(holder_settings, phase_label=self._phase_label)
+            if holder_settings
+            else None
+        )
+        self.predictor = (
+            BaseloadPredictor(predictor_settings, phase_label=self._phase_label)
+            if predictor_settings
+            else None
+        )
         self._last_output: float = 0.0
         self._last_raw_output: float = 0.0
         self._last_osc_limit: float = float("inf")
@@ -138,8 +149,9 @@ class FeedforwardSteuerung(_OscillationMixin):
         self._last_output = output
 
         logger.debug(
-            "FFSteuerung: phase_last=%.0f W  filtered=%.1f W  error=%.1f W  "
+            "FFSteuerung[%s]: phase_last=%.0fW filtered=%.1fW error=%.1fW "
             "raw=%.1f W  osc_limit=%.0f W  anti_exp=%.0f W  → output=%.1f W",
+            self._phase_label,
             current_phase,
             filtered,
             error,

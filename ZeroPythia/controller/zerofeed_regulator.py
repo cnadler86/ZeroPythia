@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 # ── Controller builder helpers ────────────────────────────────────────────────
 
 
-def _build_ff(ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
+def _build_ff(phase: str, ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
     return FeedforwardSteuerung(
         settings=FeedforwardSteuerungSettings(
             kp=ph_cfg.kp,
@@ -65,10 +65,15 @@ def _build_ff(ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
         ),
         holder_settings=ph_cfg.osc.holder,
         predictor_settings=ph_cfg.osc.predictor,
+        phase_label=phase,
     )
 
 
-def _build_fb(ph_cfg: FeedbackPhaseConfig, target_power_w: float) -> InverterPhaseController:
+def _build_fb(
+    phase: str,
+    ph_cfg: FeedbackPhaseConfig,
+    target_power_w: float,
+) -> InverterPhaseController:
     return InverterPhaseController(
         settings=InverterPhaseControllerSettings(
             kp_draw=ph_cfg.kp_draw,
@@ -80,6 +85,7 @@ def _build_fb(ph_cfg: FeedbackPhaseConfig, target_power_w: float) -> InverterPha
         ),
         holder_settings=ph_cfg.osc.holder,
         predictor_settings=ph_cfg.osc.predictor,
+        phase_label=phase,
     )
 
 
@@ -123,11 +129,28 @@ class _Core:
         self._ff = {}
         for ph, ph_cfg in cfg.phases.items():
             if isinstance(ph_cfg, FeedforwardPhaseConfig):
-                self._ff[ph] = _build_ff(ph_cfg)
+                self._ff[ph] = _build_ff(ph, ph_cfg)
         fb_cfg = cfg.phases.get(cfg.control_phase)
         if not isinstance(fb_cfg, FeedbackPhaseConfig):
             raise ValueError(f"control_phase={cfg.control_phase!r} has no FeedbackPhaseConfig")
-        self._fb = _build_fb(fb_cfg, cfg.target_power_w)
+        self._fb = _build_fb(cfg.control_phase, fb_cfg, cfg.target_power_w)
+
+        ff_summary = ", ".join(
+            f"{ph}(holder={'on' if ctrl.holder else 'off'}, predictor={'on' if ctrl.predictor else 'off'})"
+            for ph, ctrl in sorted(self._ff.items())
+        )
+        fb_summary = (
+            f"{cfg.control_phase}(holder={'on' if self._fb.holder else 'off'}, "
+            f"predictor={'on' if self._fb.predictor else 'off'})"
+            if self._fb is not None
+            else "none"
+        )
+        logger.info(
+            "ZeroFeed controllers built: control_phase=%s ff=[%s] fb=%s",
+            cfg.control_phase,
+            ff_summary or "none",
+            fb_summary,
+        )
 
     # ── Control calculation ───────────────────────────────────────────────────
 
@@ -180,17 +203,19 @@ class _Core:
                 )
                 for i in range(n)
             ]
-            # DIAG: log real_fb_samples to debug oscillation detection starvation
-            _vals = [round(s.value, 1) for s in real_fb_samples]
+            # DIAG: summarize estimated real-load samples for oscillation analysis.
+            _vals = [s.value for s in real_fb_samples]
             _pos = sum(1 for v in _vals if v > 0)
             logger.debug(
-                "OSC-DIAG [%s]: ff_sum=%.0fW  batt_hist[-1]=%.0fW  "
-                "ctrl_grid[-1]=%.0fW  real_fb_samples=%s  pos_count=%d/%d",
+                "OSC-DIAG[%s]: ff_sum=%.0fW batt_last=%.0fW ctrl_last=%.0fW "
+                "real_fb_last=%.1fW min=%.1fW max=%.1fW pos=%d/%d",
                 ctrl_ph,
                 ff_sum,
                 batt_hist[-1] if batt_hist else float("nan"),
                 ctrl_samples[-1].value if ctrl_samples else float("nan"),
-                _vals,
+                _vals[-1],
+                min(_vals),
+                max(_vals),
                 _pos,
                 len(_vals),
             )

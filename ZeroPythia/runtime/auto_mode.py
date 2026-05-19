@@ -309,8 +309,10 @@ class AutoModeManager:
         if self._last_inv_mode == InverterMode.DISCHARGE_ZERO_FEED_IN and self._in_fallback:
             return  # already in fallback, nothing changed
         logger.info(
-            "AutoMode: no plan active, falling back to DISCHARGE_ZERO_FEED (device_id=%s)",
+            "AutoMode fallback: no active plan-step -> DISCHARGE_ZERO_FEED "
+            "(device_id=%s, max_discharge=%dW)",
             self._device_id,
+            self._config_max_w,
         )
         await cb(DeviceMode.DISCHARGE_ZERO_FEED, None, self._config_max_w)
         self._last_inv_mode = InverterMode.DISCHARGE_ZERO_FEED_IN
@@ -323,6 +325,8 @@ class AutoModeManager:
         mode = step.mode
         plan = self._subscriber._plan  # noqa: SLF001
         dt_hours = plan.dt_hours if plan is not None else 0.25
+        step_start = step.timestamp.astimezone(timezone.utc)
+        step_end = step_start + timedelta(hours=dt_hours)
 
         # Pre-compute charge power for AC_CHARGE modes so we can detect power changes
         # even when the mode itself stays the same.
@@ -338,10 +342,13 @@ class AutoModeManager:
             # AC_CHARGE power changed → fall through to dispatch
 
         logger.info(
-            "AutoMode plan step change: %s → %s (device_id=%s)",
+            "AutoMode plan step change: %s -> %s (device_id=%s, step_start=%s, step_end=%s, charge_w=%s)",
             self._last_inv_mode,
             mode.name,
             self._device_id,
+            step_start.isoformat(),
+            step_end.isoformat(),
+            charge_w,
         )
 
         if mode == InverterMode.IDLE:

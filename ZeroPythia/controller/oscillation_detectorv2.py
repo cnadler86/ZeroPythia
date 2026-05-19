@@ -144,6 +144,7 @@ class OscillationDetector:
     def __init__(
         self,
         *,
+        detector_name: str,
         threshold: float,
         min_period: float,
         max_period: float,
@@ -169,6 +170,7 @@ class OscillationDetector:
         self.period_variance: float = period_variance
         self.min_period: float = min_period
         self.max_period: float = max_period
+        self.detector_name: str = detector_name
 
         self.is_oscillating: bool = False
         self.oscillation_start_time: float | None = None
@@ -189,6 +191,9 @@ class OscillationDetector:
         self._rising_times_set: set[float] = set()
         self._falling_times_set: set[float] = set()
         self._phase: Literal["high", "low"] = "low"
+
+    def _log_ctx(self) -> str:
+        return self.detector_name
 
     @property
     def _last_value(self) -> float:
@@ -255,7 +260,14 @@ class OscillationDetector:
             last_rising = self._rising_times[-1]
             expected_next = last_rising + self.rising_period * (1 + self.period_variance)
             if current_time > expected_next:
-                logger.info("Oscillation timeout detected. Resetting.")
+                logger.info(
+                    "Oscillation timeout [%s]: period=%.2fs last_rising=%.2f now=%.2f expected<=%.2f -> reset",
+                    self._log_ctx(),
+                    self.rising_period,
+                    last_rising,
+                    current_time,
+                    expected_next,
+                )
                 self._reset()
 
     def _update_oscillation(self) -> None:
@@ -274,8 +286,13 @@ class OscillationDetector:
                     # Edge doesn't fit the current oscillation pattern - reset
                     self._reset()
                     logger.info(
-                        "Oscillation terminated - timing mismatch (expected ~%s).",
+                        "Oscillation terminated [%s]: timing mismatch expected=%.2f got=%.2f delta=%.2fs (period=%.2fs, tol=%.2f)",
+                        self._log_ctx(),
                         expected_time,
+                        last_rising,
+                        time_diff,
+                        self.rising_period,
+                        self.period_variance,
                     )
                     return
                 else:
@@ -329,8 +346,13 @@ class OscillationDetector:
         self._rising_times = rising_edges[-self.min_rising_count :]
         self._rising_times_set = set(self._rising_times)
         logger.info(
-            "Oscillation started with period %s",
+            "Oscillation started [%s]: period=%.2fs phase=%s rising_count=%d min/max_period=%.2f/%.2fs",
+            self._log_ctx(),
             self.rising_period,
+            self._phase,
+            len(self._rising_times),
+            self.min_period,
+            self.max_period,
         )
         # Backfill falling edges that were detected before oscillation was confirmed
         self._update_falling_edges()
@@ -436,10 +458,13 @@ class BaseloadPredictor(OscillationDetector):
     def __init__(
         self,
         settings: Optional[BaseloadPredictorSettings] = None,
+        phase_label: str | None = None,
     ):
         if not settings:
             settings = BaseloadPredictorSettings()
+        detector_name = "predictor" if phase_label is None else f"predictor phase={phase_label}"
         super().__init__(
+            detector_name=detector_name,
             threshold=settings.threshold,
             min_period=settings.min_period,
             max_period=settings.max_period,
@@ -521,10 +546,13 @@ class BaseloadHolder(OscillationDetector):
     def __init__(
         self,
         settings: Optional[BaseloadHolderSettings] = None,
+        phase_label: str | None = None,
     ):
         if not settings:
             settings = BaseloadHolderSettings()
+        detector_name = "holder" if phase_label is None else f"holder phase={phase_label}"
         super().__init__(
+            detector_name=detector_name,
             threshold=settings.threshold,
             min_period=settings.min_period,
             max_period=settings.max_period,

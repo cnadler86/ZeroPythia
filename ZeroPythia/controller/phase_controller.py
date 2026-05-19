@@ -76,6 +76,7 @@ class _OscillationMixin:
 
     holder: Optional[BaseloadHolder]
     predictor: Optional[BaseloadPredictor]
+    _osc_log_label: str = "phase=?"
 
     @property
     def is_oscillating(self) -> bool:
@@ -97,18 +98,29 @@ class _OscillationMixin:
                     filtered += 1
             if filtered > 0:
                 logger.debug(
-                    "get_osc_limit: %d sample(s) filtered (<=0), %d passed",
+                    "get_osc_limit[%s]: %d sample(s) filtered (<=0), %d passed",
+                    self._osc_log_label,
                     filtered,
                     passed,
                 )
 
+        holder_limit: float | None = None
+        predictor_limit: float | None = None
         limits: list[float] = []
         if self.holder and self.holder.is_oscillating:
-            limits.append(self.holder.get_limit())
+            holder_limit = self.holder.get_limit()
+            limits.append(holder_limit)
         if self.predictor and self.predictor.is_oscillating:
-            limits.append(self.predictor.get_limit())
+            predictor_limit = self.predictor.get_limit()
+            limits.append(predictor_limit)
         if limits:
-            logger.debug("get_osc_limit: active limits=%s → %.0fW", limits, min(limits))
+            logger.debug(
+                "get_osc_limit[%s]: holder=%s predictor=%s -> %.0fW",
+                self._osc_log_label,
+                f"{holder_limit:.0f}W" if holder_limit is not None else "inactive",
+                f"{predictor_limit:.0f}W" if predictor_limit is not None else "inactive",
+                min(limits),
+            )
         return min(limits) if limits else float("inf")
 
 
@@ -136,11 +148,22 @@ class InverterPhaseController(_OscillationMixin):
         settings: InverterPhaseControllerSettings,
         holder_settings: Optional[BaseloadHolderSettings] = None,
         predictor_settings: Optional[BaseloadPredictorSettings] = None,
+        phase_label: str | None = None,
     ):
         self.settings = settings
+        self._phase_label = phase_label or "?"
+        self._osc_log_label = f"FB phase={self._phase_label}"
         self.preprocessor = HysteresisPreprocessor(hysteresis=settings.hysteresis_w)
-        self.holder = BaseloadHolder(holder_settings) if holder_settings else None
-        self.predictor = BaseloadPredictor(predictor_settings) if predictor_settings else None
+        self.holder = (
+            BaseloadHolder(holder_settings, phase_label=self._phase_label)
+            if holder_settings
+            else None
+        )
+        self.predictor = (
+            BaseloadPredictor(predictor_settings, phase_label=self._phase_label)
+            if predictor_settings
+            else None
+        )
         self._last_desired_total: float = 0.0
         self._last_output: float = 0.0
         self._last_osc_limit: float = float("inf")
@@ -179,8 +202,9 @@ class InverterPhaseController(_OscillationMixin):
         # Wenn Feedback deaktiviert: immer 0 zurückgeben (reiner FF-Modus)
         if not self.settings.feedback_enabled:
             logger.debug(
-                "InverterPhaseController: feedback_enabled=False – B-correction=0"
-                " (ff_sum=%.0f W used as total)",
+                "InverterPhaseController[%s]: feedback_enabled=False -> correction=0"
+                " (ff_sum=%.0fW used as total)",
+                self._phase_label,
                 other_corrections_w,
             )
             self._last_output = 0.0
@@ -202,9 +226,10 @@ class InverterPhaseController(_OscillationMixin):
 
                 new_desired = current_battery_output_w + correction
                 logger.debug(
-                    "InverterPhaseController [settled]: phase_b=%.0fW filtered=%.1fW"
+                    "InverterPhaseController[%s][settled]: phase=%.0fW filtered=%.1fW"
                     " phase_target=%.1fW error=%.1fW correction=%.1fW"
                     " batt_base=%.0fW → desired_total=%.0fW",
+                    self._phase_label,
                     phase_b_grid_power_w[-1] if phase_b_grid_power_w else float("nan"),
                     filtered,
                     phase_target,
@@ -217,14 +242,15 @@ class InverterPhaseController(_OscillationMixin):
         else:
             if not settled:
                 logger.debug(
-                    "InverterPhaseController [!settled]: feedback frozen"
+                    "InverterPhaseController[%s][!settled]: feedback frozen"
                     " at desired_total=%.0f W  phase_target=%.1f W  ff_sum=%.0f W",
+                    self._phase_label,
                     self._last_desired_total,
                     phase_target,
                     other_corrections_w,
                 )
             elif not phase_b_grid_power_w:
-                logger.debug("InverterPhaseController: no phase-B samples")
+                logger.debug("InverterPhaseController[%s]: no phase samples", self._phase_label)
 
         # My share = desired total minus feedforward offset from A+C
         my_correction = self._last_desired_total - other_corrections_w
@@ -234,8 +260,9 @@ class InverterPhaseController(_OscillationMixin):
         self._last_output = effective
 
         logger.debug(
-            "InverterPhaseController: desired_total=%.0fW  ff=%.0fW"
+            "InverterPhaseController[%s]: desired_total=%.0fW ff=%.0fW"
             " → my_corr=%.0fW  osc_limit=%.0fW  effective=%.0fW",
+            self._phase_label,
             self._last_desired_total,
             other_corrections_w,
             my_correction,

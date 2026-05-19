@@ -50,14 +50,19 @@ class RuntimeSampler:
                 if bypass_active != self._last_bypass_state:
                     if bypass_active:
                         logger.warning(
-                            "Inverter entered BYPASS mode: PV (%d W) routed directly to house. "
-                            "battery_output_w (%s W) reflects solar bypass, not battery output. "
-                            "outputLimit commands are ignored!",
+                            "Inverter entered BYPASS mode: pv=%.0fW battery_output=%sW soc=%s%% "
+                            "(battery commands ignored while bypass is active)",
                             batt_state.solar_input_power,
                             batt_output,
+                            soc,
                         )
                     elif self._last_bypass_state is not None:
-                        logger.info("Inverter left bypass mode - battery control active")
+                        logger.info(
+                            "Inverter left BYPASS mode: pv=%.0fW battery_output=%sW soc=%s%%",
+                            batt_state.solar_input_power,
+                            batt_output,
+                            soc,
+                        )
                     self._last_bypass_state = bypass_active
 
             return GridSample(
