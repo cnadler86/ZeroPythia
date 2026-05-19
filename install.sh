@@ -220,6 +220,7 @@ echo "======================================================================="
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     warn "Repository already exists at $INSTALL_DIR – updating instead of cloning"
     git -C "$INSTALL_DIR" config --local safe.directory "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" config --local core.sharedRepository group
     git -C "$INSTALL_DIR" fetch --tags origin
     ok "Fetched latest refs from origin"
     if [[ -n "$REF_TAG" ]]; then
@@ -241,7 +242,7 @@ else
         CLONE_ARGS+=(--branch "$REF_BRANCH")
     fi
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone -c credential.helper= "${CLONE_ARGS[@]}" "$REPO_URL" "$INSTALL_DIR"
+    git clone -c credential.helper= -c core.sharedRepository=group "${CLONE_ARGS[@]}" "$REPO_URL" "$INSTALL_DIR"
     ok "Cloned $REPO_URL → $INSTALL_DIR ($REF_DESC)"
 fi
 
@@ -259,6 +260,14 @@ ok "Directories: 2775 (rwxrwsr-x)"
 
 chmod -R u=rwX,g=rwX,o=rX "$INSTALL_DIR"
 ok "Files: owner/group rw, others r (execute bits preserved)"
+
+# Ensure .git object files are group-writable so the service user (zeropythia)
+# and the admin user can both operate git without root – even after manual
+# sudo git operations that would otherwise create root-owned loose objects.
+if [[ -d "$INSTALL_DIR/.git/objects" ]]; then
+    find "$INSTALL_DIR/.git/objects" -type f -exec chmod 664 {} \;
+    ok ".git/objects files: group-writable (664)"
+fi
 
 [[ -f "$INSTALL_DIR/install.sh" ]]   && chmod 775 "$INSTALL_DIR/install.sh"
 [[ -f "$INSTALL_DIR/uninstall.sh" ]] && chmod 775 "$INSTALL_DIR/uninstall.sh"
