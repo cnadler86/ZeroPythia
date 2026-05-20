@@ -47,6 +47,7 @@ async def run(
     port: int,
     max_output: int,
     min_discharge: int,
+    min_ac_charge: int,
     control_interval: float,
     mqtt_broker: Optional[str],
     device_id: str,
@@ -68,6 +69,7 @@ async def run(
             control_interval_s=control_interval,
             max_discharge_w=max_output,
             min_discharge_w=min_discharge,
+            min_ac_charge_w=min_ac_charge,
         )
 
         # ── Register regulators ───────────────────────────────────────────────
@@ -76,6 +78,7 @@ async def run(
         settings = ZeroFeedConfig(
             max_output_w=max_output,
             min_output_w=min_discharge,
+            min_ac_charge_w=min_ac_charge,
         )
         runtime.register_regulator(ZeroFeedRegulator(settings=settings, yaml_path=_CONFIG))
 
@@ -147,6 +150,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--port", type=int, default=8765, metavar="PORT")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")
+    parser.add_argument("--min-ac-charge", type=int, default=100, metavar="W")
     parser.add_argument("--control-interval", type=float, default=3.0, metavar="S")
     parser.add_argument(
         "--initial-mode",
@@ -187,6 +191,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 port=args.port,
                 max_output=args.max_output,
                 min_discharge=args.min_discharge,
+                min_ac_charge=args.min_ac_charge,
                 control_interval=args.control_interval,
                 mqtt_broker=args.mqtt_broker,
                 device_id=args.device_id,

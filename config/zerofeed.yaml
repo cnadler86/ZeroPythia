@@ -5,7 +5,8 @@
 language: de  # Dashboard UI language: en (English) | de (German)
 control_phase: B  # Phase with battery inverter (A, B or C)
 target_power_w: 1.0 # Desired total grid draw [W].  3 W = slight import, prevents feed-in
-min_output_w: 20 # Minimum battery output [W] (hardware limit, e.g. 20 W)
+min_output_w: 20 # Minimum battery discharge output [W] (hardware limit, e.g. 20 W) – also used as no-grid ZFI fallback
+min_ac_charge_w: 10 # Minimum AC charge power [W] – AC charge requests are clipped up to this value
 max_output_w: 800 # Maximum battery output [W] (hardware limit, e.g. 800 W)
 watchdog_cycles: 3 # Number of control cycles for feed-in trigger (used by ControlRuntime watchdog)
 watchdog_threshold_w: -10.0 # Feed-in threshold [W], must be negative (ControlRuntime watchdog)

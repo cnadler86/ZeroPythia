@@ -179,7 +179,10 @@ class ZeroFeedConfig(BaseModel):
     """Desired total grid draw [W].  3 W = slight import, prevents feed-in."""
 
     min_output_w: int = 20
-    """Minimum battery output [W] (hardware limit)."""
+    """Minimum battery discharge output [W] (hardware limit). Also used as no-grid ZFI fallback."""
+
+    min_ac_charge_w: int = 20
+    """Minimum AC charge power [W]. AC charge requests are clipped up to this value."""
 
     max_output_w: int = 800
     """Maximum battery output [W] (hardware limit)."""

@@ -189,6 +189,7 @@ async def run(
     noise: float,
     max_output: int,
     min_discharge: int,
+    min_ac_charge: int,
     initial_mode: str,
 ) -> None:
     # ── Mock clients ──────────────────────────────────────────────────────────
@@ -217,6 +218,7 @@ async def run(
         control_interval_s=3.0,
         max_discharge_w=max_output,
         min_discharge_w=min_discharge,
+        min_ac_charge_w=min_ac_charge,
     )
 
     # ── Register regulators ───────────────────────────────────────────────────
@@ -225,6 +227,7 @@ async def run(
     v4_settings = ZeroFeedConfig(
         max_output_w=max_output,
         min_output_w=min_discharge,
+        min_ac_charge_w=min_ac_charge,
     )
     v4 = ZeroFeedRegulator(settings=v4_settings, yaml_path=v4_yaml)
     runtime.register_regulator(v4)
@@ -280,6 +283,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--noise", type=float, default=5.0, metavar="W", help="Random noise ± W")
     parser.add_argument("--max-output", type=int, default=800, metavar="W")
     parser.add_argument("--min-discharge", type=int, default=20, metavar="W")
+    parser.add_argument("--min-ac-charge", type=int, default=10, metavar="W")
     parser.add_argument(
         "--initial-mode",
         choices=["idle", "zero_feed"],
@@ -307,6 +311,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 noise=args.noise,
                 max_output=args.max_output,
                 min_discharge=args.min_discharge,
+                min_ac_charge=args.min_ac_charge,
                 initial_mode=args.initial_mode,
             )
         )

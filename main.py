@@ -73,6 +73,7 @@ async def run(
             control_interval_s=yaml_cfg.control_interval_s,
             max_discharge_w=yaml_cfg.max_output_w,
             min_discharge_w=yaml_cfg.min_output_w,
+            min_ac_charge_w=yaml_cfg.min_ac_charge_w,
         )
 
         # ── Auto-updater ──────────────────────────────────────────────────────

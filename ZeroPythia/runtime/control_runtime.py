@@ -161,6 +161,7 @@ class ControlRuntime:
         control_interval_s: float = 3.0,
         max_discharge_w: int = 800,
         min_discharge_w: int = 20,
+        min_ac_charge_w: int = 20,
         # ── SoC thresholds for ZFI pause ──────────────────────────────────────
         # min_soc_hysteresis_pct: ZFI resumes when SoC >= device_min_soc + hysteresis
         min_soc_hysteresis_pct: int = 5,
@@ -195,6 +196,7 @@ class ControlRuntime:
         self._control_interval = control_interval_s
         self._max_discharge_w = max_discharge_w
         self._min_discharge_w = min_discharge_w
+        self._min_ac_charge_w = min_ac_charge_w
 
         # SoC thresholds (min/max read from hardware in start())
         self._min_soc_pct: Optional[int] = None
@@ -367,7 +369,7 @@ class ControlRuntime:
 
         if mode == DeviceMode.AC_CHARGE:
             # Use the explicitly supplied power; fall back to the previous charge
-            # power or the runtime minimum (avoids the silent "0 or 400" trap where
+            # power or the AC charge minimum (avoids the silent "0 or 400" trap where
             # a falsy 0 would resurrect a stale high-power setpoint).
             pw: int
             if charge_power_w is not None:
@@ -375,7 +377,9 @@ class ControlRuntime:
             elif self._charge_power_w is not None:
                 pw = self._charge_power_w
             else:
-                pw = self._min_discharge_w  # device minimum as sensible default
+                pw = self._min_ac_charge_w  # AC charge minimum as sensible default
+            # Clip upward: never charge below the configured minimum
+            pw = max(pw, self._min_ac_charge_w)
             self._charge_power_w = pw
             self._ac_charge_requested_power_w = pw
             # Clear ZFI state
@@ -434,9 +438,11 @@ class ControlRuntime:
             # pause/limit state is no longer relevant.
             self._zfi_state = ZFIState.INACTIVE
             self._zfi_soc_limit_cap_w = 0
-            # Explicit power wins; fall back to runtime minimum (never silently
+            # Explicit power wins; fall back to AC charge minimum (never silently
             # resurrect a stale high-power setpoint via "pw = value or old").
-            pw = charge_power_w if charge_power_w is not None else self._min_discharge_w
+            pw = charge_power_w if charge_power_w is not None else self._min_ac_charge_w
+            # Clip upward: never charge below the configured minimum
+            pw = max(pw, self._min_ac_charge_w)
             self._charge_power_w = pw
             self._ac_charge_requested_power_w = pw
             if self._active_regulator:
