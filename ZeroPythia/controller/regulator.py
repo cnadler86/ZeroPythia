@@ -39,6 +39,8 @@ class BatteryStateProtocol(Protocol):
     """Typed subset of battery state used by runtime and regulators."""
 
     battery_soc: int
+    min_soc: int
+    max_soc: int
     grid_input_power: int
     bypass_mode: bool
     solar_input_power: int

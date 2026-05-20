@@ -49,13 +49,26 @@ class RuntimeSampler:
 
                 if bypass_active != self._last_bypass_state:
                     if bypass_active:
-                        logger.warning(
-                            "Inverter entered BYPASS mode: pv=%.0fW battery_output=%sW soc=%s%% "
-                            "(battery commands ignored while bypass is active)",
-                            batt_state.solar_input_power,
-                            batt_output,
-                            soc,
-                        )
+                        # Only warn for the true full-battery bypass (SoC near max).
+                        # At lower SoC the device reports bypass transiently when
+                        # solar ≈ output – this is harmless and should not alarm.
+                        is_full_battery_bypass = soc is not None and soc >= batt_state.max_soc - 5
+                        if is_full_battery_bypass:
+                            logger.warning(
+                                "Inverter entered BYPASS mode: pv=%.0fW battery_output=%sW soc=%s%% "
+                                "(battery commands ignored while bypass is active)",
+                                batt_state.solar_input_power,
+                                batt_output,
+                                soc,
+                            )
+                        else:
+                            logger.debug(
+                                "Inverter transient pass-through (bypass flag): "
+                                "pv=%.0fW battery_output=%sW soc=%s%% (not a full-battery bypass)",
+                                batt_state.solar_input_power,
+                                batt_output,
+                                soc,
+                            )
                     elif self._last_bypass_state is not None:
                         logger.info(
                             "Inverter left BYPASS mode: pv=%.0fW battery_output=%sW soc=%s%%",

@@ -179,7 +179,11 @@ class BatteryManager(SolarFlowBattery, BatteryInverterProtocol):
 
         solar_w = state.solar_input_power
         already_discharging = self._current_mode == ACMode.OUTPUT and self._setpoint_w > 0
-        in_bypass = state.bypass_mode
+        # Only treat as a true full-battery bypass when the battery is at or near
+        # its maximum SoC.  Below max_soc the device occasionally reports
+        # bypass_mode=True transiently (solar_input ≈ output_home); applying the
+        # bypass-kick in that case causes an oscillation loop.
+        in_bypass = state.bypass_mode and state.battery_soc >= state.max_soc - 0
 
         target: int
         if already_discharging:
