@@ -1,7 +1,7 @@
 import logging
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, List, Literal, Optional
+from typing import Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +32,12 @@ class EdgeDetector:
         self.threshold: float = threshold
         self.time_threshold: float = time_threshold
         self.merge_mode: Literal["first", "mean", "last"] = merge_mode
-        self.history: List[tuple[float, float]] = [(0, 0)]
+        self.history: deque[tuple[float, float]] = deque([(0, 0)])
         self._rising_edges: Deque[float] = deque(maxlen=edge_list_length)
         self._falling_edges: Deque[float] = deque(maxlen=edge_list_length)
         # Cache for post-processed edges
-        self._rising_cache: List[float] | None = None
-        self._falling_cache: List[float] | None = None
+        self._rising_cache: list[float] | None = None
+        self._falling_cache: list[float] | None = None
 
     def add_sample(self, value: float, timestamp: float) -> Literal["rising", "falling", None]:
         """Add a new sample to the detector and check for edges.
@@ -79,11 +79,11 @@ class EdgeDetector:
 
         # Pop all values on history that are older than timestamp - self.time_threshold
         while self.history and self.history[0][1] < timestamp - self.time_threshold:
-            self.history.pop(0)
+            self.history.popleft()
 
         return None
 
-    def _post_process_edges(self, edges: Deque[float]) -> list[float]:
+    def _post_process_edges(self, edges: deque[float]) -> list[float]:
         """Post-process the edges to merge close ones of the same type.
 
         Args:
@@ -113,21 +113,21 @@ class EdgeDetector:
         merged.append(current)
         return merged
 
-    def get_rising_edges(self) -> List[float]:
+    def get_rising_edges(self) -> list[float]:
         """Get the list of rising edges after post-processing.
 
         Returns:
-            List[float]: List of rising edge timestamps.
+            list[float]: List of rising edge timestamps.
         """
         if self._rising_cache is None:
             self._rising_cache = self._post_process_edges(self._rising_edges)
         return self._rising_cache
 
-    def get_falling_edges(self) -> List[float]:
+    def get_falling_edges(self) -> list[float]:
         """Get the list of falling edges after post-processing.
 
         Returns:
-            List[float]: List of falling edge timestamps.
+            list[float]: List of falling edge timestamps.
         """
         if self._falling_cache is None:
             self._falling_cache = self._post_process_edges(self._falling_edges)
@@ -185,8 +185,8 @@ class OscillationDetector:
             time_threshold=time_threshold,
             merge_mode=merge_mode,
         )
-        self._rising_times: List[float] = []
-        self._falling_times: List[float] = []
+        self._rising_times: list[float] = []
+        self._falling_times: list[float] = []
         # Use sets for O(1) lookups
         self._rising_times_set: set[float] = set()
         self._falling_times_set: set[float] = set()
@@ -398,9 +398,6 @@ class OscillationDetector:
             if falling_idx < len(sorted_falling):
                 time_diff = sorted_falling[falling_idx] - rising
                 min_time = min(min_time, time_diff)
-
-            # Reset index for next rising edge (since lists might overlap)
-            falling_idx = 0
 
         return min_time if min_time != float("inf") else None
 

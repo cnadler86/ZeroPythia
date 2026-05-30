@@ -36,9 +36,8 @@ class HysteresisPreprocessor:
 
     def _compute_weights(self, positions: list[int]) -> list[float]:
         """Compute weights based on position (newer values = higher weight)."""
-        n = len(positions)
         if self.weight_type == "linear":
-            return [p + 1 for p in range(n)]
+            return [float(p + 1) for p in positions]
         elif self.weight_type == "exponential":
-            return [2**i for i in range(n)]
-        return [1] * n
+            return [2.0**p for p in positions]
+        return [1.0] * len(positions)

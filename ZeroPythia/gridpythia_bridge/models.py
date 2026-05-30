@@ -55,14 +55,12 @@ class PlanStep(BaseModel):
         default=None, description="Battery SoC at end of slot [Wh]."
     )
 
-    @property
     def max_discharge_w(self, dt_hours: float = 0.25) -> float:
         """Average discharge power for this slot [W]."""
         if dt_hours <= 0:
             return 0.0
         return self.discharge_ac_wh / dt_hours
 
-    @property
     def max_charge_w(self, dt_hours: float = 0.25) -> float:
         """Average charge power for this slot [W]."""
         if dt_hours <= 0:
