@@ -7,7 +7,9 @@ Verifies the correct rising-flank / prediction-window behaviour:
 - During the **free high phase** (before the reaction window) no limit is applied.
 - Within the **reaction window** (reaction_time seconds before the predicted
   falling edge) the predictor reduces the allowed correction to base_load.
-- During the **low phase** the predictor always returns base_load.
+- During the **low phase** the predictor returns max(base_load, current demand):
+  base_load acts as a floor, but rising grid demand must be followed upward
+  because the battery is fast enough on predictor time scales.
 - Regression: even when min_high_time <= reaction_time the rising-edge sample
   itself is never limited (the original bug: "immer das Limit gehalten").
 """
@@ -181,6 +183,59 @@ class TestBaseloadPredictorGetLimit:
             f"Expected base_load limit during low phase, got {limit}"
         )
         assert limit <= BASE_W * 2
+
+    # ── Regression: rising demand during low phase must not be capped ─────────
+
+    def test_limit_follows_rising_demand_in_low_phase(self) -> None:
+        """Regression: 'Setpoint geht nicht nach oben, wenn Grid mehr fordert'.
+
+        During the low phase of a detected oscillation the grid demand rises
+        slowly (below the edge threshold, so no rising edge fires).  The OLD
+        code kept the limit pinned at the historic base load, so the setpoint
+        could never follow the new demand.  The predictor must allow the
+        current (higher) demand because the battery is fast enough.
+        """
+        predictor = _make_predictor(reaction_time=4.0)
+        _setup_oscillation(predictor)
+
+        # Enter a fresh low phase after the 4th cycle
+        t_rise4 = 3 * PERIOD_S
+        t_fall4 = t_rise4 + HIGH_DURATION_S
+        predictor.add_sample(HIGH_W, t_rise4)
+        predictor.add_sample(BASE_W, t_fall4)
+        assert predictor._phase == "low"
+
+        # Demand creeps up by +80 W per sample (threshold is 100 W → no edge)
+        new_demand = BASE_W
+        for i in range(1, 4):
+            new_demand = BASE_W + 80.0 * i
+            predictor.add_sample(new_demand, t_fall4 + 2.0 * i)
+
+        assert predictor._phase == "low", "no edge expected for sub-threshold rise"
+        limit = predictor.get_limit()
+        assert limit >= new_demand, (
+            f"Limit {limit} W must follow the risen demand ({new_demand} W); "
+            f"old bug capped it at base load ({BASE_W} W)"
+        )
+
+    def test_limit_keeps_base_load_floor_on_low_dip(self) -> None:
+        """A single dip below base load must not clip the limit below base load."""
+        predictor = _make_predictor(reaction_time=4.0)
+        _setup_oscillation(predictor)
+
+        t_rise4 = 3 * PERIOD_S
+        t_fall4 = t_rise4 + HIGH_DURATION_S
+        predictor.add_sample(HIGH_W, t_rise4)
+        predictor.add_sample(BASE_W, t_fall4)
+        # Noisy dip far below base load (still low phase, falling edge already fired)
+        predictor.add_sample(BASE_W - 50.0, t_fall4 + 2.0)
+
+        assert predictor._phase == "low"
+        limit = predictor.get_limit()
+        assert limit >= BASE_W - 50.0
+        assert limit <= BASE_W, (
+            f"Limit {limit} W should stay at/below base load after a dip"
+        )
 
     # ── Regression: min_high_time <= reaction_time ────────────────────────────
 

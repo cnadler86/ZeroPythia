@@ -1,3 +1,17 @@
+"""Oscillation detection and baseload limiting (v2).
+
+Two limiters built on the same EdgeDetector/OscillationDetector core:
+
+BaseloadHolder    – fast on/off cycles (1–10 s, e.g. fridge compressor).
+                    The battery is too slow to follow → the limit *holds*
+                    the base load for the whole oscillation.
+
+BaseloadPredictor – slow periodic loads (8–120 s, e.g. heat pump).
+                    The battery is fast enough to follow → the limit only
+                    kicks in shortly before the *predicted* falling edge
+                    (reaction window) and otherwise follows demand.
+"""
+
 import logging
 from collections import deque
 from dataclasses import dataclass
@@ -33,8 +47,8 @@ class EdgeDetector:
         self.time_threshold: float = time_threshold
         self.merge_mode: Literal["first", "mean", "last"] = merge_mode
         self.history: deque[tuple[float, float]] = deque([(0, 0)])
-        self._rising_edges: Deque[float] = deque(maxlen=edge_list_length)
-        self._falling_edges: Deque[float] = deque(maxlen=edge_list_length)
+        self._rising_edges: deque[float] = deque(maxlen=edge_list_length)
+        self._falling_edges: deque[float] = deque(maxlen=edge_list_length)
         # Cache for post-processed edges
         self._rising_cache: list[float] | None = None
         self._falling_cache: list[float] | None = None
@@ -54,34 +68,32 @@ class EdgeDetector:
 
         prev_value = self.history[-2][0]  # We know history has at least 2 elements
         diff = value - prev_value
+        edge: Literal["rising", "falling", None] = None
         if diff > self.threshold:
             self._rising_edges.append(timestamp)
             self._rising_cache = None  # Invalidate cache
-            logger.debug(
-                "EdgeDetector RISING  val=%.1f prev=%.1f diff=%.1f thr=%.1f",
-                value,
-                prev_value,
-                diff,
-                self.threshold,
-            )
-            return "rising"
+            edge = "rising"
         elif diff < -self.threshold:
             self._falling_edges.append(timestamp)
             self._falling_cache = None  # Invalidate cache
+            edge = "falling"
+
+        if edge is not None:
             logger.debug(
-                "EdgeDetector FALLING val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                "EdgeDetector %s val=%.1f prev=%.1f diff=%.1f thr=%.1f",
+                edge.upper(),
                 value,
                 prev_value,
                 diff,
                 self.threshold,
             )
-            return "falling"
 
-        # Pop all values on history that are older than timestamp - self.time_threshold
+        # Drop history entries older than timestamp - time_threshold
+        # (always, also on edge samples, so the window cannot grow unbounded).
         while self.history and self.history[0][1] < timestamp - self.time_threshold:
             self.history.popleft()
 
-        return None
+        return edge
 
     def _post_process_edges(self, edges: deque[float]) -> list[float]:
         """Post-process the edges to merge close ones of the same type.
@@ -424,7 +436,7 @@ class OscillationDetector:
 
 @dataclass
 class OscillationDetectorSettings:
-    """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+    """Common settings for OscillationDetector-based limiters (Holder/Predictor)."""
 
     threshold: float
     min_period: float
@@ -438,7 +450,7 @@ class OscillationDetectorSettings:
 
 @dataclass
 class BaseloadPredictorSettings(OscillationDetectorSettings):
-    """Settings für BaseloadPredictor - wraps die Konstruktor-Parameter."""
+    """Settings for BaseloadPredictor – slow periodic loads (8–120 s periods)."""
 
     threshold: float = 100.0
     time_threshold: float = 2.0
@@ -452,6 +464,14 @@ class BaseloadPredictorSettings(OscillationDetectorSettings):
 
 
 class BaseloadPredictor(OscillationDetector):
+    """Limiter for slow periodic loads the battery can follow.
+
+    Limit policy:
+      - rising edge / free high phase → no limit (normal regulation reacts)
+      - reaction window before the predicted falling edge → base load
+      - low phase → max(base load, current demand), i.e. demand may rise
+    """
+
     def __init__(
         self,
         settings: Optional[BaseloadPredictorSettings] = None,
@@ -477,9 +497,14 @@ class BaseloadPredictor(OscillationDetector):
         if not self.is_oscillating:
             return float("inf")
 
-        # In low phase, always return base load
+        # Low phase: follow demand UPWARD.  The battery is fast enough on
+        # predictor time scales (periods of 8-120 s), so a rising grid demand
+        # during the low phase must not stay capped at the historic base load
+        # (that is the holder's job for fast cycles).  The base load only acts
+        # as a floor so single noisy low samples cannot clip the setpoint.
         if self._phase == "low":
-            return self.base_load or self._last_value
+            historic_base = min(self._base_load) if self._base_load else self._last_value
+            return max(historic_base, self._last_value)
 
         # In high phase: let the controller respond normally to the rising flank.
         # Only reduce to base load once we're within reaction_time of the predicted
@@ -540,6 +565,12 @@ class BaseloadHolderSettings(OscillationDetectorSettings):
 
 
 class BaseloadHolder(OscillationDetector):
+    """Limiter for fast on/off cycles the battery cannot follow.
+
+    While an oscillation is active the limit is pinned to the base load
+    (never above the current demand) for the whole oscillation.
+    """
+
     def __init__(
         self,
         settings: Optional[BaseloadHolderSettings] = None,
