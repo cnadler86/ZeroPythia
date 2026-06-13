@@ -69,7 +69,7 @@ class TestHysteresisPreprocessorWeighting:
     """Position-based weighting (newer values = higher weight)."""
 
     def test_linear_weights_favor_later_values(self) -> None:
-        pp = HysteresisPreprocessor(hysteresis=50.0, type="linear")
+        pp = HysteresisPreprocessor(hysteresis=50.0, weight_type="linear")
         # values: [100, 200], both inliers (median=150, hysteresis=50)
         # positions: [0, 1], weights: [1, 2]
         # weighted = (100*1 + 200*2) / 3 = 500/3 ≈ 166.67
@@ -77,7 +77,7 @@ class TestHysteresisPreprocessorWeighting:
         assert result == pytest.approx(500.0 / 3.0)
 
     def test_exponential_weights_favor_later_values_more(self) -> None:
-        pp = HysteresisPreprocessor(hysteresis=50.0, type="exponential")
+        pp = HysteresisPreprocessor(hysteresis=50.0, weight_type="exponential")
         # values: [100, 200], both inliers
         # positions: [0, 1], weights: [2^0, 2^1] = [1, 2]
         # Same as linear for 2 elements since weights happen to match
@@ -86,7 +86,7 @@ class TestHysteresisPreprocessorWeighting:
 
     def test_linear_weights_with_gap_in_positions(self) -> None:
         """When an outlier creates a gap, weights should reflect actual positions."""
-        pp = HysteresisPreprocessor(hysteresis=10.0, type="linear")
+        pp = HysteresisPreprocessor(hysteresis=10.0, weight_type="linear")
         # values: [100, 500, 102], median=102, hysteresis=10
         # inliers: [100, 102] at positions [0, 2]
         # weights: [0+1, 2+1] = [1, 3]
@@ -95,7 +95,7 @@ class TestHysteresisPreprocessorWeighting:
         assert result == pytest.approx(406.0 / 4.0)
 
     def test_exponential_weights_with_gap_in_positions(self) -> None:
-        pp = HysteresisPreprocessor(hysteresis=10.0, type="exponential")
+        pp = HysteresisPreprocessor(hysteresis=10.0, weight_type="exponential")
         # values: [100, 500, 102], median=102, hysteresis=10
         # inliers: [100, 102] at positions [0, 2]
         # weights: [2^0, 2^2] = [1, 4]

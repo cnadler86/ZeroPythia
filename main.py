@@ -74,6 +74,8 @@ async def run(
             max_discharge_w=yaml_cfg.max_output_w,
             min_discharge_w=yaml_cfg.min_output_w,
             min_ac_charge_w=yaml_cfg.min_ac_charge_w,
+            watchdog_cycles=yaml_cfg.watchdog_cycles,
+            watchdog_threshold_w=yaml_cfg.watchdog_threshold_w,
         )
 
         # ── Auto-updater ──────────────────────────────────────────────────────

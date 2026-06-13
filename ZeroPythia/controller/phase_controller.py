@@ -77,6 +77,12 @@ class _OscillationMixin:
     holder: Optional[BaseloadHolder]
     predictor: Optional[BaseloadPredictor]
     _osc_log_label: str = "phase=?"
+    _last_osc_limit: float = float("inf")
+
+    @property
+    def last_osc_limit(self) -> float:
+        """Active oscillation limit (inf when no detector is active)."""
+        return self._last_osc_limit
 
     @property
     def is_oscillating(self) -> bool:
@@ -292,10 +298,6 @@ class InverterPhaseController(_OscillationMixin):
     @property
     def last_controller_output(self) -> float:
         return self._last_desired_total
-
-    @property
-    def last_osc_limit(self) -> float:
-        return self._last_osc_limit
 
     @property
     def last_phase_target(self) -> float:

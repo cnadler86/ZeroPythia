@@ -282,7 +282,7 @@ class AutoModeManager:
 
     def get_auto_status(self) -> AutoStatus:
         """Return current auto mode status for inclusion in DashboardState."""
-        plan = self._subscriber._plan  # noqa: SLF001 – read via property missing
+        plan = self._subscriber.plan
         published_at: Optional[str] = None
         received_at: Optional[str] = None
         if plan is not None:
@@ -323,7 +323,7 @@ class AutoModeManager:
     async def _apply_step(self, step: PlanStep, cb: ApplyModeCb) -> None:
         """Dispatch a plan step – only calls *cb* when the mode or power actually changes."""
         mode = step.mode
-        plan = self._subscriber._plan  # noqa: SLF001
+        plan = self._subscriber.plan
         dt_hours = plan.dt_hours if plan is not None else 0.25
         step_start = step.timestamp.astimezone(timezone.utc)
         step_end = step_start + timedelta(hours=dt_hours)
@@ -370,7 +370,7 @@ class AutoModeManager:
 
     def _refresh_plan_summary(self, now: datetime) -> None:
         """Rebuild the merged plan summary (cheap – call on every tick)."""
-        plan = self._subscriber._plan  # noqa: SLF001
+        plan = self._subscriber.plan
         if plan is None or not plan.steps:
             self._plan_summary = []
         else:

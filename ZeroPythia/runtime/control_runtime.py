@@ -263,6 +263,19 @@ class ControlRuntime:
         """Register the AutoModeManager used when mode==AUTO."""
         self._auto_manager = manager
 
+    def _effective_device_mode(self) -> DeviceMode:
+        """Resolve the active device command.
+
+        In AUTO mode the real command is driven by the AutoModeManager and held
+        in ``_auto_effective_mode``; for every other mode the effective command
+        equals ``_mode`` itself.  Centralising this avoids the subtly different
+        inline ``AUTO and _auto_effective_mode == …`` checks scattered across the
+        loop and SoC guards.
+        """
+        if self._mode == DeviceMode.AUTO:
+            return self._auto_effective_mode
+        return self._mode
+
     def attach_updater(self, updater: "AutoUpdater") -> None:
         """Register an AutoUpdater instance to drive periodic update checks."""
         self._updater = updater
@@ -563,10 +576,7 @@ class ControlRuntime:
                     await self._update_soc_guards(sample, time.monotonic())
 
                 # 3. No-grid fallback: no Shelly data while in ZFI mode
-                _in_zfi = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
-                    self._mode == DeviceMode.AUTO
-                    and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
-                )
+                _in_zfi = self._effective_device_mode() == DeviceMode.DISCHARGE_ZERO_FEED
                 if _in_zfi:
                     if sample is None and self._zfi_state != ZFIState.PAUSED_NO_GRID:
                         logger.warning(
@@ -632,7 +642,11 @@ class ControlRuntime:
                             logger.exception("AutoModeManager tick failed")
 
                     # 5c. AC charge SoC limit – check while in charge mode
-                    if sample is not None and self._mode in (DeviceMode.AC_CHARGE,):
+                    #     (direct AC_CHARGE *or* AUTO with an AC_CHARGE effective mode).
+                    if (
+                        sample is not None
+                        and self._effective_device_mode() == DeviceMode.AC_CHARGE
+                    ):
                         await self._apply_high_soc_charge_limit(sample)
 
                     last_control = time.monotonic()
@@ -662,11 +676,7 @@ class ControlRuntime:
 
     def _is_in_idle_state(self) -> bool:
         """Return True when the system is effectively idle (safe to restart)."""
-        if self._mode == DeviceMode.IDLE:
-            return True
-        if self._mode == DeviceMode.AUTO and self._auto_effective_mode == DeviceMode.IDLE:
-            return True
-        return False
+        return self._effective_device_mode() == DeviceMode.IDLE
 
     async def _update_check_loop(self) -> None:
         """Periodically check for updates; apply only when the system is idle."""
@@ -739,10 +749,7 @@ class ControlRuntime:
         ):
             return
 
-        in_zfi = self._mode == DeviceMode.DISCHARGE_ZERO_FEED or (
-            self._mode == DeviceMode.AUTO
-            and self._auto_effective_mode == DeviceMode.DISCHARGE_ZERO_FEED
-        )
+        in_zfi = self._effective_device_mode() == DeviceMode.DISCHARGE_ZERO_FEED
 
         if not in_zfi:
             # Leaving ZFI mode → reset state

@@ -173,8 +173,3 @@ class FeedforwardSteuerung(_OscillationMixin):
     def last_raw_output(self) -> float:
         """Last uncapped P-control output (before osc limit + anti-export)."""
         return self._last_raw_output
-
-    @property
-    def last_osc_limit(self) -> float:
-        """Active oscillation limit (inf when no detector is active)."""
-        return self._last_osc_limit

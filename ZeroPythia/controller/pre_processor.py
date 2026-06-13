@@ -3,9 +3,13 @@ from typing import Literal, Optional, Sequence
 
 
 class HysteresisPreprocessor:
-    def __init__(self, hysteresis: float = 10, type: Literal["linear", "exponential"] = "linear"):
+    def __init__(
+        self,
+        hysteresis: float = 10,
+        weight_type: Literal["linear", "exponential"] = "linear",
+    ):
         self.hysteresis = hysteresis
-        self.weight_type: Literal["linear", "exponential"] = type
+        self.weight_type: Literal["linear", "exponential"] = weight_type
 
     def process(self, values: Sequence[float | int]) -> Optional[float]:
         if not values:

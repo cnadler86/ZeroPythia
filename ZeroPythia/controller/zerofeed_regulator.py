@@ -46,6 +46,7 @@ from ZeroPythia.controller.phase_controller import (
     InverterPhaseController,
     InverterPhaseControllerSettings,
     PhaseSample,
+    _OscillationMixin,
 )
 from ZeroPythia.controller.regulator import BatteryInverterProtocol, RegulatorBase
 from ZeroPythia.runtime.models import ControlStatus, GridSample, OscState
@@ -54,6 +55,25 @@ logger = logging.getLogger(__name__)
 
 
 # ── Controller builder helpers ────────────────────────────────────────────────
+
+
+def _osc_state_from(ctrl: _OscillationMixin) -> OscState:
+    """Build an :class:`OscState` snapshot from any oscillation-aware controller.
+
+    Both ``FeedforwardSteuerung`` and ``InverterPhaseController`` expose the same
+    ``_OscillationMixin`` surface (``is_oscillating``, ``last_osc_limit``,
+    ``holder``, ``predictor``), so the snapshot logic lives here once.
+    """
+    holder = ctrl.holder
+    predictor = ctrl.predictor
+    return OscState(
+        oscillating=ctrl.is_oscillating,
+        limit_w=ctrl.last_osc_limit if ctrl.is_oscillating else None,
+        holder_active=holder is not None,
+        predictor_active=predictor is not None,
+        holder_oscillating=holder is not None and holder.is_oscillating,
+        predictor_oscillating=predictor is not None and predictor.is_oscillating,
+    )
 
 
 def _build_ff(phase: str, ph_cfg: FeedforwardPhaseConfig) -> FeedforwardSteuerung:
@@ -248,33 +268,51 @@ class _Core:
     # ── Oscillation state ─────────────────────────────────────────────────────
 
     def osc_state(self, phase: str) -> OscState:
-        """Return full oscillation state for one phase."""
+        """Return full oscillation state for one phase (feedback or feedforward)."""
         if phase == self._cfg.control_phase:
             if self._fb is None:
                 raise RuntimeError("Feedback controller not initialized")
-            ctrl = self._fb
-            return OscState(
-                oscillating=ctrl.is_oscillating,
-                limit_w=ctrl.last_osc_limit if ctrl.is_oscillating else None,
-                holder_active=ctrl.holder is not None,
-                predictor_active=ctrl.predictor is not None,
-                holder_oscillating=ctrl.holder is not None and ctrl.holder.is_oscillating,
-                predictor_oscillating=ctrl.predictor is not None and ctrl.predictor.is_oscillating,
-            )
+            return _osc_state_from(self._fb)
         ff = self._ff.get(phase)
-        if ff is None:
-            return OscState()
-        return OscState(
-            oscillating=ff.is_oscillating,
-            limit_w=ff.last_osc_limit if ff.is_oscillating else None,
-            holder_active=ff.holder is not None,
-            predictor_active=ff.predictor is not None,
-            holder_oscillating=ff.holder is not None and ff.holder.is_oscillating,
-            predictor_oscillating=ff.predictor is not None and ff.predictor.is_oscillating,
-        )
+        return _osc_state_from(ff) if ff is not None else OscState()
 
 
 # ── Dynamic settings schema helper ───────────────────────────────────────────
+
+_MERGE_MODES = ["first", "mean", "last"]
+
+
+def _num(title: str, default: float, minimum: float, maximum: float, step: float) -> dict[str, Any]:
+    """JSON-schema entry for a float field (``group`` is added by the caller)."""
+    return {
+        "type": "number",
+        "title": title,
+        "default": default,
+        "minimum": minimum,
+        "maximum": maximum,
+        "step": step,
+    }
+
+
+def _int(title: str, default: int, minimum: int, maximum: int) -> dict[str, Any]:
+    """JSON-schema entry for an integer field."""
+    return {
+        "type": "integer",
+        "title": title,
+        "default": default,
+        "minimum": minimum,
+        "maximum": maximum,
+    }
+
+
+def _bool(title: str, default: bool) -> dict[str, Any]:
+    """JSON-schema entry for a boolean field."""
+    return {"type": "boolean", "title": title, "default": default}
+
+
+def _enum(title: str, default: str, choices: list[str]) -> dict[str, Any]:
+    """JSON-schema entry for a string enum field."""
+    return {"type": "string", "title": title, "default": default, "enum": choices}
 
 
 def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
@@ -289,222 +327,60 @@ def _phase_schema(ph_name: str, ph_cfg) -> dict[str, Any]:
     osc = base + "osc."
     is_fb = isinstance(ph_cfg, FeedbackPhaseConfig)
     group = f"Phase {ph_name} ({'Regulation' if is_fb else 'Steering'})"
-    entries: dict[str, Any] = {}
+
+    # Ordered (key, spec) list; ``group`` is attached uniformly at the end.
+    # Declaring every field as a one-line table makes ranges/defaults easy to scan
+    # and keeps holder vs. predictor differences visible side by side.
+    fields: list[tuple[str, dict[str, Any]]] = []
 
     if is_fb:
-        entries[base + "kp_draw"] = {
-            "type": "number",
-            "title": "Kp draw",
-            "default": 0.9,
-            "minimum": 0.0,
-            "maximum": 5.0,
-            "step": 0.05,
-            "group": group,
-        }
-        entries[base + "kp_feed_in"] = {
-            "type": "number",
-            "title": "Kp feed-in",
-            "default": 1.05,
-            "minimum": 0.0,
-            "maximum": 5.0,
-            "step": 0.05,
-            "group": group,
-        }
-        entries[base + "feedback_enabled"] = {
-            "type": "boolean",
-            "title": "Feedback enabled",
-            "default": True,
-            "group": group,
-        }
+        fields += [
+            (base + "kp_draw", _num("Kp draw", 0.9, 0.0, 5.0, 0.05)),
+            (base + "kp_feed_in", _num("Kp feed-in", 1.05, 0.0, 5.0, 0.05)),
+            (base + "feedback_enabled", _bool("Feedback enabled", True)),
+        ]
     else:
-        entries[base + "kp"] = {
-            "type": "number",
-            "title": "Kp",
-            "default": 1.0,
-            "minimum": 0.0,
-            "maximum": 5.0,
-            "step": 0.05,
-            "group": group,
-        }
+        fields.append((base + "kp", _num("Kp", 1.0, 0.0, 5.0, 0.05)))
 
-    entries[base + "kp_hysteresis"] = {
-        "type": "number",
-        "title": "Kp hysteresis",
-        "default": 0.4,
-        "minimum": 0.0,
-        "maximum": 2.0,
-        "step": 0.05,
-        "group": group,
-    }
-    entries[base + "hysteresis_w"] = {
-        "type": "number",
-        "title": "Hysteresis band [W]",
-        "default": 5.0,
-        "minimum": 0.0,
-        "maximum": 100.0,
-        "step": 0.5,
-        "group": group,
-    }
-    # ── Holder ────────────────────────────────────────────────────────────────
-    entries[osc + "holder_enabled"] = {
-        "type": "boolean",
-        "title": "Holder active (fast oscillations)",
-        "default": False,
-        "group": group,
-    }
-    entries[osc + "holder.threshold"] = {
-        "type": "number",
-        "title": "Holder min. amplitude [W]",
-        "default": 30.0,
-        "minimum": 5.0,
-        "maximum": 500.0,
-        "step": 5.0,
-        "group": group,
-    }
-    entries[osc + "holder.min_period"] = {
-        "type": "number",
-        "title": "Holder min. period [s]",
-        "default": 1.0,
-        "minimum": 0.1,
-        "maximum": 60.0,
-        "step": 0.1,
-        "group": group,
-    }
-    entries[osc + "holder.max_period"] = {
-        "type": "number",
-        "title": "Holder max. period [s]",
-        "default": 10.0,
-        "minimum": 0.1,
-        "maximum": 600.0,
-        "step": 0.1,
-        "group": group,
-    }
-    entries[osc + "holder.period_variance"] = {
-        "type": "number",
-        "title": "Holder period variance",
-        "default": 1.2,
-        "minimum": 0.01,
-        "maximum": 10.0,
-        "step": 0.05,
-        "group": group,
-    }
-    entries[osc + "holder.time_threshold"] = {
-        "type": "number",
-        "title": "Holder time threshold [s]",
-        "default": 0.6,
-        "minimum": 0.01,
-        "maximum": 30.0,
-        "step": 0.05,
-        "group": group,
-    }
-    entries[osc + "holder.min_rising_count"] = {
-        "type": "integer",
-        "title": "Holder min. rising edges",
-        "default": 3,
-        "minimum": 2,
-        "maximum": 20,
-        "group": group,
-    }
-    entries[osc + "holder.merge_mode"] = {
-        "type": "string",
-        "title": "Holder merge mode",
-        "default": "first",
-        "enum": ["first", "mean", "last"],
-        "group": group,
-    }
-    entries[osc + "holder.base_load_window"] = {
-        "type": "integer",
-        "title": "Holder baseload window",
-        "default": 3,
-        "minimum": 1,
-        "maximum": 20,
-        "group": group,
-    }
-    # ── Predictor ─────────────────────────────────────────────────────────────
-    entries[osc + "predictor_enabled"] = {
-        "type": "boolean",
-        "title": "Predictor active (periodic loads)",
-        "default": True,
-        "group": group,
-    }
-    entries[osc + "predictor.threshold"] = {
-        "type": "number",
-        "title": "Predictor min. amplitude [W]",
-        "default": 100.0,
-        "minimum": 10.0,
-        "maximum": 1000.0,
-        "step": 10.0,
-        "group": group,
-    }
-    entries[osc + "predictor.min_period"] = {
-        "type": "number",
-        "title": "Predictor min. period [s]",
-        "default": 8.0,
-        "minimum": 0.1,
-        "maximum": 600.0,
-        "step": 0.1,
-        "group": group,
-    }
-    entries[osc + "predictor.max_period"] = {
-        "type": "number",
-        "title": "Predictor max. period [s]",
-        "default": 120.0,
-        "minimum": 0.1,
-        "maximum": 3600.0,
-        "step": 0.1,
-        "group": group,
-    }
-    entries[osc + "predictor.period_variance"] = {
-        "type": "number",
-        "title": "Predictor period variance",
-        "default": 2.0,
-        "minimum": 0.01,
-        "maximum": 10.0,
-        "step": 0.05,
-        "group": group,
-    }
-    entries[osc + "predictor.time_threshold"] = {
-        "type": "number",
-        "title": "Predictor time threshold [s]",
-        "default": 2.0,
-        "minimum": 0.01,
-        "maximum": 120.0,
-        "step": 0.05,
-        "group": group,
-    }
-    entries[osc + "predictor.min_rising_count"] = {
-        "type": "integer",
-        "title": "Predictor min. rising edges",
-        "default": 3,
-        "minimum": 2,
-        "maximum": 20,
-        "group": group,
-    }
-    entries[osc + "predictor.merge_mode"] = {
-        "type": "string",
-        "title": "Predictor merge mode",
-        "default": "first",
-        "enum": ["first", "mean", "last"],
-        "group": group,
-    }
-    entries[osc + "predictor.base_load_window"] = {
-        "type": "integer",
-        "title": "Predictor baseload window",
-        "default": 2,
-        "minimum": 1,
-        "maximum": 20,
-        "group": group,
-    }
-    entries[osc + "predictor.reaction_time"] = {
-        "type": "number",
-        "title": "Predictor reaction time [s]",
-        "default": 4.0,
-        "minimum": 0.0,
-        "maximum": 300.0,
-        "step": 0.1,
-        "group": group,
-    }
-    return entries
+    fields += [
+        (base + "kp_hysteresis", _num("Kp hysteresis", 0.4, 0.0, 2.0, 0.05)),
+        (base + "hysteresis_w", _num("Hysteresis band [W]", 5.0, 0.0, 100.0, 0.5)),
+        # ── Holder – fast short-cycle oscillations ──────────────────────────────
+        (osc + "holder_enabled", _bool("Holder active (fast oscillations)", False)),
+        (osc + "holder.threshold", _num("Holder min. amplitude [W]", 30.0, 5.0, 500.0, 5.0)),
+        (osc + "holder.min_period", _num("Holder min. period [s]", 1.0, 0.1, 60.0, 0.1)),
+        (osc + "holder.max_period", _num("Holder max. period [s]", 10.0, 0.1, 600.0, 0.1)),
+        (osc + "holder.period_variance", _num("Holder period variance", 1.2, 0.01, 10.0, 0.05)),
+        (osc + "holder.time_threshold", _num("Holder time threshold [s]", 0.6, 0.01, 30.0, 0.05)),
+        (osc + "holder.min_rising_count", _int("Holder min. rising edges", 3, 2, 20)),
+        (osc + "holder.merge_mode", _enum("Holder merge mode", "first", _MERGE_MODES)),
+        (osc + "holder.base_load_window", _int("Holder baseload window", 3, 1, 20)),
+        # ── Predictor – slow periodic loads ─────────────────────────────────────
+        (osc + "predictor_enabled", _bool("Predictor active (periodic loads)", True)),
+        (
+            osc + "predictor.threshold",
+            _num("Predictor min. amplitude [W]", 100.0, 10.0, 1000.0, 10.0),
+        ),
+        (osc + "predictor.min_period", _num("Predictor min. period [s]", 8.0, 0.1, 600.0, 0.1)),
+        (osc + "predictor.max_period", _num("Predictor max. period [s]", 120.0, 0.1, 3600.0, 0.1)),
+        (
+            osc + "predictor.period_variance",
+            _num("Predictor period variance", 2.0, 0.01, 10.0, 0.05),
+        ),
+        (
+            osc + "predictor.time_threshold",
+            _num("Predictor time threshold [s]", 2.0, 0.01, 120.0, 0.05),
+        ),
+        (osc + "predictor.min_rising_count", _int("Predictor min. rising edges", 3, 2, 20)),
+        (osc + "predictor.merge_mode", _enum("Predictor merge mode", "first", _MERGE_MODES)),
+        (osc + "predictor.base_load_window", _int("Predictor baseload window", 2, 1, 20)),
+        (
+            osc + "predictor.reaction_time",
+            _num("Predictor reaction time [s]", 4.0, 0.0, 300.0, 0.1),
+        ),
+    ]
+
+    return {key: {**spec, "group": group} for key, spec in fields}
 
 
 # ── Regulator ─────────────────────────────────────────────────────────────────

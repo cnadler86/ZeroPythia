@@ -218,15 +218,32 @@ class OscillationDetector:
         return self._edge_detector.history[-1][1]
 
     @property
+    def _historic_base_load(self) -> float | None:
+        """Minimum captured low-phase load, *excluding* the current sample.
+
+        This is the historic floor of the oscillation.  Unlike :attr:`base_load`
+        it does NOT fold in ``_last_value``, so callers can decide whether the
+        current demand should pull the result *down* (holder: pin to base load)
+        or only act as a floor it may rise *above* (predictor: follow demand up).
+
+        Returns ``None`` when no low phase has been captured yet.
+        """
+        if not self._base_load:
+            return None
+        return min(self._base_load)
+
+    @property
     def base_load(self) -> float | None:
         """Get the current base load during oscillation.
 
-        Returns:
-            float | None: Minimum load during low phase of oscillation, or None if not oscillating.
+        The minimum of the historic low-phase floor and the current sample, i.e.
+        a value that is never above current demand.  Returns ``None`` when not
+        oscillating or no low phase has been captured yet.
         """
-        if not self.is_oscillating or not self._base_load:
+        historic = self._historic_base_load
+        if not self.is_oscillating or historic is None:
             return None
-        return min(min(self._base_load), self._last_value)
+        return min(historic, self._last_value)
 
     def add_sample(self, value: float, timestamp: float) -> None:
         """Add a sample and update oscillation detection.
@@ -503,7 +520,9 @@ class BaseloadPredictor(OscillationDetector):
         # (that is the holder's job for fast cycles).  The base load only acts
         # as a floor so single noisy low samples cannot clip the setpoint.
         if self._phase == "low":
-            historic_base = min(self._base_load) if self._base_load else self._last_value
+            historic_base = self._historic_base_load
+            if historic_base is None:
+                return self._last_value
             return max(historic_base, self._last_value)
 
         # In high phase: let the controller respond normally to the rising flank.
@@ -592,4 +611,7 @@ class BaseloadHolder(OscillationDetector):
         )
 
     def get_limit(self) -> float:
-        return min(self.base_load or self._last_value, self._last_value)
+        # base_load already folds in the current sample, so it is never above
+        # current demand.  Before the first low phase fall back to current demand.
+        base = self.base_load
+        return base if base is not None else self._last_value

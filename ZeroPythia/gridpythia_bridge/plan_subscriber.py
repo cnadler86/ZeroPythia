@@ -114,6 +114,16 @@ class GridPythiaPlanSubscriber:
         with self._lock:
             return self._plan is not None
 
+    @property
+    def plan(self) -> Optional[InverterPlan]:
+        """Thread-safe snapshot of the most recently received plan (or ``None``).
+
+        Provides read access to the current plan without callers reaching into
+        the lock-protected ``_plan`` attribute themselves.
+        """
+        with self._lock:
+            return self._plan
+
     # ── MQTT callback (paho network thread) ───────────────────────────────
 
     def _on_message(self, topic: str, payload: dict) -> None:
