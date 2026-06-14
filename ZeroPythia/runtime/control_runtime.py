@@ -102,10 +102,21 @@ class BypassResumeGuard:
         self._buf: deque[tuple[float, float, float]] = deque()
 
     def add_sample(self, ts: float, theoretical_setpoint_w: float, solar_w: float) -> None:
-        """Append a new measurement and evict samples older than *window_s*."""
+        """Append a new measurement and trim the buffer to roughly *window_s*.
+
+        One sample *older* than the window is intentionally kept so the buffer can
+        actually span ``window_s``.  Evicting everything older than the cutoff (the
+        naive approach) leaves the oldest retained sample always *younger* than
+        ``window_s`` – then ``is_safe_to_start``'s "window filled" check
+        (``now - oldest >= window_s``) can never pass and the full-battery pause
+        never resumes (deadlock).  Keeping the straddling sample guarantees the
+        span reaches ``window_s`` regardless of sample timing/jitter.
+        """
         self._buf.append((ts, theoretical_setpoint_w, solar_w))
         cutoff = ts - self.window_s
-        while self._buf and self._buf[0][0] < cutoff:
+        # Drop the oldest only while the *second* sample is still older than the
+        # cutoff – i.e. keep exactly one sample at/older than the window edge.
+        while len(self._buf) > 1 and self._buf[1][0] < cutoff:
             self._buf.popleft()
 
     def is_safe_to_start(self, now: float) -> bool:
@@ -878,14 +889,21 @@ class ControlRuntime:
                         await self._battery.start_discharge()
                 else:
                     # Running (RUNNING / SOFT_LIMITED) at max SoC – enter pause when load is low.
-                    if household_w <= self._full_soc_resume_threshold_w:
+                    # Use the *real* household consumption (grid + battery output), not the
+                    # net grid reading: while the regulator is RUNNING the grid is held near
+                    # the target (~0 W), so total_grid_w would spuriously look like a "low
+                    # load" and pause even while the battery is actively covering a large
+                    # load. real_consumption_w reflects the battery's true job (load minus
+                    # any direct-solar bypass) and is consistent with the resume guard.
+                    real_load_w = sample.real_consumption_w
+                    if real_load_w <= self._full_soc_resume_threshold_w:
                         logger.info(
                             "ZFI full-battery pause: SoC %d%% >= max %d%%, "
                             "load %.0fW <= threshold %.0fW – bypass guard started "
                             "(window=%.0fs, offset=%.0fW)",
                             soc,
                             self._full_soc_pct,
-                            household_w,
+                            real_load_w,
                             self._full_soc_resume_threshold_w,
                             self._bypass_guard.window_s,
                             self._bypass_guard.safety_offset_w,

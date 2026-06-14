@@ -290,6 +290,31 @@ async def test_full_battery_resumes_after_guard_window_with_high_load() -> None:
 
 
 @pytest.mark.asyncio
+async def test_full_battery_no_pause_while_battery_covers_load() -> None:
+    """At max SoC the pause must NOT trigger while the battery is actively covering a
+    real load (grid regulated near zero, but battery_output high).
+
+    Regression: the entry check previously used net grid (total_grid_w). While the
+    regulator runs it holds the grid near the target (~0 W), so a large real load was
+    misread as "low load" → spurious full-battery pause. real_consumption_w
+    (grid + battery output) reflects the battery's true job and must keep it RUNNING.
+    """
+    batt = FakeBattery(soc=100)
+    rt = _make_runtime(batt, full_soc_pct=100, full_soc_resume_threshold_w=50)
+    reg = FakeRegulator()
+    rt._mode = DeviceMode.DISCHARGE_ZERO_FEED
+    rt._active_regulator = cast(Any, reg)
+    rt._zfi_state = ZFIState.RUNNING
+
+    # grid ~3 W (regulated to target) while the battery covers a 200 W load.
+    sample = _make_sample(soc=100, grid_w=3.0, battery_output_w=200.0)
+    await rt._update_soc_guards(sample, time.monotonic())
+
+    assert rt._zfi_state == ZFIState.RUNNING
+    assert ("stop", None) not in batt.commands
+
+
+@pytest.mark.asyncio
 async def test_full_battery_rest_cleared_when_not_in_zfi_mode() -> None:
     """Switching away from ZFI mode must clear the full-battery rest state."""
     batt = FakeBattery(soc=100)
@@ -448,6 +473,29 @@ def test_bypass_guard_clears_after_full_window_no_solar() -> None:
     for i in range(6):
         guard.add_sample(base + i, theoretical_setpoint_w=150.0, solar_w=0.0)
     assert guard.is_safe_to_start(base + 5)
+
+
+def test_bypass_guard_clears_in_steady_state_with_jitter() -> None:
+    """Regression: after running longer than the window with realistic (non-integer)
+    sample spacing the guard must still be able to clear.
+
+    The previous eviction dropped *every* sample older than ``window_s``, leaving the
+    oldest retained sample always *inside* the window – so the "window filled" check
+    (``now - oldest >= window_s``) could never pass and the full-battery pause never
+    resumed (permanent deadlock). The earlier tests missed this because they used
+    exact integer 1 s timestamps that land precisely on the window boundary.
+    """
+    guard = BypassResumeGuard(window_s=5.0, safety_offset_w=30.0)
+    ts = 1000.0
+    became_safe = False
+    # ~28 s of samples at 0.7 s spacing (well past the 5 s window), no solar, high load.
+    for _ in range(40):
+        guard.add_sample(ts, theoretical_setpoint_w=150.0, solar_w=0.0)
+        if guard.is_safe_to_start(ts):
+            became_safe = True
+            break
+        ts += 0.7
+    assert became_safe
 
 
 def test_bypass_guard_blocks_when_setpoint_below_required() -> None:
