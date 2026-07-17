@@ -313,6 +313,7 @@ class OscillationDetector:
                 time_diff = abs(last_rising - expected_time)
                 if time_diff / self.rising_period > self.period_variance:
                     # Edge doesn't fit the current oscillation pattern - reset
+                    period_for_log = self.rising_period
                     self._reset()
                     logger.info(
                         "Oscillation terminated [%s]: timing mismatch expected=%.2f got=%.2f delta=%.2fs (period=%.2fs, tol=%.2f)",
@@ -320,7 +321,7 @@ class OscillationDetector:
                         expected_time,
                         last_rising,
                         time_diff,
-                        self.rising_period,
+                        period_for_log,
                         self.period_variance,
                     )
                     return

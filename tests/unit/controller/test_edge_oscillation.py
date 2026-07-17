@@ -212,6 +212,17 @@ class TestOscillationDetector:
         assert not osc.is_oscillating
         assert osc.rising_period is None
 
+    def test_timing_mismatch_reset_does_not_crash_logging(self) -> None:
+        osc = _make_oscillator(min_rising_count=3, period_variance=0.3)
+        _feed_periodic_signal(osc, period=10.0, cycles=3)
+        assert osc.is_oscillating
+
+        osc.add_sample(100.0, 34.0)
+        osc.add_sample(300.0, 35.0)
+
+        assert not osc.is_oscillating
+        assert osc.rising_period is None
+
 
 # ── BaseloadHolder tests ─────────────────────────────────────────────────────
 
