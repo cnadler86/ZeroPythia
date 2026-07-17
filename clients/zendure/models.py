@@ -644,7 +644,7 @@ class DeviceState(BaseModel):
             temp_celsius = (props.hyper_tmp - 2731) / 10.0
 
         min_soc_percent = props.min_soc // 10
-        max_soc_percent = props.soc_set // 10
+        max_soc_percent = props.soc_set // 10 or 100  # fallback to 100% if 0 (e.g. during init)
 
         processed_packs = [ProcessedBatteryPack.from_protocol(pack) for pack in response.pack_data]
 
