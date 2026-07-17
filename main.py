@@ -21,6 +21,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import signal
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,20 @@ logger = logging.getLogger(__name__)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+
+def _register_shutdown_handler(server: uvicorn.Server) -> None:
+    """Make SIGTERM/SIGINT stop the server gracefully instead of killing it abruptly."""
+
+    def _handle_signal(signum: int, _frame: object) -> None:
+        logger.info("Received signal %s; initiating graceful shutdown", signum)
+        server.should_exit = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle_signal)
+        except ValueError:
+            logger.debug("Signal %s is not available on this platform", sig)
 
 
 async def run(
@@ -129,6 +144,7 @@ async def run(
             access_log=False,
         )
         server = uvicorn.Server(config)
+        _register_shutdown_handler(server)
 
         logger.info("Dashboard available at http://%s:%d", host, port)
 

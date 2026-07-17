@@ -12,7 +12,9 @@ WorkingDirectory={{WORKING_DIR}}
 ExecStart={{PYTHON_BIN}} main.py {{EXTRA_ARGS}}
 
 Restart=always
-RestartSec=10
+RestartSec=60
+StartLimitIntervalSec=600
+StartLimitBurst=10
 TimeoutStopSec=30
 
 # Logging via systemd journal
